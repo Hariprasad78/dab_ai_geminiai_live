@@ -36,9 +36,30 @@ def test_planned_action_confidence_bounds():
 
 
 def test_all_action_types_valid():
-    for action_type in ActionType:
+    # Actions that require no params
+    no_param_actions = {
+        ActionType.PRESS_UP, ActionType.PRESS_DOWN, ActionType.PRESS_LEFT,
+        ActionType.PRESS_RIGHT, ActionType.PRESS_OK, ActionType.PRESS_BACK,
+        ActionType.PRESS_HOME, ActionType.GET_STATE, ActionType.CAPTURE_SCREENSHOT,
+        ActionType.DONE, ActionType.FAILED, ActionType.NEED_BETTER_VIEW,
+    }
+    for action_type in no_param_actions:
         pa = PlannedAction(action=action_type, confidence=0.5, reason="test")
         assert pa.action == action_type.value
+
+    # LAUNCH_APP requires app_id
+    pa = PlannedAction(
+        action=ActionType.LAUNCH_APP, confidence=0.5, reason="test",
+        params={"app_id": "com.example"},
+    )
+    assert pa.action == ActionType.LAUNCH_APP.value
+
+    # WAIT requires seconds
+    pa = PlannedAction(
+        action=ActionType.WAIT, confidence=0.5, reason="test",
+        params={"seconds": 2},
+    )
+    assert pa.action == ActionType.WAIT.value
 
 
 def test_planned_action_invalid_action():
