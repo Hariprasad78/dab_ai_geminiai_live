@@ -51,6 +51,11 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 # Shared singleton clients (lazy-initialised)
 # ---------------------------------------------------------------------------
+# NOTE: These in-process singletons work correctly with a single uvicorn worker
+# (the default).  For multi-process deployments (multiple uvicorn workers or
+# gunicorn) use a shared backend (e.g. Redis, PostgreSQL) to persist run state
+# and replace this in-memory dict with a store that supports concurrent access.
+# ---------------------------------------------------------------------------
 _runs: Dict[str, RunState] = {}
 _run_tasks: Dict[str, asyncio.Task] = {}
 _dab_client: Optional[DABClientBase] = None

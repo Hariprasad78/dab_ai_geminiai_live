@@ -172,7 +172,10 @@
 <div id="status-bar">API: <span id="api-url">http://localhost:8000</span></div>
 
 <script>
-  const API = '';  // Same origin; change to 'http://localhost:8000' for dev
+  // API base URL. Empty string = same origin (correct when served by FastAPI at GET /).
+  // Change to 'http://localhost:8000' if you open index.html directly from the
+  // filesystem (file://) or from a separate dev server on a different port.
+  const API = '';
   let selectedRunId = null;
   let pollInterval = null;
 

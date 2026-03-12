@@ -172,8 +172,9 @@ class Planner:
             text = response_text.strip()
             if text.startswith("```"):
                 lines = text.split("\n")
-                # First line should be ``` or ```json – skip it
-                if not lines[0].strip().lstrip("`").lower() in ("", "json"):
+                # First line should be ``` or ```json -- skip it
+                fence_label = lines[0].strip().lstrip("`").lower()
+                if fence_label not in ("", "json"):
                     logger.warning("Unexpected opening fence: %s", lines[0])
                 # Strip fences only when the closing fence is present
                 if len(lines) >= 3 and lines[-1].strip() == "```":
