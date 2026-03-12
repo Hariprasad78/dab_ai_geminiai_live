@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+.eggs/
+.Python
+env/
+venv/
+.venv/
+ENV/
+.env
+
+# Artifacts
+artifacts/
+
+# Pytest
+.pytest_cache/
+.cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Credentials (never commit these)
+*.json
+!pyproject.toml
+service-account*.json
+credentials*.json
+
+# Logs
+*.log
+logs/
+
+# Distribution
+*.whl
+*.tar.gz
