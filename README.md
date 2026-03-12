@@ -270,3 +270,79 @@ pytest tests/test_api.py -v
 LOG_LEVEL=DEBUG python -m vertex_live_dab_agent
 ```
 
+## Frontend on GCP, harness local (recommended)
+
+If you want **only the webpage** on GCP and keep all automation/harness logic
+on your local machine, use this pattern:
+
+1. Deploy only `static/index.html` to GCP static hosting
+2. Run harness API locally (`python -m vertex_live_dab_agent`)
+3. Expose local API through a secure tunnel
+4. Set **Harness API** in the webpage footer to the tunnel URL
+
+### 1) Deploy frontend only to GCS static website
+
+Use the included script:
+
+```bash
+./scripts/deploy_frontend_gcs.sh YOUR_GCP_PROJECT YOUR_BUCKET_NAME [API_BASE_URL]
+```
+
+Example:
+
+```bash
+# Auto-detects Cloud Run service URL for dab-live-api
+./scripts/deploy_frontend_gcs.sh my-project dab-remote-ui-prod
+
+# Or provide a fixed static API URL explicitly
+./scripts/deploy_frontend_gcs.sh my-project dab-remote-ui-prod https://dab-live-api-xxxxx-uc.a.run.app
+```
+
+This deploys only [static/index.html](static/index.html) and [static/config.js](static/config.js).
+`config.js` stores a static API base URL, so no ngrok is required when API is
+publicly reachable (for example Cloud Run).
+
+### 2) Start harness locally (optional)
+
+```bash
+export IMAGE_SOURCE=auto
+export HDMI_CAPTURE_DEVICE=/dev/video0   # or /dev/video1
+python -m vertex_live_dab_agent
+```
+
+Local harness API runs at `http://localhost:8000`.
+
+### 3) Expose local harness with a tunnel (only if API is local)
+
+Using Cloudflare Tunnel (recommended):
+
+```bash
+# one-time login:
+cloudflared tunnel login
+
+# quick temporary public URL -> localhost:8000
+cloudflared tunnel --url http://localhost:8000
+```
+
+Or using ngrok:
+
+```bash
+ngrok http 8000
+```
+
+### 4) Connect GCP UI to local harness
+
+In the webpage footer, set **Harness API** to your tunnel URL, for example:
+
+```text
+https://abc123.trycloudflare.com
+```
+
+Then click **Save**.
+
+Tip: you can also open the UI with query param:
+
+```text
+http://<bucket>.storage.googleapis.com/index.html?api=https://abc123.trycloudflare.com
+```
+

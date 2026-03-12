@@ -57,7 +57,7 @@ class Config:
 
     # API
     api_host: str = field(default_factory=lambda: os.environ.get("API_HOST", "0.0.0.0"))
-    api_port: int = field(default_factory=lambda: int(os.environ.get("API_PORT", "8000")))
+    api_port: int = field(default_factory=lambda: int(os.environ.get("PORT") or os.environ.get("API_PORT", "8000")))
 
     # Logging
     log_level: str = field(default_factory=lambda: os.environ.get("LOG_LEVEL", "INFO"))

@@ -79,7 +79,9 @@
     .key-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.4rem; max-width: 220px; }
     .key-grid button { padding: 0.5rem; font-size: 0.8rem; }
     .full-width { grid-column: 1 / -1; }
-    #status-bar { text-align: center; font-size: 0.75rem; color: #475569; margin-top: 0.5rem; }
+    #status-bar { text-align: center; font-size: 0.75rem; color: #475569; margin-top: 0.5rem; display:flex; gap:0.4rem; align-items:center; justify-content:center; flex-wrap:wrap; padding: 0 1rem 1rem; }
+    #api-base-input { width: min(460px, 90vw); background:#0f172a; border:1px solid #334155; color:#cbd5e1; border-radius:0.4rem; padding:0.3rem 0.5rem; font-size:0.75rem; }
+    .mini-btn { padding: 0.3rem 0.55rem; font-size:0.7rem; border-radius:0.4rem; }
     .empty-state { color: #475569; font-size: 0.85rem; text-align: center; padding: 1.5rem; }
     .error-msg { color: #f87171; font-size: 0.8rem; margin-top: 0.5rem; }
   </style>
@@ -270,16 +272,66 @@
   </div>
 </main>
 
-<div id="status-bar">API: <span id="api-url">http://localhost:8000</span></div>
+<div id="status-bar">
+  <span>Controller API:</span>
+  <input id="api-base-input" placeholder="https://your-local-harness-url (leave empty for same-origin)" />
+  <button class="secondary mini-btn" onclick="saveApiBase()">Save</button>
+  <button class="secondary mini-btn" onclick="resetApiBase()">Same-Origin</button>
+  <span id="api-url"></span>
+</div>
 
+<script src="./config.js"></script>
 <script>
-  // API base URL. Empty string = same origin (correct when served by FastAPI at GET /).
-  // Change to 'http://localhost:8000' if you open index.html directly from the
-  // filesystem (file://) or from a separate dev server on a different port.
-  const API = '';
+  const API_STORAGE_KEY = 'dab_api_base';
+  let apiBase = '';
   let selectedRunId = null;
   let pollInterval = null;
   let hdmiStreamRunning = false;
+
+  function normalizeApiBase(v) {
+    const s = (v || '').trim();
+    if (!s) return '';
+    return s.replace(/\/+$/, '');
+  }
+
+  function isStaticHostMode() {
+    const h = window.location.hostname || '';
+    return h.includes('storage.googleapis.com') || h.includes('web.app') || h.includes('firebaseapp.com');
+  }
+
+  function setApiBase(v) {
+    apiBase = normalizeApiBase(v);
+    localStorage.setItem(API_STORAGE_KEY, apiBase);
+    const urlEl = document.getElementById('api-url');
+    const inputEl = document.getElementById('api-base-input');
+    if (inputEl) inputEl.value = apiBase;
+    if (urlEl) urlEl.textContent = apiBase || `(same-origin: ${window.location.origin})`;
+  }
+
+  function initApiBase() {
+    const cfgApi = (window.__HARNESS_API_BASE__ || '').trim();
+    const qsApi = new URLSearchParams(window.location.search).get('api');
+    if (qsApi !== null) {
+      setApiBase(qsApi);
+      return;
+    }
+    setApiBase(localStorage.getItem(API_STORAGE_KEY) || cfgApi || '');
+  }
+
+  function saveApiBase() {
+    const v = document.getElementById('api-base-input').value;
+    setApiBase(v);
+    checkHealth();
+    loadCaptureSource();
+    loadRuns();
+  }
+
+  function resetApiBase() {
+    setApiBase('');
+    checkHealth();
+    loadCaptureSource();
+    loadRuns();
+  }
 
   function toImageSrc(imageValue) {
     if (!imageValue || typeof imageValue !== 'string') return '';
@@ -289,9 +341,12 @@
   }
 
   async function api(path, method = 'GET', body = null) {
+    if (!apiBase && isStaticHostMode()) {
+      throw new Error('Controller API is not configured. Set the Controller API URL in footer and click Save.');
+    }
     const opts = { method, headers: { 'Content-Type': 'application/json' } };
     if (body) opts.body = JSON.stringify(body);
-    const resp = await fetch(API + path, opts);
+    const resp = await fetch(apiBase + path, opts);
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({ detail: resp.statusText }));
       throw new Error(err.detail || resp.statusText);
@@ -302,13 +357,13 @@
   async function checkHealth() {
     try {
       const data = await api('/health');
-      document.getElementById('health-status').textContent = `✓ Connected (${data.status})`;
+      document.getElementById('health-status').textContent = `✓ Controller connected (${data.status})`;
       document.getElementById('health-status').style.color = '#4ade80';
       const badge = document.getElementById('mode-badge');
       if (data.mock_mode) { badge.textContent = 'MOCK MODE'; badge.className = 'badge mock'; }
       else { badge.textContent = 'LIVE'; badge.className = 'badge'; }
     } catch (e) {
-      document.getElementById('health-status').textContent = '✗ Disconnected';
+      document.getElementById('health-status').textContent = '✗ Controller disconnected';
       document.getElementById('health-status').style.color = '#f87171';
     }
   }
@@ -341,7 +396,7 @@
   }
 
   function startHdmiStream() {
-    const url = `${API}/stream/hdmi?ts=${Date.now()}`;
+    const url = `${apiBase}/stream/hdmi?ts=${Date.now()}`;
     document.getElementById('hdmi-stream-container').innerHTML =
       `<img id="hdmi-stream-img" src="${url}" alt="HDMI stream" />`;
     document.getElementById('stream-toggle-btn').textContent = '■ Stop Stream';
@@ -491,6 +546,7 @@
   }
 
   // Init
+  initApiBase();
   checkHealth();
   loadRuns();
   loadCaptureSource();
