@@ -28,6 +28,10 @@ To add a new transport backend (MQTT, HTTP, WebSocket …):
 
 The *only* class that needs user wiring is :class:`MQTTTransport`.
 """
+from __future__ import annotations
+
+import asyncio
+import json
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -195,22 +199,149 @@ class MQTTTransport(DABTransportBase):
     def __init__(self, broker: str = "localhost", port: int = 1883) -> None:
         self._broker = broker
         self._port = port
-        logger.warning(
-            "MQTTTransport: broker=%s port=%d — transport not yet implemented. "
-            "Implement MQTTTransport.send() in dab/transport.py to enable "
-            "real DAB device communication. See class docstring for instructions.",
+        self._send_lock = asyncio.Lock()
+        logger.info(
+            "MQTTTransport configured: broker=%s port=%d",
             broker,
             port,
         )
 
+    def _import_aiomqtt(self):
+        """Import aiomqtt lazily so mock mode works without this dependency."""
+        try:
+            import aiomqtt  # type: ignore
+            return aiomqtt
+        except Exception as exc:  # pragma: no cover - depends on environment
+            raise NotImplementedError(
+                "MQTTTransport requires 'aiomqtt'. Install it with: pip install aiomqtt"
+            ) from exc
+
     async def send(self, request: TransportRequest) -> TransportResponse:
-        """Not implemented — see class docstring for wiring instructions."""
-        raise NotImplementedError(
-            "MQTTTransport.send() is not implemented. "
-            "See the MQTTTransport class docstring in dab/transport.py for "
-            "step-by-step wiring instructions, or set DAB_MOCK_MODE=true to "
-            "use MockDABClient instead."
+        """Publish request and wait for one correlated response message."""
+        aiomqtt = self._import_aiomqtt()
+        legacy_response_topic = request.topic + "/response"
+        compliance_response_topic = f"dab/_response/{request.topic}"
+        response_topic = compliance_response_topic
+
+        outbound_payload: Dict[str, Any] = dict(request.payload)
+        outbound_payload.setdefault("requestId", request.request_id)
+        outbound_json = json.dumps(outbound_payload, ensure_ascii=False)
+
+        logger.info(
+            "MQTT send: broker=%s:%d topic=%s response_topic=%s request_id=%s",
+            self._broker,
+            self._port,
+            request.topic,
+            response_topic,
+            request.request_id,
         )
+
+        try:
+            async with self._send_lock:
+                try:
+                    import paho.mqtt.client as paho_mqtt  # type: ignore
+                    client = aiomqtt.Client(
+                        hostname=self._broker,
+                        port=self._port,
+                        protocol=paho_mqtt.MQTTv5,
+                    )
+                except Exception:
+                    client = aiomqtt.Client(hostname=self._broker, port=self._port)
+
+                async with client:
+                    await client.subscribe(response_topic)
+                    await client.subscribe(legacy_response_topic)
+
+                    publish_kwargs: Dict[str, Any] = {
+                        "payload": outbound_json,
+                    }
+
+                    # Prefer MQTT v5 response-topic so bridges can reply on a
+                    # deterministic per-request topic.
+                    try:
+                        from paho.mqtt.packettypes import PacketTypes
+                        from paho.mqtt.properties import Properties
+
+                        props = Properties(PacketTypes.PUBLISH)
+                        props.ResponseTopic = response_topic
+                        publish_kwargs["properties"] = props
+                    except Exception:
+                        # Fallback to payload-only publish when MQTT v5 properties
+                        # are unavailable in the runtime environment.
+                        pass
+
+                    await client.publish(request.topic, **publish_kwargs)
+
+                    async with asyncio.timeout(request.timeout):
+                        async for message in client.messages:
+                            message_topic = str(getattr(message, "topic", response_topic))
+                            raw_payload = getattr(message, "payload", b"{}")
+
+                            if isinstance(raw_payload, (bytes, bytearray)):
+                                payload_text = raw_payload.decode("utf-8", errors="replace")
+                            else:
+                                payload_text = str(raw_payload)
+
+                            logger.info(
+                                "MQTT recv: topic=%s request_id=%s payload=%s",
+                                message_topic,
+                                request.request_id,
+                                payload_text,
+                            )
+
+                            try:
+                                payload_obj = json.loads(payload_text)
+                            except json.JSONDecodeError as exc:
+                                raise DABTransportError(
+                                    f"Invalid JSON response on topic {message_topic}: {payload_text!r}"
+                                ) from exc
+
+                            if not isinstance(payload_obj, dict):
+                                raise DABTransportError(
+                                    f"Invalid response payload type on topic {message_topic}: "
+                                    f"{type(payload_obj).__name__}"
+                                )
+
+                            response_request_id = str(
+                                payload_obj.get("requestId", request.request_id)
+                            )
+                            if response_request_id != request.request_id:
+                                logger.debug(
+                                    "MQTT ignoring unmatched response: expected_request_id=%s "
+                                    "got_request_id=%s topic=%s",
+                                    request.request_id,
+                                    response_request_id,
+                                    message_topic,
+                                )
+                                continue
+
+                            status_raw = payload_obj.get("status", 200)
+                            try:
+                                status = int(status_raw)
+                            except (TypeError, ValueError):
+                                status = 200
+
+                            return TransportResponse(
+                                topic=message_topic,
+                                payload=payload_obj,
+                                request_id=response_request_id,
+                                status=status,
+                            )
+
+                    raise asyncio.TimeoutError(
+                        "Timed out waiting for MQTT response on "
+                        f"{response_topic}, {legacy_response_topic}, "
+                        f"or {compliance_response_topic}"
+                    )
+
+        except asyncio.TimeoutError:
+            raise
+        except NotImplementedError:
+            raise
+        except Exception as exc:
+            raise DABTransportError(
+                f"MQTT request failed topic={request.topic} request_id={request.request_id}: {exc}"
+            ) from exc
 
     async def close(self) -> None:
         """No-op until the transport is implemented."""

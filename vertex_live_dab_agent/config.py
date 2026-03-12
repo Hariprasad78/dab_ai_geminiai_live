@@ -1,7 +1,21 @@
-"""Centralized configuration loaded from environment variables."""
+"""Centralized configuration loaded from environment variables.
+
+If ``python-dotenv`` is installed, a local ``.env`` file is loaded
+automatically once at import time.
+"""
 import os
 from dataclasses import dataclass, field
 from typing import Optional
+
+try:
+    from dotenv import load_dotenv
+except Exception:  # pragma: no cover - optional dependency
+    load_dotenv = None
+
+
+if load_dotenv is not None:
+    # Keep existing exported env vars as source of truth.
+    load_dotenv(override=False)
 
 
 @dataclass

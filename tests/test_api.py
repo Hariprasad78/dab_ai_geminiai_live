@@ -3,6 +3,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 import vertex_live_dab_agent.config as cfg_mod
+import vertex_live_dab_agent.api.api as api_mod
 from vertex_live_dab_agent.api.api import app, _runs, _run_tasks, _dab_client, _planner
 
 
@@ -11,9 +12,14 @@ def reset_api_state(tmp_path, monkeypatch):
     """Clear shared API state and point artifacts to a temp dir before each test."""
     _runs.clear()
     _run_tasks.clear()
+    api_mod._dab_client = None
+    api_mod._planner = None
     monkeypatch.setenv("ARTIFACTS_BASE_DIR", str(tmp_path))
+    monkeypatch.setenv("DAB_MOCK_MODE", "true")
     cfg_mod.reset_config()
     yield
+    api_mod._dab_client = None
+    api_mod._planner = None
     cfg_mod.reset_config()
 
 

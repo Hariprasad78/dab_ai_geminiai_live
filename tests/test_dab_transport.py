@@ -172,11 +172,11 @@ def test_mqtt_transport_constructs_without_raising():
 
 
 @pytest.mark.asyncio
-async def test_mqtt_transport_send_raises_not_implemented():
-    """MQTTTransport.send() raises NotImplementedError until wired."""
+async def test_mqtt_transport_send_handles_unavailable_backend_or_connection_error():
+    """MQTTTransport.send() should fail cleanly when backend/broker is unavailable."""
     transport = MQTTTransport()
-    req = TransportRequest(topic="dab/dev/t", payload={}, request_id="x")
-    with pytest.raises(NotImplementedError, match="MQTTTransport.send\\(\\) is not implemented"):
+    req = TransportRequest(topic="dab/dev/t", payload={}, request_id="x", timeout=0.1)
+    with pytest.raises((NotImplementedError, DABTransportError)):
         await transport.send(req)
 
 
@@ -370,9 +370,14 @@ async def test_adapter_succeeds_after_transient_failures():
 
 
 @pytest.mark.asyncio
-async def test_adapter_does_not_retry_not_implemented():
+async def test_adapter_does_not_retry_not_implemented(monkeypatch):
     """AdapterDABClient must NOT retry NotImplementedError from transport."""
-    transport = MQTTTransport()  # send() raises NotImplementedError
+    transport = MQTTTransport()
+    monkeypatch.setattr(
+        transport,
+        "_import_aiomqtt",
+        lambda: (_ for _ in ()).throw(NotImplementedError("aiomqtt missing")),
+    )
     client = AdapterDABClient(
         transport=transport,
         device_id="d",

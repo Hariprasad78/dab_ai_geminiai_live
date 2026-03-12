@@ -1,11 +1,44 @@
 """Screenshot capture and OCR integration."""
 import base64
 import logging
+import re
 from typing import Optional
 
 from vertex_live_dab_agent.dab.client import DABClientBase
 
 logger = logging.getLogger(__name__)
+
+
+def extract_output_image_b64(payload: dict) -> Optional[str]:
+    """Extract a normalized base64 PNG string from a DAB output/image payload.
+
+    Supports both legacy and compliance-suite field names:
+    - ``image``
+    - ``outputImage``
+
+    Also accepts ``data:image/...;base64,`` URIs and normalizes missing base64
+    padding.
+    """
+    if not isinstance(payload, dict):
+        return None
+
+    raw = payload.get("image") or payload.get("outputImage")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+
+    value = raw.strip()
+    if value.startswith("data:image/"):
+        comma = value.find(",")
+        if comma != -1:
+            value = value[comma + 1 :]
+
+    # Remove whitespace/newlines and fix base64 padding.
+    value = re.sub(r"\s+", "", value)
+    remainder = len(value) % 4
+    if remainder:
+        value += "=" * (4 - remainder)
+
+    return value or None
 
 
 class CaptureResult:
@@ -36,7 +69,7 @@ class ScreenCapture:
         """Capture screenshot via DAB."""
         try:
             resp = await self._dab.capture_screenshot()
-            image_b64 = resp.data.get("image") if resp.success else None
+            image_b64 = extract_output_image_b64(resp.data) if resp.success else None
             ocr_text = None
             if image_b64 and self._ocr_available:
                 ocr_text = self._run_ocr(image_b64)

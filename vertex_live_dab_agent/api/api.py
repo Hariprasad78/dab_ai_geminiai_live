@@ -23,6 +23,7 @@ from vertex_live_dab_agent.api.models import (
     StartRunRequest,
     StartRunResponse,
 )
+from vertex_live_dab_agent.capture.capture import extract_output_image_b64
 from vertex_live_dab_agent.config import get_config
 from vertex_live_dab_agent.dab.client import DABClientBase, create_dab_client
 from vertex_live_dab_agent.dab.topics import KEY_MAP
@@ -231,7 +232,7 @@ async def capture_screenshot() -> dict:
     """Capture a screenshot from the device right now."""
     try:
         resp = await get_dab_client().capture_screenshot()
-        return {"success": resp.success, "image_b64": resp.data.get("image")}
+        return {"success": resp.success, "image_b64": extract_output_image_b64(resp.data)}
     except Exception as exc:
         logger.error("Screenshot capture failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))

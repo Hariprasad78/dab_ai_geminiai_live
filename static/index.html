@@ -179,6 +179,13 @@
   let selectedRunId = null;
   let pollInterval = null;
 
+  function toImageSrc(imageValue) {
+    if (!imageValue || typeof imageValue !== 'string') return '';
+    const v = imageValue.trim();
+    if (v.startsWith('data:image/')) return v;
+    return `data:image/png;base64,${v}`;
+  }
+
   async function api(path, method = 'GET', body = null) {
     const opts = { method, headers: { 'Content-Type': 'application/json' } };
     if (body) opts.body = JSON.stringify(body);
@@ -251,8 +258,9 @@
       if (data.has_screenshot) {
         try {
           const ss = await api(`/run/${selectedRunId}/screenshot`);
+          const src = toImageSrc(ss.image_b64);
           document.getElementById('screenshot-container').innerHTML =
-            `<img id="screenshot-img" src="data:image/png;base64,${ss.image_b64}" alt="screenshot" />`;
+            `<img id="screenshot-img" src="${src}" alt="screenshot" />`;
         } catch (_) {}
       }
 
@@ -301,8 +309,9 @@
     try {
       const data = await api('/screenshot', 'POST');
       if (data.image_b64) {
+        const src = toImageSrc(data.image_b64);
         document.getElementById('screenshot-container').innerHTML =
-          `<img id="screenshot-img" src="data:image/png;base64,${data.image_b64}" alt="screenshot" />`;
+          `<img id="screenshot-img" src="${src}" alt="screenshot" />`;
       }
       document.getElementById('manual-result').textContent = '✓ Screenshot captured';
       document.getElementById('manual-result').style.color = '#4ade80';
