@@ -10,7 +10,7 @@ from vertex_live_dab_agent.dab.client import DABClientBase, create_dab_client
 from vertex_live_dab_agent.dab.topics import KEY_MAP
 from vertex_live_dab_agent.orchestrator.run_state import RunState, RunStatus
 from vertex_live_dab_agent.planner.planner import Planner
-from vertex_live_dab_agent.planner.schemas import ActionType
+from vertex_live_dab_agent.planner.schemas import ActionType, PlannedAction
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +96,7 @@ class Orchestrator:
         # Small pause between steps
         await asyncio.sleep(0.5)
 
-    async def _execute_action(self, state: RunState, planned) -> bool:
+    async def _execute_action(self, state: RunState, planned: PlannedAction) -> bool:
         """Execute the planned action via DAB."""
         action = planned.action
         params = planned.params or {}

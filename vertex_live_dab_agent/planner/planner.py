@@ -168,7 +168,12 @@ class Planner:
             text = response_text.strip()
             if text.startswith("```"):
                 lines = text.split("\n")
-                text = "\n".join(lines[1:-1])
+                # Only strip fences when both opening and closing are present
+                if len(lines) >= 3 and lines[-1].strip() == "```":
+                    text = "\n".join(lines[1:-1])
+                else:
+                    # Strip just the opening fence line
+                    text = "\n".join(lines[1:])
             data = json.loads(text)
             return PlannedAction(**data)
         except Exception as exc:
