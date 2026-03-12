@@ -206,7 +206,7 @@
       const runs = await api('/runs');
       const el = document.getElementById('run-list');
       if (!runs.length) { el.innerHTML = '<div class="empty-state">No runs yet.</div>'; return; }
-      el.innerHTML = runs.reverse().map(r => `
+      el.innerHTML = runs.map(r => `
         <div class="run-item ${r.run_id === selectedRunId ? 'selected' : ''}" onclick="selectRun('${r.run_id}')">
           <div class="run-goal">${escHtml(r.goal)}</div>
           <div class="run-meta">

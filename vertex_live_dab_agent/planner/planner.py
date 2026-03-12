@@ -144,7 +144,7 @@ class Planner:
                 confidence=0.9,
                 reason="No prior context - capturing screenshot to observe current state",
             )
-        if last_actions and last_actions[-1] == ActionType.CAPTURE_SCREENSHOT:
+        if last_actions and last_actions[-1] == ActionType.CAPTURE_SCREENSHOT.value:
             return PlannedAction(
                 action=ActionType.GET_STATE,
                 confidence=0.8,
@@ -163,16 +163,22 @@ class Planner:
         )
 
     def _parse_action(self, response_text: str) -> PlannedAction:
-        """Parse action JSON from model response."""
+        """Parse action JSON from model response.
+
+        Handles raw JSON as well as JSON wrapped in markdown code fences
+        (e.g. triple-backtick json ... triple-backtick).
+        """
         try:
             text = response_text.strip()
             if text.startswith("```"):
                 lines = text.split("\n")
-                # Only strip fences when both opening and closing are present
+                # First line should be ``` or ```json – skip it
+                if not lines[0].strip().lstrip("`").lower() in ("", "json"):
+                    logger.warning("Unexpected opening fence: %s", lines[0])
+                # Strip fences only when the closing fence is present
                 if len(lines) >= 3 and lines[-1].strip() == "```":
                     text = "\n".join(lines[1:-1])
                 else:
-                    # Strip just the opening fence line
                     text = "\n".join(lines[1:])
             data = json.loads(text)
             return PlannedAction(**data)

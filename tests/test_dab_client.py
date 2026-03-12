@@ -86,9 +86,9 @@ def test_create_dab_client_mock_mode():
     """create_dab_client should return MockDABClient in mock mode."""
     import os
     os.environ["DAB_MOCK_MODE"] = "true"
-    # Reset singleton
-    import vertex_live_dab_agent.config as cfg_mod
-    cfg_mod._config = None
+    # Reset singleton so the new env var is picked up
+    from vertex_live_dab_agent.config import reset_config
+    reset_config()
     client = create_dab_client()
     assert isinstance(client, MockDABClient)
-    cfg_mod._config = None
+    reset_config()

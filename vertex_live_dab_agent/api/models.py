@@ -1,19 +1,27 @@
 """Pydantic request/response models for the API."""
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class StartRunRequest(BaseModel):
     goal: str
     app_id: Optional[str] = None
-    max_steps: Optional[int] = None
+    max_steps: Optional[int] = Field(default=None, gt=0, description="Override max steps for this run")
 
 
 class StartRunResponse(BaseModel):
     run_id: str
     status: str
     goal: str
+
+
+class RunSummaryItem(BaseModel):
+    run_id: str
+    goal: str
+    status: str
+    step_count: int
+    started_at: Optional[str] = None
 
 
 class RunStatusResponse(BaseModel):
@@ -29,6 +37,24 @@ class RunStatusResponse(BaseModel):
     finished_at: Optional[str] = None
     error: Optional[str] = None
     has_screenshot: bool = False
+    artifacts_dir: Optional[str] = None
+
+
+class ActionRecordItem(BaseModel):
+    step: int
+    action: str
+    params: Optional[Dict[str, Any]] = None
+    confidence: float
+    reason: str
+    result: str
+    timestamp: str
+
+
+class ActionHistoryResponse(BaseModel):
+    run_id: str
+    goal: str
+    action_count: int
+    actions: List[ActionRecordItem]
 
 
 class ManualActionRequest(BaseModel):
@@ -72,3 +98,4 @@ class ConfigSummaryResponse(BaseModel):
     dab_device_id: str
     max_steps_per_run: int
     artifacts_base_dir: str
+    log_level: str

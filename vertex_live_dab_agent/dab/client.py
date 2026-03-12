@@ -1,4 +1,20 @@
-"""DAB client abstraction with mock and adapter interface."""
+"""DAB client abstraction with mock and real-device adapter interface.
+
+Extension guide
+---------------
+To connect to a real Android TV / Google TV device you need to implement
+:class:`MQTTDABClient` (or write an HTTP adapter that subclasses
+:class:`DABClientBase`).
+
+Steps:
+1. Install an async MQTT library, e.g. ``pip install aiomqtt``.
+2. In :class:`MQTTDABClient.__init__`, create and connect the MQTT client.
+3. Implement each abstract method:  publish a request payload to the resolved
+   topic, subscribe to the response topic, await the reply, and return a
+   :class:`DABResponse`.
+4. Set ``DAB_MOCK_MODE=false`` in your ``.env`` and the factory function
+   :func:`create_dab_client` will return your real client automatically.
+"""
 import asyncio
 import logging
 import uuid
@@ -65,11 +81,14 @@ class DABClientBase(ABC):
 
 
 class MockDABClient(DABClientBase):
-    """Mock DAB client for local development and testing."""
+    """Mock DAB client for local development and testing.
+
+    All operations succeed immediately with simulated 50 ms latency.
+    Screenshots return a 1×1 white PNG placeholder.
+    """
 
     def __init__(self) -> None:
         self._config = get_config()
-        self._call_count: Dict[str, int] = {}
 
     async def launch_app(self, app_id: str, parameters: Optional[Dict[str, Any]] = None) -> DABResponse:
         await self._simulate_latency()
@@ -140,36 +159,67 @@ class MockDABClient(DABClientBase):
 
 
 class MQTTDABClient(DABClientBase):
-    """
-    Real DAB client using MQTT transport.
+    """Real DAB client using MQTT transport.
 
-    TODO: Implement with actual MQTT library (e.g., aiomqtt or paho-mqtt).
-    This is a stub/adapter interface. Replace with real MQTT implementation
-    when connecting to actual Android TV / Google TV devices.
+    **This is a stub.** Implement the methods below when connecting to a real
+    MQTT broker.  See the module docstring for a step-by-step guide.
+
+    Required config (from environment variables):
+        ``DAB_MQTT_BROKER``   – hostname / IP of the MQTT broker
+        ``DAB_MQTT_PORT``     – port (default 1883)
+        ``DAB_DEVICE_ID``     – DAB device identifier
+        ``DAB_REQUEST_TIMEOUT`` – seconds to wait for a response
+
+    Typical MQTT flow for each command::
+
+        topic_req  = format_topic(TOPIC_INPUT_KEY_PRESS, device_id)
+        topic_resp = topic_req + "/response"
+        payload    = json.dumps({"keyCode": key_code})
+
+        await mqtt_client.publish(topic_req, payload)
+        response_msg = await asyncio.wait_for(
+            mqtt_client.messages.__anext__(), timeout=request_timeout
+        )
+        return DABResponse(
+            success=response_msg.payload["status"] == 200,
+            status=response_msg.payload["status"],
+            data=response_msg.payload,
+            topic=topic_req,
+            request_id=str(uuid.uuid4()),
+        )
     """
 
     def __init__(self) -> None:
         self._config = get_config()
-        # TODO: Initialize actual MQTT client
-        # self._mqtt = aiomqtt.Client(...)
+        # TODO: Replace the line below with real MQTT client initialisation.
+        # Example using aiomqtt:
+        #   self._broker = self._config.dab_mqtt_broker
+        #   self._port   = self._config.dab_mqtt_port
+        #   self._client = aiomqtt.Client(hostname=self._broker, port=self._port)
         raise NotImplementedError(
-            "MQTTDABClient requires a real MQTT broker. "
-            "Set DAB_MOCK_MODE=true to use the mock client."
+            "MQTTDABClient is not yet implemented. "
+            "See the module docstring for a step-by-step integration guide, "
+            "or set DAB_MOCK_MODE=true to use the mock client instead."
         )
 
-    async def launch_app(self, app_id: str, parameters: Optional[Dict[str, Any]] = None) -> DABResponse:
+    async def launch_app(self, app_id: str, parameters: Optional[Dict[str, Any]] = None) -> "DABResponse":
+        # TODO: publish to format_topic(TOPIC_APPLICATIONS_LAUNCH, device_id)
         raise NotImplementedError
 
-    async def get_app_state(self, app_id: str) -> DABResponse:
+    async def get_app_state(self, app_id: str) -> "DABResponse":
+        # TODO: publish to format_topic(TOPIC_APPLICATIONS_GET_STATE, device_id)
         raise NotImplementedError
 
-    async def key_press(self, key_code: str) -> DABResponse:
+    async def key_press(self, key_code: str) -> "DABResponse":
+        # TODO: publish to format_topic(TOPIC_INPUT_KEY_PRESS, device_id)
         raise NotImplementedError
 
-    async def capture_screenshot(self) -> DABResponse:
+    async def capture_screenshot(self) -> "DABResponse":
+        # TODO: publish to format_topic(TOPIC_OUTPUT_IMAGE, device_id)
         raise NotImplementedError
 
     async def close(self) -> None:
+        # TODO: disconnect MQTT client
         raise NotImplementedError
 
 

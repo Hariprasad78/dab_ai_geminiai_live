@@ -60,5 +60,6 @@ async def run_agent() -> None:
 
 if __name__ == "__main__":
     from vertex_live_dab_agent.artifacts.logger import setup_logging
-    setup_logging()
+    config = get_config()
+    setup_logging(config.log_level)
     asyncio.run(run_agent())

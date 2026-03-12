@@ -2,7 +2,19 @@
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from vertex_live_dab_agent.api.api import app
+import vertex_live_dab_agent.config as cfg_mod
+from vertex_live_dab_agent.api.api import app, _runs, _run_tasks, _dab_client, _planner
+
+
+@pytest.fixture(autouse=True)
+def reset_api_state(tmp_path, monkeypatch):
+    """Clear shared API state and point artifacts to a temp dir before each test."""
+    _runs.clear()
+    _run_tasks.clear()
+    monkeypatch.setenv("ARTIFACTS_BASE_DIR", str(tmp_path))
+    cfg_mod.reset_config()
+    yield
+    cfg_mod.reset_config()
 
 
 @pytest.fixture
@@ -29,6 +41,7 @@ async def test_config_summary(client):
     assert "dab_mock_mode" in data
     assert "vertex_live_model" in data
     assert "max_steps_per_run" in data
+    assert "log_level" in data
 
 
 @pytest.mark.asyncio
@@ -109,6 +122,13 @@ async def test_start_run(client):
 
 
 @pytest.mark.asyncio
+async def test_start_run_with_max_steps(client):
+    resp = await client.post("/run/start", json={"goal": "Navigate menu", "max_steps": 5})
+    assert resp.status_code == 200
+    assert "run_id" in resp.json()
+
+
+@pytest.mark.asyncio
 async def test_get_run_status_after_start(client):
     start_resp = await client.post("/run/start", json={"goal": "Test goal"})
     run_id = start_resp.json()["run_id"]
@@ -118,14 +138,50 @@ async def test_get_run_status_after_start(client):
     data = status_resp.json()
     assert data["run_id"] == run_id
     assert data["goal"] == "Test goal"
+    assert "has_screenshot" in data
+    assert "artifacts_dir" in data
+
+
+@pytest.mark.asyncio
+async def test_get_run_history(client):
+    start_resp = await client.post("/run/start", json={"goal": "History test"})
+    run_id = start_resp.json()["run_id"]
+    hist_resp = await client.get(f"/run/{run_id}/history")
+    assert hist_resp.status_code == 200
+    data = hist_resp.json()
+    assert data["run_id"] == run_id
+    assert "action_count" in data
+    assert "actions" in data
+    assert isinstance(data["actions"], list)
+
+
+@pytest.mark.asyncio
+async def test_get_run_history_not_found(client):
+    resp = await client.get("/run/no-such-run/history")
+    assert resp.status_code == 404
 
 
 @pytest.mark.asyncio
 async def test_screenshot_not_found_for_run(client):
     start_resp = await client.post("/run/start", json={"goal": "Test screenshot"})
     run_id = start_resp.json()["run_id"]
-    # The run starts fresh with no screenshot before it runs
     # The screenshot may or may not be present depending on async timing
-    # Just check it returns either 200 or 404
     resp = await client.get(f"/run/{run_id}/screenshot")
     assert resp.status_code in (200, 404)
+
+
+@pytest.mark.asyncio
+async def test_list_runs_returns_summary_items(client):
+    await client.post("/run/start", json={"goal": "Run A"})
+    await client.post("/run/start", json={"goal": "Run B"})
+    resp = await client.get("/runs")
+    assert resp.status_code == 200
+    runs = resp.json()
+    assert isinstance(runs, list)
+    assert len(runs) >= 2
+    # Each item should have the summary fields
+    for r in runs:
+        assert "run_id" in r
+        assert "goal" in r
+        assert "status" in r
+        assert "step_count" in r

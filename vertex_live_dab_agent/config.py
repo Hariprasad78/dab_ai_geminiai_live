@@ -36,6 +36,9 @@ class Config:
     api_host: str = field(default_factory=lambda: os.environ.get("API_HOST", "0.0.0.0"))
     api_port: int = field(default_factory=lambda: int(os.environ.get("API_PORT", "8000")))
 
+    # Logging
+    log_level: str = field(default_factory=lambda: os.environ.get("LOG_LEVEL", "INFO"))
+
 
 _config: Optional[Config] = None
 
@@ -46,3 +49,9 @@ def get_config() -> Config:
     if _config is None:
         _config = Config()
     return _config
+
+
+def reset_config() -> None:
+    """Reset the singleton (useful in tests when env vars change)."""
+    global _config
+    _config = None
