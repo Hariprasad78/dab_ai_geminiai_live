@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vertex-live-dab-agent"
+version = "1.0.0"
+description = "AI-driven Android TV testing tool using Vertex AI + LiveKit + DAB"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.29.0",
+    "pydantic>=2.7.0",
+    "httpx>=0.27.0",
+]
+
+[project.optional-dependencies]
+vertex = [
+    "google-cloud-aiplatform>=1.57.0",
+    "google-auth>=2.29.0",
+]
+livekit = [
+    "livekit-agents>=0.8.0",
+]
+ocr = [
+    "pytesseract>=0.3.10",
+    "Pillow>=10.3.0",
+]
+dev = [
+    "pytest>=8.2.0",
+    "pytest-asyncio>=0.23.6",
+    "httpx>=0.27.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["vertex_live_dab_agent*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

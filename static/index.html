@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vertex Live DAB Agent</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
+    header { background: #1e293b; padding: 1rem 2rem; border-bottom: 1px solid #334155; display: flex; align-items: center; gap: 1rem; }
+    header h1 { font-size: 1.25rem; font-weight: 600; color: #f8fafc; }
+    .badge { background: #0ea5e9; color: white; font-size: 0.7rem; padding: 0.2rem 0.5rem; border-radius: 9999px; font-weight: 600; }
+    .badge.mock { background: #f59e0b; }
+    main { max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+    .card { background: #1e293b; border: 1px solid #334155; border-radius: 0.75rem; padding: 1.5rem; }
+    .card h2 { font-size: 0.9rem; font-weight: 600; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 1rem; }
+    label { display: block; font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.35rem; }
+    input, textarea, select {
+      width: 100%; background: #0f172a; border: 1px solid #334155; border-radius: 0.5rem;
+      color: #e2e8f0; padding: 0.6rem 0.75rem; font-size: 0.9rem; outline: none;
+    }
+    input:focus, textarea:focus { border-color: #0ea5e9; }
+    textarea { resize: vertical; min-height: 60px; }
+    button {
+      background: #0ea5e9; color: white; border: none; border-radius: 0.5rem;
+      padding: 0.6rem 1.2rem; font-size: 0.9rem; font-weight: 600; cursor: pointer;
+      transition: background 0.15s;
+    }
+    button:hover { background: #0284c7; }
+    button.danger { background: #ef4444; }
+    button.danger:hover { background: #dc2626; }
+    button.secondary { background: #334155; }
+    button.secondary:hover { background: #475569; }
+    .btn-row { display: flex; gap: 0.5rem; margin-top: 0.75rem; flex-wrap: wrap; }
+    .status-pill {
+      display: inline-block; font-size: 0.75rem; font-weight: 600; padding: 0.2rem 0.6rem;
+      border-radius: 9999px;
+    }
+    .PENDING { background: #334155; color: #94a3b8; }
+    .RUNNING { background: #0369a1; color: #bae6fd; }
+    .DONE { background: #166534; color: #86efac; }
+    .FAILED { background: #7f1d1d; color: #fca5a5; }
+    .TIMEOUT { background: #78350f; color: #fcd34d; }
+    .ERROR { background: #7f1d1d; color: #fca5a5; }
+    .STOPPED { background: #374151; color: #9ca3af; }
+    #run-list { display: flex; flex-direction: column; gap: 0.6rem; max-height: 380px; overflow-y: auto; }
+    .run-item {
+      background: #0f172a; border: 1px solid #334155; border-radius: 0.5rem;
+      padding: 0.75rem 1rem; cursor: pointer; transition: border-color 0.15s;
+    }
+    .run-item:hover { border-color: #0ea5e9; }
+    .run-item.selected { border-color: #0ea5e9; background: #0c1a2e; }
+    .run-goal { font-size: 0.9rem; font-weight: 500; margin-bottom: 0.3rem; }
+    .run-meta { font-size: 0.75rem; color: #64748b; }
+    #detail-panel { grid-column: 1 / -1; }
+    .detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0.75rem; margin-bottom: 1rem; }
+    .stat { background: #0f172a; border: 1px solid #334155; border-radius: 0.5rem; padding: 0.75rem 1rem; }
+    .stat-label { font-size: 0.75rem; color: #64748b; margin-bottom: 0.2rem; }
+    .stat-value { font-size: 1.1rem; font-weight: 600; color: #f1f5f9; }
+    #action-log { max-height: 220px; overflow-y: auto; font-family: monospace; font-size: 0.8rem; color: #94a3b8; }
+    .log-line { padding: 0.15rem 0; border-bottom: 1px solid #1e293b; }
+    .log-line .PASS { color: #4ade80; }
+    .log-line .FAIL { color: #f87171; }
+    #screenshot-img { max-width: 100%; border-radius: 0.5rem; border: 1px solid #334155; }
+    .key-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.4rem; max-width: 220px; }
+    .key-grid button { padding: 0.5rem; font-size: 0.8rem; }
+    .full-width { grid-column: 1 / -1; }
+    #status-bar { text-align: center; font-size: 0.75rem; color: #475569; margin-top: 0.5rem; }
+    .empty-state { color: #475569; font-size: 0.85rem; text-align: center; padding: 1.5rem; }
+    .error-msg { color: #f87171; font-size: 0.8rem; margin-top: 0.5rem; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>🤖 Vertex Live DAB Agent</h1>
+  <span class="badge mock" id="mode-badge">MOCK</span>
+  <span style="margin-left:auto; font-size:0.8rem; color:#475569;" id="health-status">Connecting...</span>
+</header>
+
+<main>
+  <!-- Start Run -->
+  <div class="card">
+    <h2>New Run</h2>
+    <label>Goal</label>
+    <textarea id="goal-input" placeholder="e.g. Launch Netflix and verify home screen loads"></textarea>
+    <label style="margin-top:0.75rem;">App ID (optional)</label>
+    <input id="app-id-input" placeholder="e.g. com.netflix.ninja" />
+    <div class="btn-row">
+      <button onclick="startRun()">▶ Start Run</button>
+    </div>
+    <div class="error-msg" id="start-error"></div>
+  </div>
+
+  <!-- Manual Controls -->
+  <div class="card">
+    <h2>Manual Controls</h2>
+    <div class="key-grid">
+      <div></div>
+      <button onclick="sendKey('PRESS_UP')">▲ Up</button>
+      <div></div>
+      <button onclick="sendKey('PRESS_LEFT')">◀ Left</button>
+      <button onclick="sendKey('PRESS_OK')">OK</button>
+      <button onclick="sendKey('PRESS_RIGHT')">Right ▶</button>
+      <div></div>
+      <button onclick="sendKey('PRESS_DOWN')">▼ Down</button>
+      <div></div>
+    </div>
+    <div class="btn-row" style="margin-top:0.75rem;">
+      <button class="secondary" onclick="sendKey('PRESS_BACK')">↩ Back</button>
+      <button class="secondary" onclick="sendKey('PRESS_HOME')">⌂ Home</button>
+      <button class="secondary" onclick="captureScreenshot()">📷 Screenshot</button>
+    </div>
+    <div id="manual-result" style="margin-top:0.75rem; font-size:0.8rem; color:#64748b;"></div>
+  </div>
+
+  <!-- Run List -->
+  <div class="card">
+    <h2>Runs <button class="secondary" style="float:right; font-size:0.7rem; padding:0.2rem 0.5rem;" onclick="loadRuns()">↻ Refresh</button></h2>
+    <div id="run-list"><div class="empty-state">No runs yet. Start a run above.</div></div>
+  </div>
+
+  <!-- Screenshot -->
+  <div class="card">
+    <h2>Latest Screenshot</h2>
+    <div id="screenshot-container">
+      <div class="empty-state">No screenshot captured yet.</div>
+    </div>
+  </div>
+
+  <!-- Run Detail -->
+  <div class="card full-width" id="detail-panel" style="display:none;">
+    <h2>Run Detail <span id="detail-run-id" style="font-weight:400; color:#475569; font-size:0.8rem;"></span>
+      <button class="danger" style="float:right; font-size:0.7rem; padding:0.25rem 0.6rem;" onclick="stopRun()">■ Stop</button>
+    </h2>
+    <div class="detail-grid">
+      <div class="stat"><div class="stat-label">Status</div><div class="stat-value" id="d-status">-</div></div>
+      <div class="stat"><div class="stat-label">Steps</div><div class="stat-value" id="d-steps">-</div></div>
+      <div class="stat"><div class="stat-label">Retries</div><div class="stat-value" id="d-retries">-</div></div>
+      <div class="stat"><div class="stat-label">Current App</div><div class="stat-value" id="d-app" style="font-size:0.85rem;">-</div></div>
+      <div class="stat"><div class="stat-label">Screen</div><div class="stat-value" id="d-screen" style="font-size:0.85rem;">-</div></div>
+    </div>
+    <label>Action Log</label>
+    <div id="action-log"><div class="empty-state">No actions yet.</div></div>
+  </div>
+
+  <!-- Planner Debug -->
+  <div class="card full-width">
+    <h2>Planner Debug</h2>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:1rem;">
+      <div>
+        <label>Goal</label>
+        <input id="debug-goal" placeholder="e.g. Open settings" />
+        <label style="margin-top:0.5rem;">OCR Text (optional)</label>
+        <textarea id="debug-ocr" placeholder="Text visible on screen..."></textarea>
+        <label style="margin-top:0.5rem;">Current App</label>
+        <input id="debug-app" placeholder="e.g. launcher" />
+        <div class="btn-row">
+          <button onclick="debugPlanner()">🧠 Plan Next Action</button>
+        </div>
+      </div>
+      <div>
+        <label>Result</label>
+        <div id="debug-result" style="background:#0f172a; border:1px solid #334155; border-radius:0.5rem; padding:0.75rem; min-height:120px; font-family:monospace; font-size:0.85rem; white-space:pre-wrap; color:#86efac;">
+          Run planner to see result...
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<div id="status-bar">API: <span id="api-url">http://localhost:8000</span></div>
+
+<script>
+  const API = '';  // Same origin; change to 'http://localhost:8000' for dev
+  let selectedRunId = null;
+  let pollInterval = null;
+
+  async function api(path, method = 'GET', body = null) {
+    const opts = { method, headers: { 'Content-Type': 'application/json' } };
+    if (body) opts.body = JSON.stringify(body);
+    const resp = await fetch(API + path, opts);
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+      throw new Error(err.detail || resp.statusText);
+    }
+    return resp.json();
+  }
+
+  async function checkHealth() {
+    try {
+      const data = await api('/health');
+      document.getElementById('health-status').textContent = `✓ Connected (${data.status})`;
+      document.getElementById('health-status').style.color = '#4ade80';
+      const badge = document.getElementById('mode-badge');
+      if (data.mock_mode) { badge.textContent = 'MOCK MODE'; badge.className = 'badge mock'; }
+      else { badge.textContent = 'LIVE'; badge.className = 'badge'; }
+    } catch (e) {
+      document.getElementById('health-status').textContent = '✗ Disconnected';
+      document.getElementById('health-status').style.color = '#f87171';
+    }
+  }
+
+  async function loadRuns() {
+    try {
+      const runs = await api('/runs');
+      const el = document.getElementById('run-list');
+      if (!runs.length) { el.innerHTML = '<div class="empty-state">No runs yet.</div>'; return; }
+      el.innerHTML = runs.reverse().map(r => `
+        <div class="run-item ${r.run_id === selectedRunId ? 'selected' : ''}" onclick="selectRun('${r.run_id}')">
+          <div class="run-goal">${escHtml(r.goal)}</div>
+          <div class="run-meta">
+            <span class="status-pill ${r.status}">${r.status}</span>
+            &nbsp; ${r.step_count} steps &nbsp;·&nbsp; ${r.run_id.slice(0, 8)}…
+          </div>
+        </div>
+      `).join('');
+    } catch (e) { console.error(e); }
+  }
+
+  async function selectRun(runId) {
+    selectedRunId = runId;
+    document.getElementById('detail-panel').style.display = '';
+    document.getElementById('detail-run-id').textContent = runId;
+    await refreshRunDetail();
+    if (pollInterval) clearInterval(pollInterval);
+    pollInterval = setInterval(refreshRunDetail, 2000);
+    loadRuns();
+  }
+
+  async function refreshRunDetail() {
+    if (!selectedRunId) return;
+    try {
+      const data = await api(`/run/${selectedRunId}/status`);
+      document.getElementById('d-status').innerHTML = `<span class="status-pill ${data.status}">${data.status}</span>`;
+      document.getElementById('d-steps').textContent = data.step_count;
+      document.getElementById('d-retries').textContent = data.retries;
+      document.getElementById('d-app').textContent = data.current_app || '-';
+      document.getElementById('d-screen').textContent = data.current_screen || '-';
+
+      const log = document.getElementById('action-log');
+      if (data.last_actions && data.last_actions.length) {
+        log.innerHTML = data.last_actions.map(a => `<div class="log-line">${escHtml(a)}</div>`).join('');
+      } else {
+        log.innerHTML = '<div class="empty-state">No actions yet.</div>';
+      }
+
+      if (data.has_screenshot) {
+        try {
+          const ss = await api(`/run/${selectedRunId}/screenshot`);
+          document.getElementById('screenshot-container').innerHTML =
+            `<img id="screenshot-img" src="data:image/png;base64,${ss.image_b64}" alt="screenshot" />`;
+        } catch (_) {}
+      }
+
+      if (['DONE', 'FAILED', 'TIMEOUT', 'ERROR', 'STOPPED'].includes(data.status)) {
+        clearInterval(pollInterval);
+      }
+    } catch (e) { console.error(e); }
+  }
+
+  async function startRun() {
+    const goal = document.getElementById('goal-input').value.trim();
+    const appId = document.getElementById('app-id-input').value.trim();
+    const errEl = document.getElementById('start-error');
+    if (!goal) { errEl.textContent = 'Goal is required.'; return; }
+    errEl.textContent = '';
+    try {
+      const body = { goal };
+      if (appId) body.app_id = appId;
+      const data = await api('/run/start', 'POST', body);
+      await loadRuns();
+      selectRun(data.run_id);
+    } catch (e) { errEl.textContent = e.message; }
+  }
+
+  async function stopRun() {
+    if (!selectedRunId) return;
+    try {
+      await api(`/run/${selectedRunId}/stop`, 'POST');
+      refreshRunDetail();
+    } catch (e) { console.error(e); }
+  }
+
+  async function sendKey(action) {
+    const el = document.getElementById('manual-result');
+    try {
+      const data = await api('/action', 'POST', { action });
+      el.textContent = `✓ ${action}: ${JSON.stringify(data.result)}`;
+      el.style.color = '#4ade80';
+    } catch (e) {
+      el.textContent = `✗ ${e.message}`;
+      el.style.color = '#f87171';
+    }
+  }
+
+  async function captureScreenshot() {
+    try {
+      const data = await api('/screenshot', 'POST');
+      if (data.image_b64) {
+        document.getElementById('screenshot-container').innerHTML =
+          `<img id="screenshot-img" src="data:image/png;base64,${data.image_b64}" alt="screenshot" />`;
+      }
+      document.getElementById('manual-result').textContent = '✓ Screenshot captured';
+      document.getElementById('manual-result').style.color = '#4ade80';
+    } catch (e) {
+      document.getElementById('manual-result').textContent = `✗ ${e.message}`;
+      document.getElementById('manual-result').style.color = '#f87171';
+    }
+  }
+
+  async function debugPlanner() {
+    const goal = document.getElementById('debug-goal').value.trim();
+    if (!goal) { document.getElementById('debug-result').textContent = 'Goal is required.'; return; }
+    try {
+      const body = {
+        goal,
+        ocr_text: document.getElementById('debug-ocr').value || null,
+        current_app: document.getElementById('debug-app').value || null,
+      };
+      const data = await api('/planner/debug', 'POST', body);
+      document.getElementById('debug-result').textContent = JSON.stringify(data, null, 2);
+    } catch (e) {
+      document.getElementById('debug-result').textContent = `Error: ${e.message}`;
+      document.getElementById('debug-result').style.color = '#f87171';
+    }
+  }
+
+  function escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  // Init
+  checkHealth();
+  loadRuns();
+  setInterval(checkHealth, 30000);
+  setInterval(loadRuns, 5000);
+</script>
+</body>
+</html>

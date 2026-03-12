@@ -1,0 +1,140 @@
+"""Main orchestration loop: observe -> plan -> act -> verify -> repeat."""
+import asyncio
+import logging
+from typing import Optional
+
+from vertex_live_dab_agent.capture.capture import ScreenCapture
+from vertex_live_dab_agent.capture.validator import ValidationResult, Validator
+from vertex_live_dab_agent.config import get_config
+from vertex_live_dab_agent.dab.client import DABClientBase, create_dab_client
+from vertex_live_dab_agent.dab.topics import KEY_MAP
+from vertex_live_dab_agent.orchestrator.run_state import RunState, RunStatus
+from vertex_live_dab_agent.planner.planner import Planner
+from vertex_live_dab_agent.planner.schemas import ActionType
+
+logger = logging.getLogger(__name__)
+
+
+class Orchestrator:
+    """Runs the observe-plan-act-verify loop."""
+
+    def __init__(
+        self,
+        dab_client: Optional[DABClientBase] = None,
+        planner: Optional[Planner] = None,
+    ) -> None:
+        self._config = get_config()
+        self._dab = dab_client or create_dab_client()
+        self._planner = planner or Planner()
+        self._capture = ScreenCapture(self._dab)
+        self._validator = Validator()
+
+    async def run(self, state: RunState) -> RunState:
+        """Execute the full run loop."""
+        state.start()
+        logger.info("Run started: run_id=%s goal=%s", state.run_id, state.goal)
+        try:
+            while state.status == RunStatus.RUNNING:
+                if state.step_count >= self._config.max_steps_per_run:
+                    state.finish(RunStatus.TIMEOUT, "Max steps exceeded")
+                    break
+                await self._step(state)
+        except asyncio.CancelledError:
+            state.finish(RunStatus.STOPPED, "Run cancelled")
+            logger.info("Run cancelled: run_id=%s", state.run_id)
+        except Exception as exc:
+            state.finish(RunStatus.ERROR, str(exc))
+            logger.error("Run error: run_id=%s error=%s", state.run_id, exc, exc_info=True)
+        finally:
+            logger.info("Run finished: run_id=%s status=%s", state.run_id, state.status)
+        return state
+
+    async def _step(self, state: RunState) -> None:
+        """Execute a single observe-plan-act-verify step."""
+        # Observe
+        capture_result = await self._capture.capture()
+        state.latest_screenshot_b64 = capture_result.image_b64
+        state.latest_ocr_text = capture_result.ocr_text
+
+        # Plan
+        planned = await self._planner.plan(
+            goal=state.goal,
+            screenshot_b64=state.latest_screenshot_b64,
+            ocr_text=state.latest_ocr_text,
+            current_app=state.current_app,
+            current_screen=state.current_screen,
+            last_actions=state.last_actions,
+            retry_count=state.retries,
+        )
+        logger.info(
+            "Planner decision: run_id=%s action=%s confidence=%.2f reason=%s",
+            state.run_id, planned.action, planned.confidence, planned.reason,
+        )
+
+        # Handle terminal actions
+        if planned.action == ActionType.DONE:
+            state.record_action(planned.action, planned.params, planned.confidence, planned.reason, "PASS")
+            state.finish(RunStatus.DONE)
+            return
+        if planned.action == ActionType.FAILED:
+            state.record_action(planned.action, planned.params, planned.confidence, planned.reason, "FAIL")
+            state.finish(RunStatus.FAILED, planned.reason)
+            return
+
+        # Act
+        action_success = await self._execute_action(state, planned)
+
+        # Record
+        validation = self._validator.map_action_outcome(action_success, timed_out=False)
+        state.record_action(
+            planned.action, planned.params, planned.confidence, planned.reason, validation.value
+        )
+
+        if not action_success:
+            state.retries += 1
+
+        # Small pause between steps
+        await asyncio.sleep(0.5)
+
+    async def _execute_action(self, state: RunState, planned) -> bool:
+        """Execute the planned action via DAB."""
+        action = planned.action
+        params = planned.params or {}
+        try:
+            if action in KEY_MAP:
+                resp = await self._dab.key_press(KEY_MAP[action])
+                return resp.success
+            elif action == ActionType.LAUNCH_APP:
+                app_id = params.get("app_id", "")
+                if not app_id:
+                    logger.warning("LAUNCH_APP missing app_id param")
+                    return False
+                resp = await self._dab.launch_app(app_id)
+                state.current_app = app_id
+                return resp.success
+            elif action == ActionType.GET_STATE:
+                app_id = state.current_app or params.get("app_id", "")
+                resp = await self._dab.get_app_state(app_id)
+                if resp.success:
+                    state.current_app = resp.data.get("appId", state.current_app)
+                    state.current_screen = resp.data.get("state")
+                return resp.success
+            elif action == ActionType.CAPTURE_SCREENSHOT:
+                capture = await self._capture.capture()
+                state.latest_screenshot_b64 = capture.image_b64
+                state.latest_ocr_text = capture.ocr_text
+                return capture.image_b64 is not None
+            elif action == ActionType.WAIT:
+                seconds = params.get("seconds", 1)
+                await asyncio.sleep(float(seconds))
+                return True
+            elif action == ActionType.NEED_BETTER_VIEW:
+                capture = await self._capture.capture()
+                state.latest_screenshot_b64 = capture.image_b64
+                return True
+            else:
+                logger.warning("Unknown action: %s", action)
+                return False
+        except Exception as exc:
+            logger.error("Action execution failed: action=%s error=%s", action, exc)
+            return False
