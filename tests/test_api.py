@@ -4,7 +4,7 @@ from httpx import ASGITransport, AsyncClient
 
 import vertex_live_dab_agent.config as cfg_mod
 import vertex_live_dab_agent.api.api as api_mod
-from vertex_live_dab_agent.api.api import app, _runs, _run_tasks, _dab_client, _planner
+from vertex_live_dab_agent.api.api import app, _runs, _run_tasks, _dab_client, _planner, _screen_capture
 
 
 @pytest.fixture(autouse=True)
@@ -14,12 +14,14 @@ def reset_api_state(tmp_path, monkeypatch):
     _run_tasks.clear()
     api_mod._dab_client = None
     api_mod._planner = None
+    api_mod._screen_capture = None
     monkeypatch.setenv("ARTIFACTS_BASE_DIR", str(tmp_path))
     monkeypatch.setenv("DAB_MOCK_MODE", "true")
     cfg_mod.reset_config()
     yield
     api_mod._dab_client = None
     api_mod._planner = None
+    api_mod._screen_capture = None
     cfg_mod.reset_config()
 
 
@@ -45,9 +47,20 @@ async def test_config_summary(client):
     assert resp.status_code == 200
     data = resp.json()
     assert "dab_mock_mode" in data
+    assert "image_source" in data
     assert "vertex_live_model" in data
     assert "max_steps_per_run" in data
     assert "log_level" in data
+
+
+@pytest.mark.asyncio
+async def test_capture_source_status(client):
+    resp = await client.get("/capture/source")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "configured_source" in data
+    assert "hdmi_available" in data
+    assert "hdmi_configured" in data
 
 
 @pytest.mark.asyncio

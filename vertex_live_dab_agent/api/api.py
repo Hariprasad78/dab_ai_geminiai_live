@@ -7,11 +7,12 @@ from typing import Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from vertex_live_dab_agent.api.models import (
     ActionHistoryResponse,
     ActionRecordItem,
+    CaptureSourceResponse,
     ConfigSummaryResponse,
     HealthResponse,
     ManualActionRequest,
@@ -23,7 +24,7 @@ from vertex_live_dab_agent.api.models import (
     StartRunRequest,
     StartRunResponse,
 )
-from vertex_live_dab_agent.capture.capture import extract_output_image_b64
+from vertex_live_dab_agent.capture.capture import ScreenCapture
 from vertex_live_dab_agent.config import get_config
 from vertex_live_dab_agent.dab.client import DABClientBase, create_dab_client
 from vertex_live_dab_agent.dab.topics import KEY_MAP
@@ -61,6 +62,7 @@ _runs: Dict[str, RunState] = {}
 _run_tasks: Dict[str, asyncio.Task] = {}
 _dab_client: Optional[DABClientBase] = None
 _planner: Optional[Planner] = None
+_screen_capture: Optional[ScreenCapture] = None
 
 
 def get_dab_client() -> DABClientBase:
@@ -77,6 +79,14 @@ def get_planner() -> Planner:
     if _planner is None:
         _planner = Planner()
     return _planner
+
+
+def get_screen_capture() -> ScreenCapture:
+    """Return (or lazily create) the singleton capture service."""
+    global _screen_capture
+    if _screen_capture is None:
+        _screen_capture = ScreenCapture(get_dab_client())
+    return _screen_capture
 
 
 # ---------------------------------------------------------------------------
@@ -115,11 +125,19 @@ async def config_summary() -> ConfigSummaryResponse:
         google_cloud_location=c.google_cloud_location,
         vertex_live_model=c.vertex_live_model,
         dab_mock_mode=c.dab_mock_mode,
+        image_source=c.image_source,
         dab_device_id=c.dab_device_id,
         max_steps_per_run=c.max_steps_per_run,
         artifacts_base_dir=c.artifacts_base_dir,
         log_level=c.log_level,
     )
+
+
+@app.get("/capture/source", response_model=CaptureSourceResponse)
+async def capture_source() -> CaptureSourceResponse:
+    """Return capture source mode and HDMI availability diagnostics."""
+    status = get_screen_capture().capture_source_status()
+    return CaptureSourceResponse(**status)
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +156,7 @@ async def start_run(request: StartRunRequest) -> StartRunResponse:
     orchestrator = Orchestrator(
         dab_client=get_dab_client(),
         planner=get_planner(),
+        capture=get_screen_capture(),
         max_steps=request.max_steps,  # None → uses config default
     )
     task = asyncio.create_task(orchestrator.run(state))
@@ -231,11 +250,49 @@ async def stop_run(run_id: str) -> dict:
 async def capture_screenshot() -> dict:
     """Capture a screenshot from the device right now."""
     try:
-        resp = await get_dab_client().capture_screenshot()
-        return {"success": resp.success, "image_b64": extract_output_image_b64(resp.data)}
+        result = await get_screen_capture().capture()
+        return {
+            "success": result.image_b64 is not None,
+            "image_b64": result.image_b64,
+            "source": result.source,
+            "ocr_text": result.ocr_text,
+        }
     except Exception as exc:
         logger.error("Screenshot capture failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/stream/hdmi")
+async def stream_hdmi() -> StreamingResponse:
+    """MJPEG stream from HDMI capture card for browser live preview."""
+    config = get_config()
+    capture = get_screen_capture()
+    status = capture.capture_source_status()
+
+    if not status.get("hdmi_configured"):
+        raise HTTPException(
+            status_code=400,
+            detail="HDMI capture is disabled. Set IMAGE_SOURCE=auto or IMAGE_SOURCE=hdmi-capture.",
+        )
+
+    async def frame_generator():
+        boundary = b"--frame\r\n"
+        while True:
+            frame = capture.get_hdmi_stream_frame_jpeg(quality=config.hdmi_stream_jpeg_quality)
+            if frame is None:
+                await asyncio.sleep(0.2)
+                continue
+            headers = (
+                b"Content-Type: image/jpeg\r\n"
+                + f"Content-Length: {len(frame)}\r\n\r\n".encode("ascii")
+            )
+            yield boundary + headers + frame + b"\r\n"
+            await asyncio.sleep(0.03)
+
+    return StreamingResponse(
+        frame_generator(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+    )
 
 
 @app.post("/action", response_model=ManualActionResponse)

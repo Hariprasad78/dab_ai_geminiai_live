@@ -5,7 +5,7 @@ AI-driven Android TV / Google TV automated testing tool using **Vertex AI (Gemin
 ## Overview
 
 The agent runs an **observe → plan → act → verify** loop:
-1. **Observe** – Captures a screenshot via DAB and optionally runs OCR
+1. **Observe** – Captures a screenshot from **HDMI capture card** (preferred when available) or DAB, and optionally runs OCR
 2. **Plan** – Uses Vertex AI (Gemini) or a heuristic planner to decide the next action
 3. **Act** – Sends the action to the TV device via DAB (key press, app launch, etc.)
 4. **Verify** – Validates the outcome semantically or deterministically
@@ -115,6 +115,13 @@ pytest tests/ -v
 | `DAB_MQTT_PORT` | `1883` | MQTT broker port |
 | `DAB_DEVICE_ID` | `mock-device` | DAB device identifier |
 | `DAB_REQUEST_TIMEOUT` | `10.0` | DAB response timeout (seconds) |
+| `IMAGE_SOURCE` | `auto` | Capture source: `auto`, `hdmi-capture`, or `dab` |
+| `HDMI_CAPTURE_DEVICE` | `` | V4L2 path (e.g. `/dev/video2`); auto-detected when empty |
+| `HDMI_CAPTURE_WIDTH` | `1920` | Requested HDMI capture width |
+| `HDMI_CAPTURE_HEIGHT` | `1080` | Requested HDMI capture height |
+| `HDMI_CAPTURE_FPS` | `30.0` | Requested HDMI capture FPS |
+| `HDMI_CAPTURE_FOURCC` | `MJPG` | FOURCC codec (`MJPG` or `YUYV`) |
+| `HDMI_STREAM_JPEG_QUALITY` | `80` | JPEG quality for browser live stream |
 
 ## API Endpoints
 
@@ -123,6 +130,7 @@ pytest tests/ -v
 | `GET` | `/` | Browser UI (static/index.html) |
 | `GET` | `/health` | Health check |
 | `GET` | `/config` | Configuration summary (non-sensitive) |
+| `GET` | `/capture/source` | Capture source diagnostics (HDMI availability, active mode) |
 | `POST` | `/run/start` | Start a new automation run |
 | `GET` | `/runs` | List all runs (most-recent first) |
 | `GET` | `/run/{id}/status` | Get run status |
@@ -131,6 +139,7 @@ pytest tests/ -v
 | `POST` | `/run/{id}/stop` | Stop a running run |
 | `POST` | `/action` | Execute a manual action |
 | `POST` | `/screenshot` | Capture a screenshot now |
+| `GET` | `/stream/hdmi` | Live MJPEG stream from HDMI capture card |
 | `POST` | `/planner/debug` | Debug the planner |
 
 ### Example: Start a run
@@ -186,6 +195,30 @@ sudo apt install tesseract-ocr   # or: brew install tesseract
 ```
 
 OCR is silently disabled if `pytesseract` is not installed.
+
+### HDMI capture card mode (optional)
+
+```bash
+pip install -e ".[dev,hdmi]"
+
+# Auto-select first working /dev/video* and prefer HDMI for screenshots
+export IMAGE_SOURCE=auto
+
+# Or force a specific device
+export IMAGE_SOURCE=hdmi-capture
+export HDMI_CAPTURE_DEVICE=/dev/video2
+```
+
+When HDMI is active, both AI step screenshots and manual `/screenshot` requests
+use the HDMI frame source, and the UI can display the live stream from
+`/stream/hdmi`.
+
+For local desktop preview/testing of the capture card:
+
+```bash
+python capture_view.py --list
+python capture_view.py --device /dev/video2
+```
 
 ### Artifacts
 

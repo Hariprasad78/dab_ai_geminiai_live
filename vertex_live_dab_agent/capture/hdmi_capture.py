@@ -1,0 +1,210 @@
+"""HDMI/V4L2 capture helpers used by the agent and web preview."""
+
+from __future__ import annotations
+
+import base64
+import glob
+import logging
+import re
+import threading
+from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+
+class HdmiCaptureError(Exception):
+    """Raised for HDMI capture open/read/encode errors."""
+
+
+def _import_cv2() -> Any:
+    try:
+        import cv2  # type: ignore
+
+        return cv2
+    except Exception as exc:  # pragma: no cover - optional dependency
+        raise HdmiCaptureError(
+            "OpenCV is required for HDMI capture. Install: pip install opencv-python-headless"
+        ) from exc
+
+
+class HdmiCaptureSession:
+    """Small wrapper around OpenCV VideoCapture for HDMI-to-USB cards."""
+
+    def __init__(
+        self,
+        device: str,
+        width: int = 1920,
+        height: int = 1080,
+        fps: float = 30.0,
+        fourcc: str = "MJPG",
+    ) -> None:
+        self.device = device
+        self.width = int(width)
+        self.height = int(height)
+        self.fps = float(fps)
+        self.fourcc = (fourcc or "MJPG").upper()
+
+        self._cv2: Optional[Any] = None
+        self._cap: Optional[Any] = None
+        self._lock = threading.Lock()
+        self._last_error: Optional[str] = None
+
+    def open(self) -> bool:
+        """Open the configured V4L2 device and apply capture settings."""
+        with self._lock:
+            if self._cap is not None:
+                return True
+
+            try:
+                cv2 = _import_cv2()
+                self._cv2 = cv2
+
+                cap = self._open_capture_with_fallbacks(cv2)
+                if not cap or not cap.isOpened():
+                    self._last_error = f"Unable to open capture device: {self.device}"
+                    return False
+
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+                cap.set(cv2.CAP_PROP_FPS, self.fps)
+                if len(self.fourcc) == 4:
+                    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*self.fourcc))
+
+                self._cap = cap
+                self._last_error = None
+                return True
+            except Exception as exc:
+                self._last_error = str(exc)
+                logger.warning("HDMI open failed: %s", exc)
+                return False
+
+    def _open_capture_with_fallbacks(self, cv2: Any) -> Optional[Any]:
+        """Try path/index + backend combinations for better Linux OpenCV compatibility."""
+        cap_v4l2 = getattr(cv2, "CAP_V4L2", None)
+
+        index: Optional[int] = None
+        m = re.match(r"^/dev/video(\d+)$", str(self.device).strip())
+        if m:
+            index = int(m.group(1))
+
+        candidates: List[tuple[Any, Optional[int]]] = []
+        # Prefer exact device path first.
+        candidates.append((self.device, cap_v4l2))
+        candidates.append((self.device, None))
+        # Some OpenCV builds with V4L2 open by index only.
+        if index is not None:
+            candidates.append((index, cap_v4l2))
+            candidates.append((index, None))
+
+        for source, backend in candidates:
+            cap = cv2.VideoCapture(source, backend) if backend is not None else cv2.VideoCapture(source)
+            if cap and cap.isOpened():
+                return cap
+            try:
+                cap.release()
+            except Exception:
+                pass
+
+        return None
+
+    def close(self) -> None:
+        """Release the capture device."""
+        with self._lock:
+            if self._cap is not None:
+                try:
+                    self._cap.release()
+                except Exception:
+                    pass
+                self._cap = None
+
+    def read_frame(self) -> Optional[Any]:
+        """Read one frame from the HDMI input."""
+        with self._lock:
+            if self._cap is None and not self.open():
+                return None
+
+            assert self._cap is not None
+            ok, frame = self._cap.read()
+            if not ok or frame is None:
+                self._last_error = "Failed to read frame"
+                return None
+            return frame
+
+    def capture_png_base64(self) -> Optional[str]:
+        """Capture one frame and return as base64 PNG."""
+        frame = self.read_frame()
+        if frame is None:
+            return None
+
+        cv2 = self._cv2 or _import_cv2()
+        ok, encoded = cv2.imencode(".png", frame)
+        if not ok:
+            self._last_error = "Failed to encode frame as PNG"
+            return None
+        return base64.b64encode(encoded.tobytes()).decode("ascii")
+
+    def capture_jpeg_bytes(self, quality: int = 80) -> Optional[bytes]:
+        """Capture one frame and return as JPEG bytes."""
+        frame = self.read_frame()
+        if frame is None:
+            return None
+
+        cv2 = self._cv2 or _import_cv2()
+        quality = max(30, min(95, int(quality)))
+        ok, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
+        if not ok:
+            self._last_error = "Failed to encode frame as JPEG"
+            return None
+        return encoded.tobytes()
+
+    def device_info(self) -> Dict[str, float]:
+        """Return best-effort information about the active device."""
+        with self._lock:
+            if self._cap is None:
+                return {}
+            cv2 = self._cv2 or _import_cv2()
+            return {
+                "width": float(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                "height": float(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+                "fps": float(self._cap.get(cv2.CAP_PROP_FPS)),
+            }
+
+    @property
+    def last_error(self) -> Optional[str]:
+        return self._last_error
+
+
+def list_hdmi_devices(
+    fourcc: str = "MJPG",
+    width: int = 1280,
+    height: int = 720,
+    fps: float = 30.0,
+) -> List[Dict[str, float | str]]:
+    """Probe /dev/video* and return devices that can deliver at least one frame."""
+    devices: List[Dict[str, float | str]] = []
+    for dev in sorted(glob.glob("/dev/video*")):
+        sess = HdmiCaptureSession(
+            dev,
+            width=width,
+            height=height,
+            fps=fps,
+            fourcc=fourcc,
+        )
+        try:
+            if not sess.open():
+                continue
+            frame = sess.read_frame()
+            if frame is None:
+                continue
+            info = sess.device_info()
+            devices.append(
+                {
+                    "device": dev,
+                    "width": float(info.get("width", width)),
+                    "height": float(info.get("height", height)),
+                    "fps": float(info.get("fps", fps)),
+                }
+            )
+        finally:
+            sess.close()
+    return devices

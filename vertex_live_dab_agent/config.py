@@ -39,6 +39,15 @@ class Config:
     dab_request_timeout: float = field(default_factory=lambda: float(os.environ.get("DAB_REQUEST_TIMEOUT", "10.0")))
     dab_max_retries: int = field(default_factory=lambda: int(os.environ.get("DAB_MAX_RETRIES", "3")))
 
+    # Capture
+    image_source: str = field(default_factory=lambda: os.environ.get("IMAGE_SOURCE", "auto"))
+    hdmi_capture_device: str = field(default_factory=lambda: os.environ.get("HDMI_CAPTURE_DEVICE", ""))
+    hdmi_capture_width: int = field(default_factory=lambda: int(os.environ.get("HDMI_CAPTURE_WIDTH", "1920")))
+    hdmi_capture_height: int = field(default_factory=lambda: int(os.environ.get("HDMI_CAPTURE_HEIGHT", "1080")))
+    hdmi_capture_fps: float = field(default_factory=lambda: float(os.environ.get("HDMI_CAPTURE_FPS", "30.0")))
+    hdmi_capture_fourcc: str = field(default_factory=lambda: os.environ.get("HDMI_CAPTURE_FOURCC", "MJPG"))
+    hdmi_stream_jpeg_quality: int = field(default_factory=lambda: int(os.environ.get("HDMI_STREAM_JPEG_QUALITY", "80")))
+
     # Session
     session_timeout_seconds: int = field(default_factory=lambda: int(os.environ.get("SESSION_TIMEOUT_SECONDS", "300")))
     max_steps_per_run: int = field(default_factory=lambda: int(os.environ.get("MAX_STEPS_PER_RUN", "50")))

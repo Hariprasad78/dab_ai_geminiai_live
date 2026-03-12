@@ -23,12 +23,13 @@ class Orchestrator:
         self,
         dab_client: Optional[DABClientBase] = None,
         planner: Optional[Planner] = None,
+        capture: Optional[ScreenCapture] = None,
         max_steps: Optional[int] = None,
     ) -> None:
         self._config = get_config()
         self._dab = dab_client or create_dab_client()
         self._planner = planner or Planner()
-        self._capture = ScreenCapture(self._dab)
+        self._capture = capture or ScreenCapture(self._dab)
         self._validator = Validator()
         self._max_steps = max_steps if max_steps is not None else self._config.max_steps_per_run
 

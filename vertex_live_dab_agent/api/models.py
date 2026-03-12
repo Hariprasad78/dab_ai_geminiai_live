@@ -95,7 +95,16 @@ class ConfigSummaryResponse(BaseModel):
     google_cloud_location: str
     vertex_live_model: str
     dab_mock_mode: bool
+    image_source: str
     dab_device_id: str
     max_steps_per_run: int
     artifacts_base_dir: str
     log_level: str
+
+
+class CaptureSourceResponse(BaseModel):
+    configured_source: str
+    hdmi_configured: bool
+    hdmi_available: bool
+    hdmi_device: Optional[str] = None
+    hdmi_info: Dict[str, float] = Field(default_factory=dict)

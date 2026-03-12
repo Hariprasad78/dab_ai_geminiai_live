@@ -62,6 +62,20 @@
     .log-line .PASS { color: #4ade80; }
     .log-line .FAIL { color: #f87171; }
     #screenshot-img { max-width: 100%; border-radius: 0.5rem; border: 1px solid #334155; }
+    #hdmi-stream-img { max-width: 100%; border-radius: 0.5rem; border: 1px solid #334155; display: block; }
+    .remote-layout { display: grid; grid-template-columns: 1.1fr 1fr; gap: 1rem; align-items: start; }
+    .remote-panel { background: #0f172a; border: 1px solid #334155; border-radius: 0.6rem; padding: 0.8rem; }
+    .remote-grid { display: grid; grid-template-columns: repeat(4, minmax(58px, 1fr)); gap: 0.4rem; }
+    .key-btn { padding: 0.45rem 0.35rem; font-size: 0.75rem; }
+    .dpad-wrap { max-width: 260px; margin-bottom: 0.8rem; }
+    .num-grid { display: grid; grid-template-columns: repeat(3, minmax(56px, 1fr)); gap: 0.4rem; max-width: 210px; }
+    .color-grid { display: grid; grid-template-columns: repeat(4, minmax(56px, 1fr)); gap: 0.4rem; max-width: 300px; }
+    .k-red { background: #dc2626; }
+    .k-green { background: #16a34a; }
+    .k-yellow { background: #ca8a04; }
+    .k-blue { background: #2563eb; }
+    details.remote-optional { margin-top: 0.8rem; border-top: 1px dashed #334155; padding-top: 0.8rem; }
+    details.remote-optional > summary { cursor: pointer; color: #93c5fd; font-size: 0.8rem; margin-bottom: 0.6rem; }
     .key-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.4rem; max-width: 220px; }
     .key-grid button { padding: 0.5rem; font-size: 0.8rem; }
     .full-width { grid-column: 1 / -1; }
@@ -92,26 +106,113 @@
     <div class="error-msg" id="start-error"></div>
   </div>
 
-  <!-- Manual Controls -->
-  <div class="card">
-    <h2>Manual Controls</h2>
-    <div class="key-grid">
-      <div></div>
-      <button onclick="sendKey('PRESS_UP')">▲ Up</button>
-      <div></div>
-      <button onclick="sendKey('PRESS_LEFT')">◀ Left</button>
-      <button onclick="sendKey('PRESS_OK')">OK</button>
-      <button onclick="sendKey('PRESS_RIGHT')">Right ▶</button>
-      <div></div>
-      <button onclick="sendKey('PRESS_DOWN')">▼ Down</button>
-      <div></div>
+  <!-- Virtual Remote + HDMI Live Stream -->
+  <div class="card full-width">
+    <h2>Virtual Remote + HDMI Live Stream</h2>
+    <div class="remote-layout">
+      <div class="remote-panel">
+        <div style="font-size:0.8rem; color:#94a3b8; margin-bottom:0.75rem;" id="capture-source-info">
+          Checking capture source...
+        </div>
+        <div class="btn-row" style="margin-top:0; margin-bottom:0.75rem;">
+          <button class="secondary" id="stream-toggle-btn" onclick="toggleHdmiStream()">▶ Start Stream</button>
+          <button class="secondary" onclick="captureScreenshot()">📷 Screenshot</button>
+        </div>
+        <div id="hdmi-stream-container">
+          <div class="empty-state">HDMI stream is stopped.</div>
+        </div>
+      </div>
+
+      <div class="remote-panel">
+        <label style="margin-bottom:0.5rem;">Navigation</label>
+        <div class="key-grid dpad-wrap">
+          <div></div>
+          <button class="key-btn" onclick="sendKey('PRESS_UP')">▲ Up</button>
+          <div></div>
+          <button class="key-btn" onclick="sendKey('PRESS_LEFT')">◀ Left</button>
+          <button class="key-btn" onclick="sendKey('PRESS_OK')">OK</button>
+          <button class="key-btn" onclick="sendKey('PRESS_RIGHT')">Right ▶</button>
+          <div></div>
+          <button class="key-btn" onclick="sendKey('PRESS_DOWN')">▼ Down</button>
+          <div></div>
+        </div>
+
+        <div class="remote-grid" style="margin-bottom:0.8rem;">
+          <button class="key-btn secondary" onclick="sendKey('PRESS_BACK')">Back</button>
+          <button class="key-btn secondary" onclick="sendKey('PRESS_HOME')">Home</button>
+          <button class="key-btn secondary" onclick="sendKey('PRESS_MENU')">Menu</button>
+          <button class="key-btn secondary" onclick="sendKey('PRESS_EXIT')">Exit</button>
+          <button class="key-btn secondary" onclick="sendKey('PRESS_INFO')">Info</button>
+          <button class="key-btn secondary" onclick="sendKey('PRESS_GUIDE')">Guide</button>
+          <button class="key-btn danger" onclick="sendKey('PRESS_POWER')">Power</button>
+          <button class="key-btn secondary" onclick="sendKey('PRESS_MUTE')">Mute</button>
+        </div>
+
+        <label style="margin-bottom:0.5rem;">Volume / Channel</label>
+        <div class="remote-grid" style="margin-bottom:0.8rem;">
+          <button class="key-btn secondary" onclick="sendKey('PRESS_VOLUME_UP')">Vol +</button>
+          <button class="key-btn secondary" onclick="sendKey('PRESS_VOLUME_DOWN')">Vol -</button>
+          <button class="key-btn secondary" onclick="sendKey('PRESS_CHANNEL_UP')">Ch +</button>
+          <button class="key-btn secondary" onclick="sendKey('PRESS_CHANNEL_DOWN')">Ch -</button>
+        </div>
+
+        <label style="margin-bottom:0.5rem;">Media</label>
+        <div class="remote-grid" style="margin-bottom:0.8rem;">
+          <button class="key-btn secondary" onclick="sendKey('PRESS_PLAY_PAUSE')">Play/Pause</button>
+          <button class="key-btn secondary" onclick="sendKey('PRESS_PLAY')">Play</button>
+          <button class="key-btn secondary" onclick="sendKey('PRESS_PAUSE')">Pause</button>
+          <button class="key-btn secondary" onclick="sendKey('PRESS_STOP')">Stop</button>
+        </div>
+
+        <details class="remote-optional">
+          <summary>Show optional keys</summary>
+
+          <label style="margin-bottom:0.5rem;">Navigation (optional)</label>
+          <div class="remote-grid" style="margin-bottom:0.8rem;">
+            <button class="key-btn secondary" onclick="sendKey('PRESS_PAGE_UP')">Page +</button>
+            <button class="key-btn secondary" onclick="sendKey('PRESS_PAGE_DOWN')">Page -</button>
+            <button class="key-btn secondary" onclick="sendKey('PRESS_CAPTIONS')">Captions</button>
+          </div>
+
+          <label style="margin-bottom:0.5rem;">Media (optional)</label>
+          <div class="remote-grid" style="margin-bottom:0.8rem;">
+            <button class="key-btn secondary" onclick="sendKey('PRESS_RECORD')">Record</button>
+            <button class="key-btn secondary" onclick="sendKey('PRESS_REWIND')">Rew</button>
+            <button class="key-btn secondary" onclick="sendKey('PRESS_FAST_FORWARD')">Fwd</button>
+            <button class="key-btn secondary" onclick="sendKey('PRESS_SKIP_REWIND')">Skip Rew</button>
+            <button class="key-btn secondary" onclick="sendKey('PRESS_SKIP_FAST_FORWARD')">Skip Fwd</button>
+            <button class="key-btn secondary" onclick="sendKey('PRESS_PREVIOUS')">Prev</button>
+            <button class="key-btn secondary" onclick="sendKey('PRESS_NEXT')">Next</button>
+          </div>
+
+          <label style="margin-bottom:0.5rem;">Numbers</label>
+          <div class="num-grid" style="margin-bottom:0.8rem;">
+            <button class="key-btn secondary" onclick="sendKey('PRESS_1')">1</button>
+            <button class="key-btn secondary" onclick="sendKey('PRESS_2')">2</button>
+            <button class="key-btn secondary" onclick="sendKey('PRESS_3')">3</button>
+            <button class="key-btn secondary" onclick="sendKey('PRESS_4')">4</button>
+            <button class="key-btn secondary" onclick="sendKey('PRESS_5')">5</button>
+            <button class="key-btn secondary" onclick="sendKey('PRESS_6')">6</button>
+            <button class="key-btn secondary" onclick="sendKey('PRESS_7')">7</button>
+            <button class="key-btn secondary" onclick="sendKey('PRESS_8')">8</button>
+            <button class="key-btn secondary" onclick="sendKey('PRESS_9')">9</button>
+            <div></div>
+            <button class="key-btn secondary" onclick="sendKey('PRESS_0')">0</button>
+            <div></div>
+          </div>
+
+          <label style="margin-bottom:0.5rem;">Color Keys</label>
+          <div class="color-grid">
+            <button class="key-btn k-red" onclick="sendKey('PRESS_RED')">Red</button>
+            <button class="key-btn k-green" onclick="sendKey('PRESS_GREEN')">Green</button>
+            <button class="key-btn k-yellow" onclick="sendKey('PRESS_YELLOW')">Yellow</button>
+            <button class="key-btn k-blue" onclick="sendKey('PRESS_BLUE')">Blue</button>
+          </div>
+        </details>
+
+        <div id="manual-result" style="margin-top:0.75rem; font-size:0.8rem; color:#64748b;"></div>
+      </div>
     </div>
-    <div class="btn-row" style="margin-top:0.75rem;">
-      <button class="secondary" onclick="sendKey('PRESS_BACK')">↩ Back</button>
-      <button class="secondary" onclick="sendKey('PRESS_HOME')">⌂ Home</button>
-      <button class="secondary" onclick="captureScreenshot()">📷 Screenshot</button>
-    </div>
-    <div id="manual-result" style="margin-top:0.75rem; font-size:0.8rem; color:#64748b;"></div>
   </div>
 
   <!-- Run List -->
@@ -178,6 +279,7 @@
   const API = '';
   let selectedRunId = null;
   let pollInterval = null;
+  let hdmiStreamRunning = false;
 
   function toImageSrc(imageValue) {
     if (!imageValue || typeof imageValue !== 'string') return '';
@@ -209,6 +311,52 @@
       document.getElementById('health-status').textContent = '✗ Disconnected';
       document.getElementById('health-status').style.color = '#f87171';
     }
+  }
+
+  async function loadCaptureSource() {
+    const infoEl = document.getElementById('capture-source-info');
+    try {
+      const data = await api('/capture/source');
+      const mode = data.configured_source || 'auto';
+      if (data.hdmi_available) {
+        const device = data.hdmi_device || 'auto';
+        infoEl.textContent = `Capture source: ${mode} · HDMI ready (${device})`;
+        infoEl.style.color = '#86efac';
+      } else if (data.hdmi_configured) {
+        infoEl.textContent = `Capture source: ${mode} · HDMI not available (falling back to DAB in auto mode)`;
+        infoEl.style.color = '#fcd34d';
+      } else {
+        infoEl.textContent = `Capture source: ${mode} · HDMI disabled`;
+        infoEl.style.color = '#94a3b8';
+      }
+    } catch (e) {
+      infoEl.textContent = 'Failed to read capture source status';
+      infoEl.style.color = '#f87171';
+    }
+  }
+
+  function toggleHdmiStream() {
+    if (hdmiStreamRunning) stopHdmiStream();
+    else startHdmiStream();
+  }
+
+  function startHdmiStream() {
+    const url = `${API}/stream/hdmi?ts=${Date.now()}`;
+    document.getElementById('hdmi-stream-container').innerHTML =
+      `<img id="hdmi-stream-img" src="${url}" alt="HDMI stream" />`;
+    document.getElementById('stream-toggle-btn').textContent = '■ Stop Stream';
+    document.getElementById('stream-toggle-btn').className = 'danger';
+    hdmiStreamRunning = true;
+  }
+
+  function stopHdmiStream() {
+    const img = document.getElementById('hdmi-stream-img');
+    if (img) img.src = '';
+    document.getElementById('hdmi-stream-container').innerHTML =
+      '<div class="empty-state">HDMI stream is stopped.</div>';
+    document.getElementById('stream-toggle-btn').textContent = '▶ Start Stream';
+    document.getElementById('stream-toggle-btn').className = 'secondary';
+    hdmiStreamRunning = false;
   }
 
   async function loadRuns() {
@@ -345,8 +493,10 @@
   // Init
   checkHealth();
   loadRuns();
+  loadCaptureSource();
   setInterval(checkHealth, 30000);
   setInterval(loadRuns, 5000);
+  setInterval(loadCaptureSource, 10000);
 </script>
 </body>
 </html>
