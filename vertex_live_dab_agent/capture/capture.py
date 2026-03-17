@@ -2,6 +2,7 @@
 import base64
 import glob
 import logging
+import os
 import re
 import time
 from typing import Any, Dict, Optional
@@ -91,6 +92,12 @@ class ScreenCapture:
             candidates.extend([d for d in devs if d not in candidates])
 
         for device in candidates:
+            if not os.path.exists(device):
+                continue
+            if not os.access(device, os.R_OK | os.W_OK):
+                logger.info("Skipping HDMI device %s (insufficient permissions)", device)
+                continue
+
             session = HdmiCaptureSession(
                 device=device,
                 width=self._config.hdmi_capture_width,

@@ -57,12 +57,14 @@
     .stat { background: #0f172a; border: 1px solid #334155; border-radius: 0.5rem; padding: 0.75rem 1rem; }
     .stat-label { font-size: 0.75rem; color: #64748b; margin-bottom: 0.2rem; }
     .stat-value { font-size: 1.1rem; font-weight: 600; color: #f1f5f9; }
-    #action-log { max-height: 220px; overflow-y: auto; font-family: monospace; font-size: 0.8rem; color: #94a3b8; }
+    #action-log, #ai-log, #dab-log { max-height: 220px; overflow-y: auto; font-family: monospace; font-size: 0.8rem; color: #94a3b8; }
+    #friendly-log, #diagnosis-log, #narration-log { max-height: 240px; overflow-y: auto; font-size: 0.85rem; color: #cbd5e1; }
     .log-line { padding: 0.15rem 0; border-bottom: 1px solid #1e293b; }
     .log-line .PASS { color: #4ade80; }
     .log-line .FAIL { color: #f87171; }
     #screenshot-img { max-width: 100%; border-radius: 0.5rem; border: 1px solid #334155; }
     #hdmi-stream-img { max-width: 100%; border-radius: 0.5rem; border: 1px solid #334155; display: block; }
+    #audio-stream-player { width: 100%; margin-top: 0.6rem; }
     .remote-layout { display: grid; grid-template-columns: 1.1fr 1fr; gap: 1rem; align-items: start; }
     .remote-panel { background: #0f172a; border: 1px solid #334155; border-radius: 0.6rem; padding: 0.8rem; }
     .remote-grid { display: grid; grid-template-columns: repeat(4, minmax(58px, 1fr)); gap: 0.4rem; }
@@ -100,8 +102,8 @@
     <h2>New Run</h2>
     <label>Goal</label>
     <textarea id="goal-input" placeholder="e.g. Launch Netflix and verify home screen loads"></textarea>
-    <label style="margin-top:0.75rem;">App ID (optional)</label>
-    <input id="app-id-input" placeholder="e.g. com.netflix.ninja" />
+    <label style="margin-top:0.75rem;">App ID (optional, YouTube only)</label>
+    <input id="app-id-input" placeholder="youtube" />
     <div class="btn-row">
       <button onclick="startRun()">▶ Start Run</button>
     </div>
@@ -118,10 +120,14 @@
         </div>
         <div class="btn-row" style="margin-top:0; margin-bottom:0.75rem;">
           <button class="secondary" id="stream-toggle-btn" onclick="toggleHdmiStream()">▶ Start Stream</button>
+          <button class="secondary" id="audio-toggle-btn" onclick="toggleAudioStream()">🔊 Start Audio</button>
           <button class="secondary" onclick="captureScreenshot()">📷 Screenshot</button>
         </div>
         <div id="hdmi-stream-container">
           <div class="empty-state">HDMI stream is stopped.</div>
+        </div>
+        <div id="audio-stream-container">
+          <div class="empty-state" style="padding:0.5rem;">Audio stream is stopped.</div>
         </div>
       </div>
 
@@ -242,9 +248,25 @@
       <div class="stat"><div class="stat-label">Retries</div><div class="stat-value" id="d-retries">-</div></div>
       <div class="stat"><div class="stat-label">Current App</div><div class="stat-value" id="d-app" style="font-size:0.85rem;">-</div></div>
       <div class="stat"><div class="stat-label">Screen</div><div class="stat-value" id="d-screen" style="font-size:0.85rem;">-</div></div>
+      <div class="stat"><div class="stat-label">AI Logs</div><div class="stat-value" id="d-ai-count" style="font-size:0.85rem;">0</div></div>
+      <div class="stat"><div class="stat-label">DAB Logs</div><div class="stat-value" id="d-dab-count" style="font-size:0.85rem;">0</div></div>
+      <div class="stat"><div class="stat-label">Phase</div><div class="stat-value" id="d-phase" style="font-size:0.85rem;">-</div></div>
+      <div class="stat"><div class="stat-label">Intent</div><div class="stat-value" id="d-intent" style="font-size:0.85rem;">-</div></div>
     </div>
-    <label>Action Log</label>
+    <label>Current Batch</label>
+    <div id="batch-log"><div class="empty-state">No batch planned yet.</div></div>
+    <label style="margin-top:0.8rem;">Simple Step Explanations</label>
+    <div id="friendly-log"><div class="empty-state">No explanations yet.</div></div>
+    <label style="margin-top:0.8rem;">Final Diagnosis (Simple)</label>
+    <div id="diagnosis-log"><div class="empty-state">Diagnosis will appear when available.</div></div>
+    <label style="margin-top:0.8rem;">Voice Narration (Subtitles)</label>
+    <div id="narration-log"><div class="empty-state">No narration yet.</div></div>
+    <label>Action History (full)</label>
     <div id="action-log"><div class="empty-state">No actions yet.</div></div>
+    <label style="margin-top:0.8rem;">AI Transcript (full)</label>
+    <div id="ai-log"><div class="empty-state">No AI logs yet.</div></div>
+    <label style="margin-top:0.8rem;">DAB Transcript (full)</label>
+    <div id="dab-log"><div class="empty-state">No DAB logs yet.</div></div>
   </div>
 
   <!-- Planner Debug -->
@@ -287,6 +309,9 @@
   let selectedRunId = null;
   let pollInterval = null;
   let hdmiStreamRunning = false;
+  let hdmiAudioRunning = false;
+  let lastNarrationIdx = -1;
+  let currentNarrationAudio = null;
 
   function normalizeApiBase(v) {
     const s = (v || '').trim();
@@ -372,10 +397,17 @@
     const infoEl = document.getElementById('capture-source-info');
     try {
       const data = await api('/capture/source');
+      const ad = await api('/audio/source').catch(() => null);
       const mode = data.configured_source || 'auto';
       if (data.hdmi_available) {
         const device = data.hdmi_device || 'auto';
-        infoEl.textContent = `Capture source: ${mode} · HDMI ready (${device})`;
+        let msg = `Capture source: ${mode} · HDMI video ready (${device})`;
+        if (ad) {
+          msg += ad.enabled
+            ? ` · audio ${ad.device || 'auto'} ${ad.ffmpeg_available ? 'ready' : 'ffmpeg-missing'}`
+            : ' · audio disabled';
+        }
+        infoEl.textContent = msg;
         infoEl.style.color = '#86efac';
       } else if (data.hdmi_configured) {
         infoEl.textContent = `Capture source: ${mode} · HDMI not available (falling back to DAB in auto mode)`;
@@ -414,6 +446,33 @@
     hdmiStreamRunning = false;
   }
 
+  function toggleAudioStream() {
+    if (hdmiAudioRunning) stopAudioStream();
+    else startAudioStream();
+  }
+
+  function startAudioStream() {
+    const url = `${apiBase}/stream/audio?ts=${Date.now()}`;
+    document.getElementById('audio-stream-container').innerHTML =
+      `<audio id="audio-stream-player" controls autoplay src="${url}"></audio>`;
+    document.getElementById('audio-toggle-btn').textContent = '■ Stop Audio';
+    document.getElementById('audio-toggle-btn').className = 'danger';
+    hdmiAudioRunning = true;
+  }
+
+  function stopAudioStream() {
+    const p = document.getElementById('audio-stream-player');
+    if (p) {
+      try { p.pause(); } catch (_) {}
+      p.src = '';
+    }
+    document.getElementById('audio-stream-container').innerHTML =
+      '<div class="empty-state" style="padding:0.5rem;">Audio stream is stopped.</div>';
+    document.getElementById('audio-toggle-btn').textContent = '🔊 Start Audio';
+    document.getElementById('audio-toggle-btn').className = 'secondary';
+    hdmiAudioRunning = false;
+  }
+
   async function loadRuns() {
     try {
       const runs = await api('/runs');
@@ -433,6 +492,7 @@
 
   async function selectRun(runId) {
     selectedRunId = runId;
+    lastNarrationIdx = -1;
     document.getElementById('detail-panel').style.display = '';
     document.getElementById('detail-run-id').textContent = runId;
     await refreshRunDetail();
@@ -450,13 +510,16 @@
       document.getElementById('d-retries').textContent = data.retries;
       document.getElementById('d-app').textContent = data.current_app || '-';
       document.getElementById('d-screen').textContent = data.current_screen || '-';
+      document.getElementById('d-ai-count').textContent = String(data.ai_log_count || 0);
+      document.getElementById('d-dab-count').textContent = String(data.dab_log_count || 0);
 
-      const log = document.getElementById('action-log');
-      if (data.last_actions && data.last_actions.length) {
-        log.innerHTML = data.last_actions.map(a => `<div class="log-line">${escHtml(a)}</div>`).join('');
-      } else {
-        log.innerHTML = '<div class="empty-state">No actions yet.</div>';
-      }
+      await Promise.all([
+        refreshActionHistory(selectedRunId),
+        refreshFriendlyExplain(selectedRunId),
+        refreshNarration(selectedRunId),
+        refreshAiTranscript(selectedRunId),
+        refreshDabTranscript(selectedRunId),
+      ]);
 
       if (data.has_screenshot) {
         try {
@@ -471,6 +534,157 @@
         clearInterval(pollInterval);
       }
     } catch (e) { console.error(e); }
+  }
+
+  async function refreshActionHistory(runId) {
+    const log = document.getElementById('action-log');
+    try {
+      const h = await api(`/run/${runId}/history`);
+      if (!h.actions || !h.actions.length) {
+        log.innerHTML = '<div class="empty-state">No actions yet.</div>';
+        return;
+      }
+      log.innerHTML = h.actions.map(a => {
+        const p = a.params ? ` ${escHtml(JSON.stringify(a.params))}` : '';
+        return `<div class="log-line">#${a.step} ${escHtml(a.action)} <span class="${escHtml(a.result)}">${escHtml(a.result)}</span> · ${escHtml(a.reason)}${p}</div>`;
+      }).join('');
+    } catch (e) {
+      log.innerHTML = `<div class="empty-state">Failed to load actions: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  async function refreshFriendlyExplain(runId) {
+    const box = document.getElementById('friendly-log');
+    const diag = document.getElementById('diagnosis-log');
+    try {
+      const x = await api(`/run/${runId}/explain`);
+      if (!x.timeline || !x.timeline.length) {
+        box.innerHTML = '<div class="empty-state">No explanations yet.</div>';
+      } else {
+        box.innerHTML = x.timeline.map(t => {
+          return `<div class="log-line">
+            <strong>Step ${escHtml(t.step)}: ${escHtml(t.title || '-')}</strong><br/>
+            <div>Action: ${escHtml(t.simple_action || '-')}</div>
+            <div>What happened: ${escHtml(t.what_happened || '-')}</div>
+            <div>What screen was seen: ${escHtml(t.what_screen_was_seen || '-')}</div>
+            <div>Why: ${escHtml(t.why_this_step || '-')}</div>
+            <div>Why it failed: ${escHtml(t.why_it_failed || '-')}</div>
+            <div>Recovery tried: ${escHtml(t.what_recovery_was_tried || '-')}</div>
+            <div>What happens next: ${escHtml(t.what_happens_next || '-')}</div>
+            <div>Result: ${escHtml(t.result || '-')} <span class="${escHtml(t.simple_status || '')}">${escHtml(t.simple_status || '')}</span></div>
+          </div>`;
+        }).join('');
+      }
+
+      const d = x.diagnosis || null;
+      if (!d) {
+        diag.innerHTML = '<div class="empty-state">Diagnosis unavailable.</div>';
+      } else {
+        diag.innerHTML = `<div class="log-line"><strong>${escHtml(d.final_summary || '-')}</strong></div>
+          <div class="log-line">Root cause: ${escHtml(d.root_cause || '-')}</div>
+          <div class="log-line">Screen-based reason: ${escHtml(d.screen_based_reason || '-')}</div>
+          <div class="log-line">Goal-based reason: ${escHtml(d.goal_based_reason || '-')}</div>
+          <div class="log-line">Recovery summary: ${escHtml(d.recovery_summary || '-')}</div>
+          <div class="log-line">Simple reason: ${escHtml(d.user_friendly_reason || '-')}</div>
+          <div class="log-line">Technical reason: ${escHtml(d.technical_reason || '-')}</div>
+          <div class="log-line">Evidence used: ${escHtml((d.evidence_used || []).join('; ') || '-')}</div>
+          <div class="log-line">Recovery attempts: ${escHtml(d.recovery_attempts || 0)}</div>
+          <div class="log-line">First failure: ${escHtml(d.what_failed_first || '-')}</div>
+          <div class="log-line">Last failure: ${escHtml(d.what_failed_last || '-')}</div>`;
+      }
+    } catch (e) {
+      box.innerHTML = `<div class="empty-state">Failed to load explanations: ${escHtml(e.message)}</div>`;
+      diag.innerHTML = '<div class="empty-state">Diagnosis unavailable.</div>';
+    }
+  }
+
+  async function refreshNarration(runId) {
+    const box = document.getElementById('narration-log');
+    try {
+      const n = await api(`/run/${runId}/narration?since_idx=${lastNarrationIdx}`);
+      if (!n.events || !n.events.length) {
+        if (lastNarrationIdx < 0) {
+          box.innerHTML = '<div class="empty-state">No narration yet.</div>';
+        }
+        return;
+      }
+      const existing = (box.dataset.lines || '').split('\n').filter(Boolean);
+      for (const ev of n.events) {
+        lastNarrationIdx = Math.max(lastNarrationIdx, Number(ev.idx || -1));
+        existing.push(`${ev.step}. [${ev.tts_category}] ${ev.tts_text}`);
+      }
+      box.dataset.lines = existing.slice(-60).join('\n');
+      box.innerHTML = existing.slice(-60).map(x => `<div class="log-line">${escHtml(x)}</div>`).join('');
+
+      const toPlay = [...n.events].sort((a, b) => (b.tts_priority || 0) - (a.tts_priority || 0))[0];
+      if (toPlay && toPlay.tts_should_play) {
+        await playNarrationText(toPlay.tts_text, !!toPlay.tts_interruptible);
+      }
+    } catch (e) {
+      box.innerHTML = `<div class="empty-state">Failed to load narration: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  async function playNarrationText(text, interruptible) {
+    if (!text || typeof text !== 'string') return;
+    try {
+      if (interruptible && currentNarrationAudio && !currentNarrationAudio.paused) {
+        currentNarrationAudio.pause();
+      }
+      const r = await api('/tts/speak', 'POST', { text, use_ssml: true });
+      if (!r.success || !r.audio_b64) return;
+      const src = `data:audio/mpeg;base64,${r.audio_b64}`;
+      const audio = new Audio(src);
+      currentNarrationAudio = audio;
+      await audio.play();
+    } catch (_) {
+      // Ignore autoplay/TTS failures silently.
+    }
+  }
+
+  async function refreshAiTranscript(runId) {
+    const box = document.getElementById('ai-log');
+    try {
+      const t = await api(`/run/${runId}/ai-transcript`);
+      if (!t.events || !t.events.length) {
+        box.innerHTML = '<div class="empty-state">No AI logs yet.</div>';
+        document.getElementById('d-phase').textContent = '-';
+        document.getElementById('d-intent').textContent = '-';
+        document.getElementById('batch-log').innerHTML = '<div class="empty-state">No batch planned yet.</div>';
+        return;
+      }
+      const latestDecision = [...t.events].reverse().find(e => e && e.type === 'planner-decision');
+      if (latestDecision) {
+        document.getElementById('d-phase').textContent = latestDecision.phase || '-';
+        document.getElementById('d-intent').textContent = latestDecision.intent || '-';
+        const batch = Array.isArray(latestDecision.action_batch) ? latestDecision.action_batch : [];
+        if (batch.length) {
+          document.getElementById('batch-log').innerHTML = batch.map((b, i) => {
+            const p = b.params && Object.keys(b.params).length ? ` ${escHtml(JSON.stringify(b.params))}` : '';
+            return `<div class="log-line">${i + 1}. ${escHtml(b.action || 'UNKNOWN')}${p}</div>`;
+          }).join('');
+        } else {
+          document.getElementById('batch-log').innerHTML = '<div class="empty-state">No batch planned yet.</div>';
+        }
+      }
+      box.innerHTML = t.events.map((e, i) => `<div class="log-line">${i + 1}. ${escHtml(JSON.stringify(e))}</div>`).join('');
+    } catch (e) {
+      box.innerHTML = `<div class="empty-state">Failed to load AI logs: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  async function refreshDabTranscript(runId) {
+    const box = document.getElementById('dab-log');
+    try {
+      const t = await api(`/run/${runId}/dab-transcript`);
+      if (!t.events || !t.events.length) {
+        box.innerHTML = '<div class="empty-state">No DAB logs yet.</div>';
+        return;
+      }
+      box.innerHTML = t.events.map((e, i) => `<div class="log-line">${i + 1}. ${escHtml(JSON.stringify(e))}</div>`).join('');
+    } catch (e) {
+      box.innerHTML = `<div class="empty-state">Failed to load DAB logs: ${escHtml(e.message)}</div>`;
+    }
   }
 
   async function startRun() {

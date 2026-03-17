@@ -40,10 +40,19 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 from vertex_live_dab_agent.config import get_config
 from vertex_live_dab_agent.dab.topics import (
     KEY_MAP,
+    TOPIC_APPLICATIONS_EXIT,
     TOPIC_APPLICATIONS_GET_STATE,
+    TOPIC_APPLICATIONS_LIST,
     TOPIC_APPLICATIONS_LAUNCH,
+    TOPIC_CONTENT_OPEN,
+    TOPIC_INPUT_KEY_LIST,
     TOPIC_INPUT_KEY_PRESS,
+    TOPIC_INPUT_LONG_KEY_PRESS,
+    TOPIC_OPERATIONS_LIST,
     TOPIC_OUTPUT_IMAGE,
+    TOPIC_SYSTEM_SETTINGS_GET,
+    TOPIC_SYSTEM_SETTINGS_LIST,
+    TOPIC_SYSTEM_SETTINGS_SET,
     format_topic,
 )
 
@@ -51,6 +60,26 @@ if TYPE_CHECKING:
     from vertex_live_dab_agent.dab.transport import DABTransportBase
 
 logger = logging.getLogger(__name__)
+
+
+_APP_ID_ALIASES: Dict[str, str] = {
+    "com.netflix.ninja": "netflix",
+    "netflix": "netflix",
+    "com.google.android.youtube": "youtube",
+    "com.google.android.youtube.tv": "youtube",
+    "youtube": "youtube",
+    "com.android.settings": "settings",
+    "com.android.tv.settings": "settings",
+    "settings": "settings",
+}
+
+
+def normalize_app_id_alias(app_id: str) -> str:
+    """Normalize known package-style app ids to logical ids expected by DAB."""
+    normalized = str(app_id or "").strip()
+    if not normalized:
+        return normalized
+    return _APP_ID_ALIASES.get(normalized.lower(), normalized)
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +162,33 @@ class DABClientBase(ABC):
         ...
 
     @abstractmethod
+    async def long_key_press(
+        self, key_code: str, duration_ms: int = 1500
+    ) -> DABResponse:
+        """Send a long key press event to the device."""
+        ...
+
+    @abstractmethod
+    async def list_keys(self) -> DABResponse:
+        """List supported device key codes."""
+        ...
+
+    @abstractmethod
+    async def list_operations(self) -> DABResponse:
+        """List supported DAB operations for the device."""
+        ...
+
+    @abstractmethod
+    async def list_apps(self) -> DABResponse:
+        """List applications available on device."""
+        ...
+
+    @abstractmethod
+    async def exit_app(self, app_id: str) -> DABResponse:
+        """Exit an application on the device."""
+        ...
+
+    @abstractmethod
     async def capture_screenshot(self) -> DABResponse:
         """Capture a screenshot. Returns base64 PNG in ``data["image"]``."""
         ...
@@ -141,6 +197,25 @@ class DABClientBase(ABC):
     async def close(self) -> None:
         """Release resources and close the client."""
         ...
+
+    async def list_settings(self) -> DABResponse:
+        """Optional: list supported system settings."""
+        return DABResponse(False, 501, {"error": "system/settings/list not supported"}, "", "")
+
+    async def get_setting(self, setting_key: str) -> DABResponse:
+        """Optional: query a system setting."""
+        return DABResponse(False, 501, {"error": "system/settings/get not supported", "setting": setting_key}, "", "")
+
+    async def set_setting(self, setting_key: str, value: Any) -> DABResponse:
+        """Optional: update a system setting."""
+        return DABResponse(False, 501, {"error": "system/settings/set not supported", "setting": setting_key}, "", "")
+
+    async def open_content(self, content: str, parameters: Optional[Dict[str, Any]] = None) -> DABResponse:
+        """Optional: open content directly."""
+        payload: Dict[str, Any] = {"content": content}
+        if isinstance(parameters, dict):
+            payload.update(parameters)
+        return DABResponse(False, 501, {"error": "content/open not supported", **payload}, "", "")
 
 
 # ---------------------------------------------------------------------------
@@ -162,18 +237,23 @@ class MockDABClient(DABClientBase):
         self, app_id: str, parameters: Optional[Dict[str, Any]] = None
     ) -> DABResponse:
         await self._simulate_latency()
+        app_id = normalize_app_id_alias(app_id)
         req_id = str(uuid.uuid4())
         logger.info("DAB mock: launch_app app_id=%s req_id=%s", app_id, req_id)
+        data: Dict[str, Any] = {"appId": app_id, "state": "FOREGROUND"}
+        if parameters and parameters.get("content"):
+            data["content"] = parameters.get("content")
         return DABResponse(
             success=True,
             status=200,
-            data={"appId": app_id, "state": "FOREGROUND"},
+            data=data,
             topic=TOPIC_APPLICATIONS_LAUNCH,
             request_id=req_id,
         )
 
     async def get_app_state(self, app_id: str) -> DABResponse:
         await self._simulate_latency()
+        app_id = normalize_app_id_alias(app_id)
         req_id = str(uuid.uuid4())
         logger.info("DAB mock: get_app_state app_id=%s req_id=%s", app_id, req_id)
         return DABResponse(
@@ -196,6 +276,92 @@ class MockDABClient(DABClientBase):
             request_id=req_id,
         )
 
+    async def long_key_press(self, key_code: str, duration_ms: int = 1500) -> DABResponse:
+        await self._simulate_latency()
+        req_id = str(uuid.uuid4())
+        logger.info(
+            "DAB mock: long_key_press key_code=%s duration_ms=%s req_id=%s",
+            key_code,
+            duration_ms,
+            req_id,
+        )
+        return DABResponse(
+            success=True,
+            status=200,
+            data={"keyCode": key_code, "durationMs": int(duration_ms)},
+            topic=TOPIC_INPUT_LONG_KEY_PRESS,
+            request_id=req_id,
+        )
+
+    async def list_keys(self) -> DABResponse:
+        await self._simulate_latency()
+        req_id = str(uuid.uuid4())
+        logger.info("DAB mock: list_keys req_id=%s", req_id)
+        keys = sorted(set(KEY_MAP.values()))
+        return DABResponse(
+            success=True,
+            status=200,
+            data={"keys": keys},
+            topic=TOPIC_INPUT_KEY_LIST,
+            request_id=req_id,
+        )
+
+    async def list_operations(self) -> DABResponse:
+        await self._simulate_latency()
+        req_id = str(uuid.uuid4())
+        logger.info("DAB mock: list_operations req_id=%s", req_id)
+        return DABResponse(
+            success=True,
+            status=200,
+            data={
+                "operations": [
+                    "applications/launch",
+                    "applications/get-state",
+                    "applications/list",
+                    "applications/exit",
+                    "input/key/list",
+                    "input/key-press",
+                    "input/long-key-press",
+                    "output/image",
+                    "operations/list",
+                ]
+            },
+            topic=TOPIC_OPERATIONS_LIST,
+            request_id=req_id,
+        )
+
+    async def list_apps(self) -> DABResponse:
+        await self._simulate_latency()
+        req_id = str(uuid.uuid4())
+        logger.info("DAB mock: list_apps req_id=%s", req_id)
+        return DABResponse(
+            success=True,
+            status=200,
+            data={
+                "applications": [
+                    {
+                        "appId": get_config().youtube_app_id,
+                        "name": "YouTube",
+                    }
+                ]
+            },
+            topic=TOPIC_APPLICATIONS_LIST,
+            request_id=req_id,
+        )
+
+    async def exit_app(self, app_id: str) -> DABResponse:
+        await self._simulate_latency()
+        app_id = normalize_app_id_alias(app_id)
+        req_id = str(uuid.uuid4())
+        logger.info("DAB mock: exit_app app_id=%s req_id=%s", app_id, req_id)
+        return DABResponse(
+            success=True,
+            status=200,
+            data={"appId": app_id, "state": "BACKGROUND"},
+            topic=TOPIC_APPLICATIONS_EXIT,
+            request_id=req_id,
+        )
+
     async def capture_screenshot(self) -> DABResponse:
         await self._simulate_latency()
         req_id = str(uuid.uuid4())
@@ -215,6 +381,58 @@ class MockDABClient(DABClientBase):
 
     async def close(self) -> None:
         logger.info("MockDABClient closed")
+
+    async def list_settings(self) -> DABResponse:
+        await self._simulate_latency()
+        req_id = str(uuid.uuid4())
+        return DABResponse(
+            success=True,
+            status=200,
+            data={
+                "settings": [
+                    {"key": "timezone", "friendlyName": "Time Zone", "writable": True},
+                    {"key": "brightness", "friendlyName": "Brightness", "writable": True},
+                ]
+            },
+            topic=TOPIC_SYSTEM_SETTINGS_LIST,
+            request_id=req_id,
+        )
+
+    async def get_setting(self, setting_key: str) -> DABResponse:
+        await self._simulate_latency()
+        req_id = str(uuid.uuid4())
+        return DABResponse(
+            success=True,
+            status=200,
+            data={"key": setting_key, "value": "mock"},
+            topic=TOPIC_SYSTEM_SETTINGS_GET,
+            request_id=req_id,
+        )
+
+    async def set_setting(self, setting_key: str, value: Any) -> DABResponse:
+        await self._simulate_latency()
+        req_id = str(uuid.uuid4())
+        return DABResponse(
+            success=True,
+            status=200,
+            data={"key": setting_key, "value": value, "updated": True},
+            topic=TOPIC_SYSTEM_SETTINGS_SET,
+            request_id=req_id,
+        )
+
+    async def open_content(self, content: str, parameters: Optional[Dict[str, Any]] = None) -> DABResponse:
+        await self._simulate_latency()
+        req_id = str(uuid.uuid4())
+        data: Dict[str, Any] = {"content": content}
+        if isinstance(parameters, dict):
+            data["parameters"] = parameters
+        return DABResponse(
+            success=True,
+            status=200,
+            data=data,
+            topic=TOPIC_CONTENT_OPEN,
+            request_id=req_id,
+        )
 
     async def _simulate_latency(self) -> None:
         await asyncio.sleep(0.05)
@@ -274,13 +492,17 @@ class AdapterDABClient(DABClientBase):
         self, app_id: str, parameters: Optional[Dict[str, Any]] = None
     ) -> DABResponse:
         """Launch an application (``applications/launch``)."""
+        app_id = normalize_app_id_alias(app_id)
         payload: Dict[str, Any] = {"appId": app_id}
         if parameters:
+            if "content" in parameters and parameters["content"]:
+                payload["content"] = parameters["content"]
             payload["parameters"] = parameters
         return await self._send_with_retry(TOPIC_APPLICATIONS_LAUNCH, payload)
 
     async def get_app_state(self, app_id: str) -> DABResponse:
         """Query current application state (``applications/get-state``)."""
+        app_id = normalize_app_id_alias(app_id)
         return await self._send_with_retry(
             TOPIC_APPLICATIONS_GET_STATE, {"appId": app_id}
         )
@@ -289,9 +511,50 @@ class AdapterDABClient(DABClientBase):
         """Send a key press event (``input/key-press``)."""
         return await self._send_with_retry(TOPIC_INPUT_KEY_PRESS, {"keyCode": key_code})
 
+    async def long_key_press(self, key_code: str, duration_ms: int = 1500) -> DABResponse:
+        """Send a long key press event (``input/long-key-press``)."""
+        payload = {"keyCode": key_code, "durationMs": int(duration_ms)}
+        return await self._send_with_retry(TOPIC_INPUT_LONG_KEY_PRESS, payload)
+
+    async def list_keys(self) -> DABResponse:
+        """List supported key codes (``input/key/list``)."""
+        return await self._send_with_retry(TOPIC_INPUT_KEY_LIST, {})
+
+    async def list_operations(self) -> DABResponse:
+        """List supported operations (``operations/list``)."""
+        return await self._send_with_retry(TOPIC_OPERATIONS_LIST, {})
+
+    async def list_apps(self) -> DABResponse:
+        """List installed/launchable applications (``applications/list``)."""
+        return await self._send_with_retry(TOPIC_APPLICATIONS_LIST, {})
+
+    async def exit_app(self, app_id: str) -> DABResponse:
+        """Exit an app (``applications/exit``)."""
+        app_id = normalize_app_id_alias(app_id)
+        return await self._send_with_retry(TOPIC_APPLICATIONS_EXIT, {"appId": app_id})
+
     async def capture_screenshot(self) -> DABResponse:
         """Request a screenshot capture (``output/image``)."""
         return await self._send_with_retry(TOPIC_OUTPUT_IMAGE, {})
+
+    async def list_settings(self) -> DABResponse:
+        """List direct system settings capabilities."""
+        return await self._send_with_retry(TOPIC_SYSTEM_SETTINGS_LIST, {})
+
+    async def get_setting(self, setting_key: str) -> DABResponse:
+        """Get one system setting value."""
+        return await self._send_with_retry(TOPIC_SYSTEM_SETTINGS_GET, {"key": str(setting_key)})
+
+    async def set_setting(self, setting_key: str, value: Any) -> DABResponse:
+        """Set one system setting value."""
+        return await self._send_with_retry(TOPIC_SYSTEM_SETTINGS_SET, {"key": str(setting_key), "value": value})
+
+    async def open_content(self, content: str, parameters: Optional[Dict[str, Any]] = None) -> DABResponse:
+        """Open content directly when device supports content/open."""
+        payload: Dict[str, Any] = {"content": content}
+        if isinstance(parameters, dict):
+            payload["parameters"] = parameters
+        return await self._send_with_retry(TOPIC_CONTENT_OPEN, payload)
 
     async def close(self) -> None:
         """Close the underlying transport."""

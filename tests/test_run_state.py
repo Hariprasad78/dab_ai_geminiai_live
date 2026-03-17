@@ -10,6 +10,7 @@ def test_run_state_defaults():
     assert state.step_count == 0
     assert state.retries == 0
     assert state.last_actions == []
+    assert state.pending_subplan == []
     assert state.action_history == []
     assert state.started_at is None
     assert state.finished_at is None

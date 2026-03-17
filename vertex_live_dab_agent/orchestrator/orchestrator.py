@@ -1,7 +1,7 @@
 """Main orchestration loop: observe -> plan -> act -> verify -> repeat."""
 import asyncio
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from vertex_live_dab_agent.artifacts.logger import ArtifactStore
 from vertex_live_dab_agent.capture.capture import ScreenCapture
@@ -9,9 +9,10 @@ from vertex_live_dab_agent.capture.validator import Validator
 from vertex_live_dab_agent.config import get_config
 from vertex_live_dab_agent.dab.client import DABClientBase, create_dab_client
 from vertex_live_dab_agent.dab.topics import KEY_MAP
+from vertex_live_dab_agent.orchestrator.app_resolver import AppResolver
 from vertex_live_dab_agent.orchestrator.run_state import RunState, RunStatus
 from vertex_live_dab_agent.planner.planner import Planner
-from vertex_live_dab_agent.planner.schemas import ActionType, PlannedAction
+from vertex_live_dab_agent.planner.schemas import ActionType, NavigationBatchAction, PlannedAction, TaskPrePlan
 
 logger = logging.getLogger(__name__)
 
@@ -30,12 +31,28 @@ class Orchestrator:
         self._dab = dab_client or create_dab_client()
         self._planner = planner or Planner()
         self._capture = capture or ScreenCapture(self._dab)
+        self._app_resolver = AppResolver(self._dab)
         self._validator = Validator()
         self._max_steps = max_steps if max_steps is not None else self._config.max_steps_per_run
+        self._capture_interval_steps = max(1, int(self._config.planner_capture_interval_steps))
+        self._step_delay_seconds = max(0.0, float(self._config.planner_step_delay_seconds))
 
     async def run(self, state: RunState) -> RunState:
         """Execute the full run loop, saving artifacts throughout."""
         state.start()
+        self._record_narration(
+            state,
+            step=0,
+            text=f"Goal: {state.goal}",
+            category="GOAL",
+            priority=80,
+            interruptible=False,
+        )
+        if not state.master_plan:
+            try:
+                state.master_plan = self._planner.build_master_plan(state.goal)
+            except Exception:
+                state.master_plan = []
         store = ArtifactStore(state.run_id)
         state.artifacts_dir = str(store.run_dir)
 
@@ -78,27 +95,367 @@ class Orchestrator:
     async def _step(self, state: RunState, store: ArtifactStore) -> None:
         """Execute a single observe-plan-act-verify step."""
         step = state.step_count
+        previous_action = state.last_actions[-1] if state.last_actions else None
+        task_preplan = self._build_task_preplan(state)
+        state.task_preplan = task_preplan.model_dump()
+        state.verification_mode = task_preplan.verification_mode
+        await self._bootstrap_capabilities_if_needed(state)
 
-        # Observe
-        capture_result = await self._capture.capture()
-        state.latest_screenshot_b64 = capture_result.image_b64
-        state.latest_ocr_text = capture_result.ocr_text
-        if capture_result.image_b64:
-            store.save_screenshot(capture_result.image_b64, step)
-
-        # Plan
-        planned = await self._planner.plan(
-            goal=state.goal,
-            screenshot_b64=state.latest_screenshot_b64,
-            ocr_text=state.latest_ocr_text,
-            current_app=state.current_app,
-            current_screen=state.current_screen,
-            last_actions=state.last_actions,
-            retry_count=state.retries,
+        should_observe = (
+            state.latest_screenshot_b64 is None
+            or state.steps_since_observe >= self._capture_interval_steps
+            or previous_action in {
+                ActionType.CAPTURE_SCREENSHOT.value,
+                ActionType.NEED_BETTER_VIEW.value,
+                ActionType.GET_STATE.value,
+                ActionType.LAUNCH_APP.value,
+                ActionType.PRESS_OK.value,
+                ActionType.PRESS_BACK.value,
+                ActionType.PRESS_HOME.value,
+            }
         )
+
+        # Observe (sparse cadence for speed)
+        if should_observe:
+            capture_result = await self._capture.capture()
+            state.latest_screenshot_b64 = capture_result.image_b64
+            state.latest_ocr_text = capture_result.ocr_text
+            if capture_result.image_b64:
+                store.save_screenshot(capture_result.image_b64, step)
+            state.steps_since_observe = 0
+            state.last_checkpoint = "observe"
+        self._refresh_player_context(state)
+
+        planned_from_subplan = False
+        nav_phase = ""
+        nav_intent = ""
+        nav_expected_result = ""
+        nav_checkpoint_required = False
+        nav_validate_before_commit = False
+        nav_need_screenshot = False
+        nav_action_batch = []
+        diagnosis_batch = await self._run_stuck_diagnosis_if_needed(state, step)
+        preflight_batch = diagnosis_batch or await self._select_execution_strategy(state)
+        if preflight_batch and not self._strategy_matches_task_semantics(state):
+            state.record_ai_event(
+                {
+                    "type": "strategy-blocked",
+                    "step": step,
+                    "strategy": state.strategy_selected,
+                    "reason": "strategy does not match task semantics",
+                }
+            )
+            preflight_batch = []
+        if preflight_batch:
+            primary = preflight_batch[0]
+            planned = PlannedAction(
+                action=primary["action"],
+                confidence=0.96,
+                reason=f"strategy:{state.strategy_selected}",
+                params=primary.get("params") or None,
+            )
+            planned_from_subplan = False
+            nav_phase = "strategy"
+            nav_intent = f"{state.strategy_selected} preflight"
+            nav_action_batch = preflight_batch
+            for sub in preflight_batch[1:]:
+                state.pending_subplan.append(
+                    {
+                        "action": sub.get("action"),
+                        "params": sub.get("params") or {},
+                        "reason": f"Strategy follow-up after {planned.action}",
+                    }
+                )
+            nav_need_screenshot = True
+            nav_checkpoint_required = True
+            nav_expected_result = "execute direct DAB strategy before UI navigation"
+            self._record_narration(
+                state,
+                step=step,
+                text=self._narrate_action(str(primary.get("action", "")), primary.get("params") or {}),
+                category="STEP_START",
+            )
+        elif state.pending_subplan:
+            queued = state.pending_subplan.pop(0)
+            queued_action = str(queued.get("action", ActionType.WAIT.value))
+            queued_params = queued.get("params") if isinstance(queued.get("params"), dict) else {}
+            queued_action, queued_params, queued_resolution_error = await self._normalize_launch_action(
+                state=state,
+                action=queued_action,
+                params=queued_params,
+                planner_output=None,
+            )
+            if queued_resolution_error:
+                logger.warning("Launch target resolution failed for queued action: %s", queued_resolution_error)
+                state.record_ai_event(
+                    {
+                        "type": "launch-resolution-failed",
+                        "step": step,
+                        "source": "subplan",
+                        "error": queued_resolution_error,
+                        "fallback_action": ActionType.NEED_BETTER_VIEW.value,
+                    }
+                )
+                self._record_narration(
+                    state,
+                    step=step,
+                    text="Recovery started because app launch target could not be resolved.",
+                    category="RECOVERY",
+                    priority=70,
+                )
+            if self._is_guarded_commit_action(queued_action) and state.steps_since_observe > 0:
+                state.pending_subplan.insert(0, queued)
+                planned = PlannedAction(
+                    action=ActionType.CAPTURE_SCREENSHOT,
+                    confidence=0.9,
+                    reason="Guarded commit checkpoint before queued commit action",
+                )
+                planned_from_subplan = True
+                nav_phase = "guarded_commit"
+                nav_intent = "validate_destination_before_commit"
+                nav_action_batch = [{"action": planned.action, "params": {}}]
+            else:
+                planned = PlannedAction(
+                    action=queued_action,
+                    confidence=0.85,
+                    reason=str(queued.get("reason", "Executing queued sub-plan action")),
+                    params=queued_params,
+                )
+                planned_from_subplan = True
+                nav_phase = "subplan"
+                nav_intent = "execute queued action"
+                nav_action_batch = [{"action": planned.action, "params": planned.params or {}}]
+                self._record_narration(
+                    state,
+                    step=step,
+                    text=self._narrate_action(str(planned.action), planned.params or {}),
+                    category="STEP_START",
+                )
+        else:
+            exec_state = {
+                "current_app_guess": state.current_app,
+                "current_screen_guess": state.current_screen_guess or state.current_screen,
+                "highlighted_item_guess": state.highlighted_item_guess,
+                "confidence": state.nav_confidence,
+                "failed_paths": state.failed_paths[-8:],
+                "last_checkpoint": state.last_checkpoint,
+                "supported_operations": state.supported_operations,
+                "app_catalog": state.app_catalog,
+                "supported_keys": state.supported_keys,
+                "supported_settings": state.supported_settings,
+                "resolved_apps_cache": state.resolved_apps_cache,
+                "strategy_selected": state.strategy_selected,
+                "current_app_state": state.current_app_state,
+                "current_app_id": state.current_app_id,
+                "last_verified_foreground_app": state.last_verified_foreground_app,
+                "is_video_playback_context": state.is_video_playback_context,
+                "player_controls_visible": state.player_controls_visible,
+                "focus_target_guess": state.focus_target_guess,
+                "last_ok_effect": state.last_ok_effect,
+                "repeated_commit_count": state.repeated_commit_count,
+                "no_progress_count": state.no_progress_count,
+                "last_player_phase": state.last_player_phase,
+                "recent_ai_events": state.ai_transcript[-10:],
+                "recent_dab_events": state.dab_transcript[-8:],
+                "recent_action_records": [
+                    {
+                        "step": a.step,
+                        "action": a.action,
+                        "result": a.result,
+                        "reason": a.reason,
+                    }
+                    for a in state.action_history[-10:]
+                ],
+            }
+            nav_plan = await self._planner.plan_navigation(
+                goal=state.goal,
+                screenshot_b64=state.latest_screenshot_b64,
+                ocr_text=state.latest_ocr_text,
+                current_app=state.current_app,
+                current_screen=state.current_screen,
+                last_actions=state.last_actions,
+                retry_count=state.retries,
+                launch_content=state.launch_content,
+                execution_state=exec_state,
+                session_id=state.run_id,
+                master_plan=state.master_plan,
+            )
+            state.nav_confidence = float(nav_plan.confidence)
+            state.current_screen_guess = state.current_screen or state.current_screen_guess
+            nav_phase = nav_plan.phase
+            nav_intent = nav_plan.intent
+            nav_expected_result = nav_plan.expected_result
+            if nav_expected_result:
+                state.last_expected_screen = nav_expected_result
+            nav_checkpoint_required = bool(nav_plan.checkpoint_required)
+            nav_validate_before_commit = bool(nav_plan.validate_before_commit)
+            nav_need_screenshot = bool(nav_plan.need_screenshot)
+            nav_action_batch = [
+                {"action": b.action, "params": b.params or {}}
+                for b in (nav_plan.action_batch or [])
+            ]
+            nav_action_batch, launch_resolution_failures = await self._normalize_navigation_batch(
+                state=state,
+                nav_action_batch=nav_action_batch,
+                planner_output=nav_plan.model_dump(),
+            )
+            nav_batch_models = [NavigationBatchAction.model_validate(s) for s in nav_action_batch]
+            if launch_resolution_failures:
+                nav_intent = f"{nav_intent} (launch resolution fallback used)".strip()
+                self._record_narration(
+                    state,
+                    step=step,
+                    text="Recovery started because app launch details were unclear.",
+                    category="RECOVERY",
+                    priority=70,
+                )
+
+            if str(nav_plan.execution_mode) in {
+                "DIRECT_APP_LAUNCH",
+                "DIRECT_APP_LAUNCH_WITH_PARAMS",
+                "GO_HOME_THEN_LAUNCH",
+                "RECOVERY_RELAUNCH",
+            }:
+                has_launch_step = any(
+                    str((item or {}).get("action", "")).upper() == ActionType.LAUNCH_APP.value
+                    for item in nav_action_batch
+                )
+                resolved = await self._app_resolver.resolve_target_app(
+                    goal=state.goal,
+                    planner_output=nav_plan.model_dump(),
+                    execution_state={
+                        "session_id": state.run_id,
+                        "device_id": self._config.dab_device_id,
+                    },
+                )
+                if resolved is not None and not has_launch_step:
+                    launch_step = self._app_resolver.build_launch_action(
+                        resolved_target=resolved,
+                        launch_parameters=nav_plan.launch_parameters,
+                    )
+                    strategy_batch: list[dict] = []
+                    if str(nav_plan.execution_mode) in {"GO_HOME_THEN_LAUNCH", "RECOVERY_RELAUNCH"}:
+                        strategy_batch.append({"action": ActionType.PRESS_HOME.value, "params": {}})
+                    strategy_batch.append(launch_step)
+                    strategy_batch.append({"action": ActionType.WAIT.value, "params": {"seconds": 1.0}})
+                    strategy_batch.append({"action": ActionType.GET_STATE.value, "params": {"app_id": resolved.app_id}})
+                    nav_action_batch = strategy_batch + nav_action_batch
+                    nav_action_batch, _ = await self._normalize_navigation_batch(
+                        state=state,
+                        nav_action_batch=nav_action_batch,
+                        planner_output=nav_plan.model_dump(),
+                    )
+                    nav_batch_models = [NavigationBatchAction.model_validate(s) for s in nav_action_batch]
+                    nav_checkpoint_required = True
+                    nav_need_screenshot = True
+                    nav_intent = f"{nav_intent} (launch-first via resolver)".strip()
+
+            guarded_commit_idx = self._guarded_commit_index(nav_action_batch)
+            if guarded_commit_idx is not None:
+                nav_action_batch = nav_action_batch[:guarded_commit_idx]
+                nav_batch_models = nav_batch_models[:guarded_commit_idx]
+                nav_checkpoint_required = True
+                nav_validate_before_commit = True
+                nav_need_screenshot = True
+                nav_intent = f"{nav_intent} (guarded commit deferred)".strip()
+
+            # checkpoint capture only when explicitly needed by plan/guard
+            if nav_need_screenshot and state.steps_since_observe > 0:
+                capture_result = await self._capture.capture()
+                state.latest_screenshot_b64 = capture_result.image_b64
+                state.latest_ocr_text = capture_result.ocr_text
+                if capture_result.image_b64:
+                    store.save_screenshot(capture_result.image_b64, step)
+                state.steps_since_observe = 0
+                state.last_checkpoint = "plan-requested"
+
+            if nav_plan.done and not nav_plan.action_batch:
+                planned = PlannedAction(
+                    action=ActionType.DONE,
+                    confidence=nav_plan.confidence,
+                    reason=nav_plan.expected_result or nav_plan.intent,
+                )
+            else:
+                primary = nav_batch_models[0] if nav_batch_models else None
+                if primary is None:
+                    planned = PlannedAction(
+                        action=ActionType.CAPTURE_SCREENSHOT,
+                        confidence=0.6,
+                        reason="No batch action returned; checkpointing",
+                    )
+                else:
+                    planned = PlannedAction(
+                        action=primary.action,
+                        confidence=nav_plan.confidence,
+                        reason=f"{nav_plan.phase}: {nav_plan.intent}",
+                        params=primary.params,
+                    )
+
+            if (
+                not nav_validate_before_commit
+                and self._is_guarded_commit_action(str(planned.action))
+                and state.steps_since_observe > 0
+            ):
+                nav_validate_before_commit = True
+
+            if self._config.planner_enable_subplans and nav_batch_models:
+                for sub in nav_batch_models[1:]:
+                    state.pending_subplan.append(
+                        {
+                            "action": sub.action,
+                            "params": sub.params,
+                            "reason": f"Batch follow-up after {planned.action}",
+                        }
+                    )
+
+            if nav_checkpoint_required:
+                if not state.pending_subplan or state.pending_subplan[-1].get("action") != ActionType.CAPTURE_SCREENSHOT.value:
+                    state.pending_subplan.append({"action": ActionType.CAPTURE_SCREENSHOT.value, "reason": "Checkpoint"})
+
+            if nav_plan.validate_before_commit and planned.action in {
+                ActionType.PRESS_OK.value,
+                ActionType.PRESS_HOME.value,
+                ActionType.LAUNCH_APP.value,
+            } and state.steps_since_observe > 0:
+                state.pending_subplan.insert(0, {"action": planned.action, "params": planned.params, "reason": planned.reason})
+                planned = PlannedAction(
+                    action=ActionType.CAPTURE_SCREENSHOT,
+                    confidence=max(0.7, nav_plan.confidence),
+                    reason="Pre-commit validation checkpoint",
+                )
+
+        planned = self._sanitize_planned_action_for_goal(state, planned)
         logger.info(
-            "Planner decision: run_id=%s step=%d action=%s confidence=%.2f reason=%r",
-            state.run_id, step, planned.action, planned.confidence, planned.reason,
+            "Planner decision: run_id=%s step=%d action=%s confidence=%.2f reason=%r source=%s queued_subplan=%d",
+            state.run_id,
+            step,
+            planned.action,
+            planned.confidence,
+            planned.reason,
+            "subplan" if planned_from_subplan else "planner",
+            len(state.pending_subplan),
+        )
+        state.record_ai_event(
+            {
+                "type": "planner-decision",
+                "step": step,
+                "source": "subplan" if planned_from_subplan else "planner",
+                "phase": nav_phase,
+                "intent": nav_intent,
+                "action": planned.action,
+                "confidence": planned.confidence,
+                "reason": planned.reason,
+                "params": planned.params or {},
+                "action_batch": nav_action_batch,
+                "expected_result": nav_expected_result,
+                "checkpoint_required": nav_checkpoint_required,
+                "validate_before_commit": nav_validate_before_commit,
+                "need_screenshot": nav_need_screenshot,
+                "queued_subplan": len(state.pending_subplan),
+                "current_app": state.current_app,
+                "current_screen": state.current_screen,
+                "retry_count": state.retries,
+            }
         )
         store.save_planner_trace(
             {
@@ -113,21 +470,93 @@ class Orchestrator:
                 "confidence": planned.confidence,
                 "reason": planned.reason,
                 "params": planned.params,
+                "source": "subplan" if planned_from_subplan else "planner",
+                "queued_subplan": len(state.pending_subplan),
             },
             step,
         )
 
         # Handle terminal actions before incrementing step_count
         if planned.action == ActionType.DONE:
-            state.record_action(planned.action, planned.params, planned.confidence, planned.reason, "PASS")
-            store.save_action(state.action_history[-1].model_dump())
-            state.finish(RunStatus.DONE)
-            return
+            youtube_goal = self._is_youtube_player_task(state.goal)
+            youtube_verified = self._is_youtube_goal_verified(state)
+            open_app_goal = self._is_open_app_goal(state.goal)
+            open_app_verified = self._is_app_goal_verified(state)
+            if (youtube_goal and not youtube_verified) or (open_app_goal and not open_app_verified):
+                state.record_ai_event(
+                    {
+                        "type": "terminal-check-blocked",
+                        "step": step,
+                        "status": "DONE_BLOCKED",
+                        "reason": (
+                            "YouTube in-app goal not verified"
+                            if youtube_goal and not youtube_verified
+                            else "App goal not verified in FOREGROUND"
+                        ),
+                        "current_app": state.current_app_id,
+                        "current_app_state": state.current_app_state,
+                    }
+                )
+                planned = PlannedAction(
+                    action=ActionType.GET_STATE,
+                    confidence=0.85,
+                    reason="Verify foreground before DONE",
+                    params={
+                        "app_id": (
+                            str(getattr(self._config, "youtube_app_id", "youtube") or "youtube")
+                            if youtube_goal
+                            else (
+                                state.current_app_id
+                                or state.current_app
+                                or str(getattr(self._config, "youtube_app_id", "youtube") or "youtube")
+                            )
+                        )
+                    },
+                )
+            else:
+                state.record_ai_event(
+                    {
+                        "type": "terminal",
+                        "step": step,
+                        "status": "DONE",
+                        "reason": planned.reason,
+                    }
+                )
+                state.record_action(planned.action, planned.params, planned.confidence, planned.reason, "PASS")
+                store.save_action(state.action_history[-1].model_dump())
+                self._record_narration(
+                    state,
+                    step=step,
+                    text="Success. The test finished as expected.",
+                    category="SUCCESS",
+                    priority=90,
+                    interruptible=False,
+                )
+                state.finish(RunStatus.DONE)
+                return
         if planned.action == ActionType.FAILED:
+            state.record_ai_event(
+                {
+                    "type": "terminal",
+                    "step": step,
+                    "status": "FAILED",
+                    "reason": planned.reason,
+                }
+            )
             state.record_action(planned.action, planned.params, planned.confidence, planned.reason, "FAIL")
             store.save_action(state.action_history[-1].model_dump())
+            self._record_narration(
+                state,
+                step=step,
+                text="The test stopped because recovery did not work.",
+                category="FAILURE",
+                priority=95,
+                interruptible=False,
+            )
             state.finish(RunStatus.FAILED, planned.reason)
             return
+
+        ocr_before_action = str(state.latest_ocr_text or "")
 
         # Act
         action_success = await self._execute_action(state, planned)
@@ -139,39 +568,1242 @@ class Orchestrator:
         )
         store.save_action(state.action_history[-1].model_dump())
 
+        if (
+            str(planned.action).upper() == ActionType.PRESS_OK.value
+            and self._is_youtube_player_task(state.goal)
+        ):
+            await self._update_capture(state)
+            self._refresh_player_context(state)
+            ok_effect = self._diagnose_press_ok_effect(state, before_ocr=ocr_before_action)
+            state.last_ok_effect = ok_effect
+            state.record_ai_event(
+                {
+                    "type": "ok-effect-analysis",
+                    "step": step,
+                    "effect": ok_effect,
+                    "phase": self._normalized_youtube_phase(state),
+                    "repeated_commit_count": state.repeated_commit_count,
+                }
+            )
+
         if not action_success:
             state.retries += 1
+            state.failed_paths.append(f"{planned.action}:{planned.reason}")
+            # Replan after failures rather than continuing stale queued actions.
+            state.pending_subplan.clear()
+            self._record_narration(
+                state,
+                step=step,
+                text="That step failed. Trying recovery now.",
+                category="RECOVERY",
+                priority=70,
+            )
+
+        if planned.action in (ActionType.CAPTURE_SCREENSHOT, ActionType.NEED_BETTER_VIEW):
+            state.steps_since_observe = 0
+        else:
+            state.steps_since_observe += 1
+
+        self._update_no_progress_tracking(state, str(planned.action), bool(action_success))
 
         # Small pause between steps
-        await asyncio.sleep(0.5)
+        if self._step_delay_seconds > 0:
+            await asyncio.sleep(self._step_delay_seconds)
+
+    @staticmethod
+    def _narrate_action(action: str, params: dict) -> str:
+        a = str(action or "").upper()
+        if a == ActionType.LAUNCH_APP.value:
+            target = params.get("app_id") or params.get("app_name") or "the app"
+            return f"Trying to open {target}."
+        if a == ActionType.OPEN_CONTENT.value:
+            return "Trying to open the requested content."
+        if a == ActionType.GET_STATE.value:
+            return "Checking what screen is open now."
+        if a == ActionType.PRESS_BACK.value:
+            return "Pressing Back to recover navigation."
+        if a == ActionType.PRESS_OK.value:
+            ok_intent = str(params.get("ok_intent", "")).strip()
+            if ok_intent:
+                return f"Pressing OK with intent {ok_intent.lower().replace('_', ' ')}."
+            return "Selecting the highlighted item."
+        if a == ActionType.NEED_SETTINGS_GEAR_LOCATION.value:
+            return "Looking for the settings gear in player controls."
+        if a == ActionType.NEED_VIDEO_PLAYBACK_CONFIRMED.value:
+            return "Trying to confirm that a video is playing."
+        if a == ActionType.CAPTURE_SCREENSHOT.value:
+            return "Taking a screenshot to understand the current screen."
+        if a == ActionType.WAIT.value:
+            return "Waiting briefly for the screen to update."
+        return f"Running {a.lower().replace('_', ' ')}."
+
+    def _record_narration(
+        self,
+        state: RunState,
+        step: int,
+        text: str,
+        category: str,
+        priority: int = 20,
+        interruptible: bool = True,
+    ) -> None:
+        text_n = str(text or "").strip()
+        if not text_n:
+            return
+        # simple dedupe + anti-spam
+        last = state.narration_transcript[-1] if state.narration_transcript else None
+        if last and str(last.get("tts_text", "")).strip() == text_n and int(last.get("step", -1)) == int(step):
+            return
+        if category == "STEP_START" and last and str(last.get("tts_category", "")) == "STEP_START" and int(step) - int(last.get("step", 0)) <= 0:
+            return
+        state.record_narration_event(
+            {
+                "step": int(step),
+                "tts_text": text_n,
+                "tts_priority": int(priority),
+                "tts_category": str(category),
+                "tts_should_play": True,
+                "tts_interruptible": bool(interruptible),
+            }
+        )
+
+    @staticmethod
+    def _is_directional_action(action: str) -> bool:
+        return str(action).upper() in {"PRESS_UP", "PRESS_DOWN", "PRESS_LEFT", "PRESS_RIGHT"}
+
+    @staticmethod
+    def _is_guarded_commit_action(action: str) -> bool:
+        a = str(action).upper().strip()
+        if a in {"PRESS_OK", "PRESS_ENTER"}:
+            return True
+        return any(token in a for token in ("SELECT", "CONFIRM", "TOGGLE", "APPLY"))
+
+    def _guarded_commit_index(self, batch: list[dict]) -> Optional[int]:
+        for idx, item in enumerate(batch):
+            action = str((item or {}).get("action", ""))
+            if not self._is_guarded_commit_action(action):
+                continue
+            if idx <= 0:
+                return None
+            if any(self._is_directional_action(str((b or {}).get("action", ""))) for b in batch[:idx]):
+                return idx
+            return None
+        return None
+
+    async def _run_stuck_diagnosis_if_needed(self, state: RunState, step: int) -> list[dict]:
+        if not self._is_stuck_navigation(state):
+            return []
+
+        if state.latest_screenshot_b64 is None:
+            capture_result = await self._capture.capture()
+            state.latest_screenshot_b64 = capture_result.image_b64
+            state.latest_ocr_text = capture_result.ocr_text
+
+        ctx = self._build_stuck_context(state)
+        state.last_stuck_context = ctx
+        state.stuck_diagnosis_count += 1
+
+        decision, reason, batch = await self._decide_recovery_from_context(state, ctx)
+        state.strategy_selected = decision
+        state.record_ai_event(
+            {
+                "type": "stuck-diagnosis",
+                "step": step,
+                "decision": decision,
+                "reason": reason,
+                "context": {
+                    "current_app": ctx.get("current_app"),
+                    "current_app_state": ctx.get("current_app_state"),
+                    "current_screenshot_summary": ctx.get("current_screenshot_summary"),
+                    "last_expected_screen": ctx.get("last_expected_screen"),
+                    "last_successful_checkpoint": ctx.get("last_successful_checkpoint"),
+                    "repeated_failures": ctx.get("repeated_failures"),
+                },
+                "next_actions": batch,
+            }
+        )
+        self._record_narration(
+            state,
+            step=step,
+            text=f"Recovery started. {reason}.",
+            category="RECOVERY",
+            priority=75,
+        )
+        return batch
+
+    def _is_stuck_navigation(self, state: RunState) -> bool:
+        if state.retries >= 2:
+            return True
+        if state.repeated_commit_count >= 2 and state.no_progress_count >= 1:
+            return True
+        if state.no_progress_count >= 3:
+            return True
+        recent = [str(a).upper() for a in state.last_actions[-6:]]
+        if recent.count("GET_STATE") >= 2 and recent.count("NEED_BETTER_VIEW") >= 1:
+            return True
+        parse_fail_count = sum(
+            1
+            for e in state.ai_transcript[-12:]
+            if str(e.get("intent", "")).startswith("parse_failure")
+            or "parse_failure" in str(e.get("reason", ""))
+        )
+        return parse_fail_count >= 2
+
+    def _build_stuck_context(self, state: RunState) -> dict:
+        latest_decision = next(
+            (e for e in reversed(state.ai_transcript) if e.get("type") == "planner-decision"),
+            {},
+        )
+        ocr = str(state.latest_ocr_text or "").strip()
+        screenshot_summary = ocr[:220] if ocr else "No OCR text from screenshot"
+        return {
+            "test_goal": state.goal,
+            "current_step_goal": (state.task_preplan or {}).get("expected_outcome") or state.goal,
+            "current_screenshot_summary": screenshot_summary,
+            "current_app": state.current_app_id or state.current_app,
+            "current_app_state": state.current_app_state or state.current_screen,
+            "last_expected_screen": latest_decision.get("expected_result") or state.last_expected_screen,
+            "last_successful_checkpoint": state.last_checkpoint,
+            "recent_actions": state.last_actions[-8:],
+            "repeated_failures": int(state.retries),
+            "available_operations": state.supported_operations,
+            "available_apps": state.app_catalog,
+            "supported_keys": state.supported_keys,
+            "supported_settings": state.supported_settings,
+            "is_video_playback_context": state.is_video_playback_context,
+            "player_controls_visible": state.player_controls_visible,
+            "focus_target_guess": state.focus_target_guess,
+            "last_ok_effect": state.last_ok_effect,
+            "repeated_commit_count": state.repeated_commit_count,
+            "no_progress_count": state.no_progress_count,
+            "last_player_phase": state.last_player_phase,
+        }
+
+    @staticmethod
+    def _has_usable_ocr_text(state: RunState) -> bool:
+        ocr = str(state.latest_ocr_text or "").strip()
+        if not ocr:
+            return False
+        return "no ocr text" not in ocr.lower()
+
+    async def _decide_recovery_from_context(self, state: RunState, ctx: dict) -> tuple[str, str, list[dict]]:
+        goal = str(ctx.get("test_goal", "")).lower()
+        current_app_state = str(ctx.get("current_app_state", "")).upper()
+        screenshot_summary = str(ctx.get("current_screenshot_summary", "")).lower()
+        ops = [str(o).lower() for o in (ctx.get("available_operations") or [])]
+
+        if self._is_youtube_player_task(goal):
+            current_app = str(ctx.get("current_app") or "").lower()
+            youtube_app_id = str(getattr(self._config, "youtube_app_id", "youtube") or "youtube").lower()
+            if current_app != youtube_app_id or current_app_state == "BACKGROUND":
+                resolved = await self._app_resolver.resolve_target_app(
+                    goal=state.goal,
+                    planner_output={"target_app_name": "YouTube", "target_app_hint": "YouTube"},
+                    execution_state={"session_id": state.run_id, "device_id": self._config.dab_device_id},
+                )
+                if resolved is not None:
+                    return (
+                        "RELAUNCH_TARGET_APP",
+                        "Goal needs YouTube player controls, so relaunching YouTube first",
+                        [
+                            self._app_resolver.build_launch_action(resolved_target=resolved),
+                            {"action": ActionType.WAIT.value, "params": {"seconds": 1.0}},
+                            {"action": ActionType.GET_STATE.value, "params": {"app_id": resolved.app_id}},
+                        ],
+                    )
+
+            if not self._has_usable_ocr_text(state):
+                return (
+                    "YOUTUBE_WAIT_FOR_VISUAL_STABILITY",
+                    "Playback context is active but OCR is missing; waiting and recapturing before navigation",
+                    [
+                        {"action": ActionType.WAIT.value, "params": {"seconds": 1.2}},
+                        {"action": ActionType.CAPTURE_SCREENSHOT.value, "params": {}},
+                        {"action": ActionType.GET_STATE.value, "params": {"app_id": youtube_app_id}},
+                    ],
+                )
+
+            if not self._is_probably_video_playback_visible(state):
+                return (
+                    "YOUTUBE_PHASE_RECOVERY",
+                    "YouTube is open but playback is not confirmed; starting any visible video",
+                    [
+                        {"action": ActionType.PRESS_OK.value, "params": {"ok_intent": "SELECT_FOCUSED_CONTROL"}},
+                        {"action": ActionType.WAIT.value, "params": {"seconds": 1.0}},
+                        {"action": ActionType.NEED_VIDEO_PLAYBACK_CONFIRMED.value, "params": {}},
+                    ],
+                )
+            if "settings" not in screenshot_summary and "gear" not in screenshot_summary:
+                return (
+                    "YOUTUBE_PHASE_RECOVERY",
+                    "Playback exists but gear/control panel location is unclear; revealing controls",
+                    [
+                        {"action": ActionType.PRESS_RIGHT.value, "params": {}},
+                        {"action": ActionType.PRESS_RIGHT.value, "params": {}},
+                        {"action": ActionType.NEED_SETTINGS_GEAR_LOCATION.value, "params": {}},
+                    ],
+                )
+            if "stats for nerds" not in screenshot_summary:
+                return (
+                    "YOUTUBE_PHASE_RECOVERY",
+                    "Player menu likely open but Stats for Nerds toggle not confirmed yet",
+                    [{"action": ActionType.NEED_STATS_FOR_NERDS_TOGGLE_CONFIRMATION.value, "params": {}}],
+                )
+
+        if self._is_open_app_goal(goal):
+            target_name = self._infer_target_app_name_from_goal(goal, state.app_catalog)
+            resolved = None
+            if target_name:
+                resolved = await self._app_resolver.resolve_target_app(
+                    goal=state.goal,
+                    planner_output={"target_app_name": target_name, "target_app_hint": target_name},
+                    execution_state={"session_id": state.run_id, "device_id": self._config.dab_device_id},
+                )
+            if resolved and (current_app_state == "BACKGROUND" or "home" in screenshot_summary or "launcher" in screenshot_summary):
+                return (
+                    "RELAUNCH_TARGET_APP",
+                    "Current screen is not the target foreground UI; relaunching target app",
+                    [
+                        {"action": ActionType.PRESS_HOME.value, "params": {}},
+                        self._app_resolver.build_launch_action(resolved_target=resolved),
+                        {"action": ActionType.WAIT.value, "params": {"seconds": 1.0}},
+                        {"action": ActionType.GET_STATE.value, "params": {"app_id": resolved.app_id}},
+                    ],
+                )
+
+        if self._is_settings_goal(goal):
+            setting_key = self._infer_setting_key_from_goal(goal, state.supported_settings)
+            if setting_key and any("system/settings/get" in o for o in ops):
+                return (
+                    "USE_DIRECT_DAB_OPERATION",
+                    "Using direct settings operation based on goal and supported capabilities",
+                    [{"action": ActionType.GET_SETTING.value, "params": {"key": setting_key}}],
+                )
+
+        if "home" in screenshot_summary or "launcher" in screenshot_summary:
+            return (
+                "CONTINUE_WITH_ADJUSTED_NAVIGATION",
+                "Device appears on Home; applying minimal goal-aware recovery",
+                [{"action": ActionType.PRESS_BACK.value, "params": {}}, {"action": ActionType.WAIT.value, "params": {"seconds": 0.6}}],
+            )
+
+        if state.retries >= 4:
+            return (
+                "FAIL_WITH_GROUNDED_REASON",
+                "Recovery retries exhausted after screenshot-based diagnosis",
+                [{"action": ActionType.FAILED.value, "params": {"reason": "stuck_navigation_grounded_failure"}}],
+            )
+
+        return (
+            "PRESS_BACK_AND_RECOVER",
+            "Navigation drift detected; using back-and-verify recovery",
+            [
+                {"action": ActionType.PRESS_BACK.value, "params": {}},
+                {"action": ActionType.CAPTURE_SCREENSHOT.value, "params": {}},
+            ],
+        )
+
+    async def _bootstrap_capabilities_if_needed(self, state: RunState) -> None:
+        goal_l = (state.goal or "").lower()
+        preplan = state.task_preplan or {}
+
+        if not state.supported_operations:
+            try:
+                resp = await self._dab.list_operations()
+                ops = (resp.data or {}).get("operations", []) if isinstance(resp.data, dict) else []
+                if isinstance(ops, list):
+                    state.supported_operations = [str(o).strip() for o in ops if str(o).strip()]
+            except Exception as exc:
+                logger.warning("Capability bootstrap operations/list failed: %s", exc)
+
+        if not state.app_catalog:
+            try:
+                catalog = await self._app_resolver.load_app_catalog(device_id=self._config.dab_device_id)
+                state.app_catalog = [
+                    {
+                        "appId": a.app_id,
+                        "name": a.name,
+                        "friendlyName": a.friendly_name,
+                        "packageName": a.package_name,
+                    }
+                    for a in catalog
+                ]
+            except Exception as exc:
+                logger.warning("Capability bootstrap applications/list failed: %s", exc)
+
+        need_keys = (not state.supported_keys) and (
+            "ui" in goal_l or "navigate" in goal_l or "press" in goal_l or "open" in goal_l
+            or self._is_settings_goal(state.goal)
+            or str(preplan.get("step_type", "")) == "DIRECT_KEY_VALIDATION"
+        )
+        if need_keys:
+            try:
+                resp = await self._dab.list_keys()
+                keys = (resp.data or {}).get("keys", []) if isinstance(resp.data, dict) else []
+                if isinstance(keys, list):
+                    state.supported_keys = [str(k).strip() for k in keys if str(k).strip()]
+            except Exception as exc:
+                logger.warning("Capability bootstrap input/key/list failed: %s", exc)
+
+        need_settings = (not state.supported_settings) and self._is_settings_goal(state.goal)
+        has_settings_list_op = any("system/settings/list" in str(o).lower() for o in state.supported_operations)
+        if need_settings and has_settings_list_op and hasattr(self._dab, "list_settings"):
+            try:
+                resp = await self._dab.list_settings()
+                settings = (resp.data or {}).get("settings", []) if isinstance(resp.data, dict) else []
+                if isinstance(settings, list):
+                    state.supported_settings = [s for s in settings if isinstance(s, dict)]
+            except Exception as exc:
+                logger.warning("Capability bootstrap system/settings/list failed: %s", exc)
+
+        state.resolved_apps_cache = self._app_resolver.get_session_resolutions(state.run_id)
+
+    async def _select_execution_strategy(self, state: RunState) -> list[dict]:
+        if state.pending_subplan:
+            return []
+
+        preplan = state.task_preplan or self._build_task_preplan(state).model_dump()
+        step_type = self._normalize_step_type(preplan.get("step_type", "MENU_NAVIGATION"))
+        required_action = str(preplan.get("required_action", "")).strip()
+        needs_home_first = bool(preplan.get("needs_home_first", False))
+
+        if self._is_youtube_player_task(state.goal):
+            state.strategy_selected = "YOUTUBE_PLAYER_WORKFLOW"
+            phase = self._youtube_phase(state)
+            youtube_app_id = str(getattr(self._config, "youtube_app_id", "youtube") or "youtube")
+            if phase == "OPEN_TARGET_APP":
+                return [
+                    {"action": ActionType.LAUNCH_APP.value, "params": {"app_id": youtube_app_id}},
+                    {"action": ActionType.WAIT.value, "params": {"seconds": 1.0}},
+                    {"action": ActionType.GET_STATE.value, "params": {"app_id": youtube_app_id}},
+                ]
+            if phase == "START_ANY_VIDEO":
+                return [
+                    {"action": ActionType.PRESS_OK.value, "params": {"ok_intent": "SELECT_FOCUSED_CONTROL"}},
+                    {"action": ActionType.WAIT.value, "params": {"seconds": 1.0}},
+                    {"action": ActionType.NEED_VIDEO_PLAYBACK_CONFIRMED.value, "params": {}},
+                ]
+            if phase == "REVEAL_PLAYER_CONTROLS":
+                return [
+                    {"action": ActionType.PRESS_OK.value, "params": {"ok_intent": "REVEAL_PLAYER_CONTROLS"}},
+                    {"action": ActionType.WAIT.value, "params": {"seconds": 0.6}},
+                    {"action": ActionType.NEED_PLAYER_CONTROLS_VISIBLE.value, "params": {}},
+                ]
+            if phase == "OPEN_PLAYER_SETTINGS":
+                return [
+                    {"action": ActionType.PRESS_RIGHT.value, "params": {}},
+                    {"action": ActionType.PRESS_RIGHT.value, "params": {}},
+                    {"action": ActionType.NEED_SETTINGS_GEAR_LOCATION.value, "params": {}},
+                ]
+            if phase == "ENABLE_STATS_FOR_NERDS":
+                return [
+                    {"action": ActionType.PRESS_OK.value, "params": {"ok_intent": "CONFIRM_MENU_ITEM"}},
+                    {"action": ActionType.NEED_PLAYER_MENU_CONFIRMATION.value, "params": {}},
+                ]
+            if phase == "VERIFY_STATS_OVERLAY":
+                return [{"action": ActionType.NEED_STATS_FOR_NERDS_TOGGLE_CONFIRMATION.value, "params": {}}]
+            return []
+
+        if state.step_count > 0:
+            return []
+
+        if step_type == "DIRECT_KEY_VALIDATION" and required_action:
+            state.strategy_selected = "DIRECT_KEY_VALIDATION"
+            batch: list[dict] = []
+            if needs_home_first and not self._is_home_context_satisfied(state):
+                batch.append({"action": ActionType.PRESS_HOME.value, "params": {}})
+            batch.append({"action": required_action, "params": {}})
+            batch.append({"action": ActionType.WAIT.value, "params": {"seconds": 0.8}})
+            return batch
+
+        ops = [str(o).lower() for o in (state.supported_operations or [])]
+        can_launch = any("applications/launch" in o for o in ops)
+        can_launch_with_content = any("applications/launch-with-content" in o for o in ops)
+        can_content_open = any("content/open" in o for o in ops)
+        can_get_setting = any("system/settings/get" in o for o in ops)
+        can_set_setting = any("system/settings/set" in o for o in ops)
+
+        setting_key = self._infer_setting_key_from_goal(state.goal, state.supported_settings)
+        if setting_key and (can_get_setting or can_set_setting):
+            state.strategy_selected = "DIRECT_SETTING_OPERATION"
+            setting_value = self._infer_setting_value_from_goal(state.goal)
+            if setting_value is not None and can_set_setting:
+                return [{"action": ActionType.SET_SETTING.value, "params": {"key": setting_key, "value": setting_value}}]
+            if can_get_setting:
+                return [{"action": ActionType.GET_SETTING.value, "params": {"key": setting_key}}]
+
+        target_name = self._infer_target_app_name_from_goal(state.goal, state.app_catalog)
+        has_content = bool(str(state.launch_content or "").strip())
+        if target_name and can_launch:
+            resolved = await self._app_resolver.resolve_target_app(
+                goal=state.goal,
+                planner_output={
+                    "target_app_name": target_name,
+                    "target_app_hint": target_name,
+                    "target_app_domain": "media" if not self._is_settings_goal(state.goal) else "system_settings",
+                    "launch_parameters": {"content": str(state.launch_content).strip()} if has_content else {},
+                },
+                execution_state={"session_id": state.run_id, "device_id": self._config.dab_device_id},
+            )
+            if resolved is not None:
+                state.strategy_selected = (
+                    "DIRECT_APP_LAUNCH_WITH_PARAMS"
+                    if has_content and (can_launch_with_content or can_content_open)
+                    else "DIRECT_APP_LAUNCH"
+                )
+                if has_content and can_content_open:
+                    return [
+                        {
+                            "action": "OPEN_CONTENT",
+                            "params": {"content": str(state.launch_content).strip(), "app_id": resolved.app_id},
+                        }
+                    ]
+                launch_step = self._app_resolver.build_launch_action(
+                    resolved_target=resolved,
+                    launch_parameters={"content": str(state.launch_content).strip()} if has_content else {},
+                )
+                return [
+                    launch_step,
+                    {"action": ActionType.WAIT.value, "params": {"seconds": 1.0}},
+                    {"action": ActionType.GET_STATE.value, "params": {"app_id": resolved.app_id}},
+                ]
+            state.resolution_failures += 1
+
+        state.strategy_selected = "UI_NAVIGATION_ONLY"
+        return []
+
+    def _build_task_preplan(self, state: RunState) -> TaskPrePlan:
+        g = (state.goal or "").strip()
+        gl = g.lower()
+
+        starting_context = "UNKNOWN"
+        if "from the home screen" in gl or "on the home screen" in gl:
+            starting_context = "HOME_SCREEN"
+        elif "while app is open" in gl:
+            starting_context = "APP_OPEN"
+        elif "on the settings page" in gl or "in settings" in gl:
+            starting_context = "SETTINGS"
+
+        required_action = ""
+        key_map = {
+            "press the back": ActionType.PRESS_BACK.value,
+            "press back": ActionType.PRESS_BACK.value,
+            "press the home": ActionType.PRESS_HOME.value,
+            "press home": ActionType.PRESS_HOME.value,
+            "press ok": ActionType.PRESS_OK.value,
+        }
+        for phrase, action in key_map.items():
+            if phrase in gl:
+                required_action = action
+                break
+
+        expected_outcome = ""
+        if "confirm" in gl:
+            idx = gl.find("confirm")
+            expected_outcome = g[idx:].strip()
+        elif "verify" in gl:
+            idx = gl.find("verify")
+            expected_outcome = g[idx:].strip()
+
+        step_type = "MENU_NAVIGATION"
+        target_domain = "GENERAL_UI"
+        target_app = None
+        target_ui_context = ""
+        required_subgoals: list[str] = []
+        verification_condition = ""
+        forbidden_detours: list[str] = []
+        needs_app_launch = False
+        needs_settings_navigation = False
+        needs_home_first = starting_context == "HOME_SCREEN"
+        verification_mode = "VISUAL"
+        minimal_action_path: list[str] = []
+        reason = ""
+
+        if self._is_youtube_player_task(g):
+            step_type = "MENU_NAVIGATION"
+            target_domain = "APP_PLAYER_CONTROLS"
+            target_app = "youtube"
+            target_ui_context = "YouTube video playback screen with controls visible"
+            required_subgoals = [
+                "OPEN_YOUTUBE",
+                "START_VIDEO",
+                "REVEAL_PLAYER_CONTROLS",
+                "NAVIGATE_TO_GEAR",
+                "OPEN_PLAYER_SETTINGS",
+                "ENABLE_STATS_FOR_NERDS",
+                "VERIFY_OVERLAY",
+            ]
+            verification_condition = "Stats for Nerds overlay visible on video"
+            forbidden_detours = [
+                "do not open Android Settings",
+                "do not use repeated BACK loops without screenshot reason",
+                "do not use generic NEED_BETTER_VIEW",
+            ]
+            needs_app_launch = True
+            needs_settings_navigation = False
+            minimal_action_path = [
+                "OPEN_YOUTUBE",
+                "PLAY_ANY_VIDEO",
+                "SHOW_CONTROLS",
+                "OPEN_GEAR",
+                "ENABLE_STATS_FOR_NERDS",
+                "VERIFY_OVERLAY",
+            ]
+            reason = "Goal is an in-app YouTube player-controls task"
+
+        if required_action and ("confirm" in gl or "verify" in gl):
+            step_type = "DIRECT_KEY_VALIDATION"
+            target_domain = "HOME_OR_SYSTEM_UI"
+            needs_app_launch = False
+            needs_settings_navigation = False
+            minimal_action_path = [
+                "GO_HOME_IF_NEEDED" if needs_home_first else "",
+                required_action,
+                "VERIFY_EXPECTED_OUTCOME",
+            ]
+            minimal_action_path = [s for s in minimal_action_path if s]
+            reason = "Step explicitly requests key action + validation from context"
+        elif "open" in gl or "launch" in gl:
+            step_type = "APP_LAUNCH"
+            target_domain = "APP"
+            needs_app_launch = True
+            minimal_action_path = ["RESOLVE_APP", "LAUNCH_APP", "VERIFY_FOREGROUND"]
+            reason = "Step explicitly requests opening an app"
+        elif "time zone" in gl or "timezone" in gl or "change" in gl or "set" in gl:
+            step_type = "SETTING_CHANGE"
+            target_domain = "SYSTEM_SETTINGS"
+            needs_settings_navigation = True
+            verification_mode = "STATE_OR_VISUAL"
+            minimal_action_path = ["DIRECT_SETTING_IF_SUPPORTED", "VERIFY_SETTING", "UI_FALLBACK_IF_NEEDED"]
+            reason = "Step appears to require setting modification"
+        elif "confirm" in gl or "verify" in gl or "check" in gl:
+            step_type = "VISUAL_CONFIRMATION"
+            verification_mode = "VISUAL"
+            minimal_action_path = ["VERIFY_EXPECTED_OUTCOME"]
+            reason = "Step is verification-first"
+
+        selected_strategy = {
+            "DIRECT_KEY_VALIDATION": "DIRECT_KEY_VALIDATION",
+            "APP_LAUNCH": "DIRECT_APP_LAUNCH",
+            "SETTING_CHANGE": "DIRECT_SETTING_OPERATION",
+        }.get(step_type, "UI_NAVIGATION_ONLY")
+
+        return TaskPrePlan(
+            goal=g,
+            target_app=target_app,
+            target_ui_context=target_ui_context,
+            required_subgoals=required_subgoals,
+            verification_condition=verification_condition,
+            forbidden_detours=forbidden_detours,
+            starting_context=starting_context,
+            required_action=required_action,
+            target_domain=target_domain,
+            expected_outcome=expected_outcome,
+            verification_mode=verification_mode,
+            step_type=step_type,
+            needs_app_launch=needs_app_launch,
+            needs_settings_navigation=needs_settings_navigation,
+            needs_home_first=needs_home_first,
+            minimal_action_path=minimal_action_path,
+            selected_strategy=selected_strategy,
+            reason=reason,
+        )
+
+    @staticmethod
+    def _is_home_context_satisfied(state: RunState) -> bool:
+        current = str(state.current_app_id or state.current_app or "").lower()
+        if not current:
+            return False
+        return current in {"launcher", "home", "com.google.android.tvlauncher"}
+
+    def _strategy_matches_task_semantics(self, state: RunState) -> bool:
+        preplan = state.task_preplan or {}
+        step_type = self._normalize_step_type(preplan.get("step_type", ""))
+        strategy = str(state.strategy_selected or "")
+        if step_type == "DIRECT_KEY_VALIDATION" and strategy in {
+            "DIRECT_APP_LAUNCH",
+            "DIRECT_APP_LAUNCH_WITH_PARAMS",
+            "GO_HOME_THEN_LAUNCH",
+            "RECOVERY_RELAUNCH",
+            "DIRECT_SETTING_OPERATION",
+        }:
+            return False
+        return True
+
+    @staticmethod
+    def _normalize_step_type(step_type: Any) -> str:
+        raw = str(step_type or "").strip()
+        if "." in raw:
+            raw = raw.split(".")[-1]
+        return raw.upper()
+
+    @staticmethod
+    def _is_settings_goal(goal: str) -> bool:
+        g = (goal or "").lower()
+        if "youtube" in g and any(k in g for k in ("stats for nerds", "gear icon", "player control", "video control")):
+            return False
+        return any(k in g for k in ("setting", "time zone", "timezone", "brightness", "contrast", "screensaver"))
+
+    @staticmethod
+    def _is_youtube_player_task(goal: str) -> bool:
+        g = (goal or "").lower()
+        return "youtube" in g and any(
+            k in g for k in ("stats for nerds", "gear", "video control", "player settings", "play any video", "play video")
+        )
+
+    @staticmethod
+    def _is_probably_video_playback_visible(state: RunState) -> bool:
+        ocr = str(state.latest_ocr_text or "").lower()
+        return any(k in ocr for k in ("pause", "seek", "settings", "stats for nerds", "up next"))
+
+    @staticmethod
+    def _ocr_fingerprint(ocr_text: str) -> str:
+        normalized = " ".join(str(ocr_text or "").lower().split())
+        return normalized[:220]
+
+    @staticmethod
+    def _focus_guess_from_ocr(ocr_text: str) -> Optional[str]:
+        ocr = str(ocr_text or "").lower()
+        if "stats for nerds" in ocr:
+            return "stats for nerds"
+        if "settings" in ocr or "gear" in ocr:
+            return "settings gear"
+        if "captions" in ocr:
+            return "captions"
+        if "quality" in ocr:
+            return "quality"
+        return None
+
+    def _normalized_youtube_phase(self, state: RunState) -> str:
+        mapping = {
+            "OPEN_TARGET_APP": "OPEN_YOUTUBE",
+            "START_ANY_VIDEO": "START_VIDEO",
+            "REVEAL_PLAYER_CONTROLS": "REVEAL_PLAYER_CONTROLS",
+            "OPEN_PLAYER_SETTINGS": "NAVIGATE_TO_GEAR",
+            "ENABLE_STATS_FOR_NERDS": "OPEN_PLAYER_SETTINGS",
+            "VERIFY_STATS_OVERLAY": "VERIFY_OVERLAY",
+            "COMPLETE": "VERIFY_OVERLAY",
+        }
+        return mapping.get(self._youtube_phase(state), "START_VIDEO")
+
+    def _refresh_player_context(self, state: RunState) -> None:
+        ocr = str(state.latest_ocr_text or "")
+        cfg = getattr(self, "_config", None)
+        youtube_app_id = str(getattr(cfg, "youtube_app_id", "youtube") or "youtube").lower()
+        state.focus_target_guess = self._focus_guess_from_ocr(ocr)
+        state.player_controls_visible = self._is_player_controls_visible(state)
+        state.is_video_playback_context = self._is_youtube_player_task(state.goal) and (
+            self._is_probably_video_playback_visible(state)
+            or state.player_controls_visible
+            or str(state.current_app_id or state.current_app or "").lower() == youtube_app_id
+        )
+        if self._is_youtube_player_task(state.goal):
+            state.last_player_phase = self._normalized_youtube_phase(state)
+
+    def _diagnose_press_ok_effect(self, state: RunState, before_ocr: str) -> str:
+        before = str(before_ocr or "").lower()
+        after = str(state.latest_ocr_text or "").lower()
+        if ("settings" not in before and "gear" not in before) and ("settings" in after or "gear" in after):
+            return "CONTROLS_REVEALED"
+        if "stats for nerds" not in before and "stats for nerds" in after:
+            return "MENU_OPENED_OR_TOGGLE_VISIBLE"
+        if ("pause" in before and "play" in after) or ("play" in before and "pause" in after):
+            return "TOGGLED_PLAYBACK"
+        if self._ocr_fingerprint(before) == self._ocr_fingerprint(after):
+            return "NO_VISIBLE_CHANGE"
+        return "SCREEN_CHANGED"
+
+    def _update_no_progress_tracking(self, state: RunState, action: str, action_success: bool) -> None:
+        action_u = str(action or "").upper()
+        current_fingerprint = self._ocr_fingerprint(state.latest_ocr_text or "")
+        phase = self._normalized_youtube_phase(state) if self._is_youtube_player_task(state.goal) else ""
+        same_fingerprint = bool(current_fingerprint and state.last_screen_fingerprint == current_fingerprint)
+        same_phase = bool(phase and state.last_player_phase == phase)
+
+        if action_u in {ActionType.PRESS_OK.value, "PRESS_ENTER"}:
+            state.repeated_commit_count = state.repeated_commit_count + 1 if same_fingerprint and same_phase else 1
+        else:
+            state.repeated_commit_count = 0
+
+        if action_success and action_u in {ActionType.PRESS_OK.value, "PRESS_ENTER"} and same_fingerprint and same_phase:
+            state.no_progress_count += 1
+        elif not same_fingerprint or not same_phase:
+            state.no_progress_count = 0
+
+        state.last_screen_fingerprint = current_fingerprint or state.last_screen_fingerprint
+        if phase:
+            state.last_player_phase = phase
+
+    @staticmethod
+    def _is_player_controls_visible(state: RunState) -> bool:
+        ocr = str(state.latest_ocr_text or "").lower()
+        return any(k in ocr for k in ("settings", "gear", "captions", "quality", "playback speed", "cc"))
+
+    def _youtube_phase(self, state: RunState) -> str:
+        cfg = getattr(self, "_config", None)
+        youtube_app_id = str(getattr(cfg, "youtube_app_id", "youtube") or "youtube").lower()
+        current_app = str(state.current_app_id or state.current_app or "").lower()
+        goal = (state.goal or "").lower()
+        ocr = str(state.latest_ocr_text or "").lower()
+
+        if current_app != youtube_app_id:
+            return "OPEN_TARGET_APP"
+        if not self._is_probably_video_playback_visible(state):
+            return "START_ANY_VIDEO"
+        if not self._is_player_controls_visible(state):
+            return "REVEAL_PLAYER_CONTROLS"
+        if "stats for nerds" in goal:
+            if "stats for nerds" in ocr:
+                return "COMPLETE"
+            if "settings" not in ocr and "gear" not in ocr:
+                return "OPEN_PLAYER_SETTINGS"
+            if "stats for nerds" not in ocr:
+                return "ENABLE_STATS_FOR_NERDS"
+            return "VERIFY_STATS_OVERLAY"
+        if "play" in goal and "video" in goal:
+            return "COMPLETE"
+        return "VERIFY_STATS_OVERLAY"
+
+    def _is_youtube_goal_verified(self, state: RunState) -> bool:
+        cfg = getattr(self, "_config", None)
+        youtube_app_id = str(getattr(cfg, "youtube_app_id", "youtube") or "youtube").lower()
+        current_app = str(state.current_app_id or state.current_app or "").lower()
+        if current_app != youtube_app_id:
+            return False
+        if str(state.current_app_state or "").upper() != "FOREGROUND":
+            return False
+        goal = (state.goal or "").lower()
+        ocr = str(state.latest_ocr_text or "").lower()
+        if "stats for nerds" in goal:
+            return "stats for nerds" in ocr
+        if "play" in goal and "video" in goal:
+            return self._is_probably_video_playback_visible(state)
+        return True
+
+    def _sanitize_planned_action_for_goal(self, state: RunState, planned: PlannedAction) -> PlannedAction:
+        action = str(planned.action).upper()
+        params = planned.params or {}
+        if self._is_youtube_player_task(state.goal):
+            self._refresh_player_context(state)
+            if state.is_video_playback_context and action in {ActionType.PRESS_OK.value, "PRESS_ENTER"}:
+                ok_intent = str(params.get("ok_intent", "")).strip().upper()
+                if not ok_intent:
+                    state.record_ai_event(
+                        {
+                            "type": "commit-guard-blocked",
+                            "step": state.step_count,
+                            "reason": "Blocked blind OK in playback context",
+                            "blocked_action": action,
+                            "phase": state.last_player_phase,
+                        }
+                    )
+                    return PlannedAction(
+                        action=ActionType.CAPTURE_SCREENSHOT,
+                        confidence=0.84,
+                        reason="Playback context requires explicit OK intent before commit",
+                    )
+
+                if ok_intent == "REVEAL_PLAYER_CONTROLS" and (
+                    state.player_controls_visible or state.repeated_commit_count >= 1
+                ):
+                    state.record_ai_event(
+                        {
+                            "type": "commit-guard-blocked",
+                            "step": state.step_count,
+                            "reason": "Blocked repeated OK while revealing player controls",
+                            "blocked_action": action,
+                            "ok_intent": ok_intent,
+                            "repeated_commit_count": state.repeated_commit_count,
+                        }
+                    )
+                    return PlannedAction(
+                        action=ActionType.NEED_PLAYER_CONTROLS_VISIBLE,
+                        confidence=0.83,
+                        reason="One-OK reveal rule enforced; verify controls before next commit",
+                    )
+
+                if ok_intent in {"SELECT_FOCUSED_CONTROL", "CONFIRM_MENU_ITEM"}:
+                    focus = str(state.focus_target_guess or "").lower()
+                    if "settings" not in focus and "stats for nerds" not in focus:
+                        state.record_ai_event(
+                            {
+                                "type": "commit-guard-blocked",
+                                "step": state.step_count,
+                                "reason": "Focus uncertain before OK commit",
+                                "blocked_action": action,
+                                "ok_intent": ok_intent,
+                                "focus_target_guess": state.focus_target_guess,
+                            }
+                        )
+                        if not self._has_usable_ocr_text(state):
+                            return PlannedAction(
+                                action=ActionType.CAPTURE_SCREENSHOT,
+                                confidence=0.82,
+                                reason="Focus-before-select rule: OCR missing, capture screenshot before navigation",
+                            )
+                        return PlannedAction(
+                            action=ActionType.PRESS_RIGHT,
+                            confidence=0.8,
+                            reason="Focus-before-select rule: move focus toward settings gear before OK",
+                        )
+
+                if state.repeated_commit_count >= 2 or state.no_progress_count >= 2:
+                    state.record_ai_event(
+                        {
+                            "type": "commit-guard-blocked",
+                            "step": state.step_count,
+                            "reason": "Repeated commit without progress",
+                            "blocked_action": action,
+                            "ok_intent": ok_intent,
+                            "repeated_commit_count": state.repeated_commit_count,
+                            "no_progress_count": state.no_progress_count,
+                            "last_ok_effect": state.last_ok_effect,
+                        }
+                    )
+                    return PlannedAction(
+                        action=ActionType.CAPTURE_SCREENSHOT,
+                        confidence=0.86,
+                        reason="Repeated OK/ENTER without progress; forcing screenshot-grounded re-plan",
+                    )
+
+            if action == ActionType.LAUNCH_APP.value:
+                app_id = str(params.get("app_id", "")).lower()
+                cfg = getattr(self, "_config", None)
+                youtube_app_id = str(getattr(cfg, "youtube_app_id", "youtube") or "youtube").lower()
+                if app_id and app_id != youtube_app_id:
+                    state.record_ai_event(
+                        {
+                            "type": "detour-blocked",
+                            "step": state.step_count,
+                            "reason": "Blocked unrelated app launch for YouTube player task",
+                            "blocked_action": action,
+                            "blocked_app": app_id,
+                        }
+                    )
+                    return PlannedAction(
+                        action=ActionType.NEED_VIDEO_PLAYBACK_CONFIRMED,
+                        confidence=0.7,
+                        reason="Blocked unrelated app detour; re-focus on YouTube playback",
+                    )
+            if action == ActionType.PRESS_BACK.value and self._consecutive_back_count(state) >= 2:
+                state.record_ai_event(
+                    {
+                        "type": "detour-blocked",
+                        "step": state.step_count,
+                        "reason": "Blocked repeated BACK loop without grounded diagnosis",
+                        "blocked_action": action,
+                    }
+                )
+                return PlannedAction(
+                    action=ActionType.CAPTURE_SCREENSHOT,
+                    confidence=0.75,
+                    reason="Mandatory screenshot re-evaluation after bounded BACK usage",
+                )
+        return planned
+
+    @staticmethod
+    def _consecutive_back_count(state: RunState) -> int:
+        count = 0
+        for a in reversed(state.last_actions):
+            if str(a).upper() == ActionType.PRESS_BACK.value:
+                count += 1
+            else:
+                break
+        return count
+
+    def _infer_target_app_name_from_goal(self, goal: str, app_catalog: list[dict]) -> Optional[str]:
+        g = (goal or "").strip().lower()
+        if not g:
+            return None
+        if self._is_settings_goal(goal):
+            return "Settings"
+
+        open_words = ("open", "launch", "start")
+        if not any(w in g for w in open_words):
+            return None
+        best_name: Optional[str] = None
+        best_score = 0.0
+        goal_tokens = {t for t in g.replace("_", " ").split() if t}
+        for app in app_catalog or []:
+            if not isinstance(app, dict):
+                continue
+            for key in ("friendlyName", "name", "appId"):
+                value = str(app.get(key, "")).strip()
+                if not value:
+                    continue
+                if value.lower() in g:
+                    return value
+                val_tokens = {t for t in value.lower().replace("_", " ").split() if t}
+                if not val_tokens:
+                    continue
+                overlap = len(goal_tokens.intersection(val_tokens)) / float(len(val_tokens))
+                if overlap > best_score:
+                    best_score = overlap
+                    best_name = value
+        if best_score >= 0.5:
+            return best_name
+        return None
+
+    def _infer_setting_key_from_goal(self, goal: str, supported_settings: list[dict]) -> Optional[str]:
+        g = (goal or "").lower()
+        candidates = []
+        for item in supported_settings or []:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("key", "")).strip()
+            friendly = str(item.get("friendlyName", "")).strip().lower()
+            if key and (key.lower() in g or (friendly and friendly in g)):
+                return key
+            if key:
+                candidates.append(key)
+        if "time zone" in g or "timezone" in g:
+            for key in candidates:
+                if "time" in key.lower() or "zone" in key.lower():
+                    return key
+        return None
+
+    @staticmethod
+    def _infer_setting_value_from_goal(goal: str) -> Optional[str]:
+        g = (goal or "").strip()
+        lower = g.lower()
+        marker = " to "
+        idx = lower.find(marker)
+        if idx < 0:
+            return None
+        return g[idx + len(marker):].strip() or None
+
+    @staticmethod
+    def _is_open_app_goal(goal: str) -> bool:
+        g = (goal or "").lower()
+        explicit_app_intent = any(w in g for w in ("open", "launch", "start")) and "app" in g
+        named_app_intent = any(name in g for name in ("youtube", "netflix", "prime video", "settings"))
+        return explicit_app_intent or named_app_intent
+
+    @staticmethod
+    def _is_app_goal_verified(state: RunState) -> bool:
+        app_state = str(state.current_app_state or "").upper()
+        if app_state != "FOREGROUND":
+            return False
+        return bool(state.current_app_id or state.current_app or state.last_verified_foreground_app)
+
+    async def _normalize_navigation_batch(
+        self,
+        state: RunState,
+        nav_action_batch: list[dict],
+        planner_output: Optional[dict],
+    ) -> tuple[list[dict], int]:
+        normalized: list[dict] = []
+        failures = 0
+        for item in nav_action_batch:
+            action = str((item or {}).get("action", "")).strip() or ActionType.WAIT.value
+            params = (item or {}).get("params")
+            params_dict = params if isinstance(params, dict) else {}
+            next_action, next_params, err = await self._normalize_launch_action(
+                state=state,
+                action=action,
+                params=params_dict,
+                planner_output=planner_output,
+            )
+            if err:
+                failures += 1
+                logger.warning("Launch target resolution failed in planner batch: %s", err)
+                state.record_ai_event(
+                    {
+                        "type": "launch-resolution-failed",
+                        "step": state.step_count,
+                        "source": "planner",
+                        "error": err,
+                        "fallback_action": ActionType.NEED_BETTER_VIEW.value,
+                    }
+                )
+            normalized.append({"action": next_action, "params": next_params or {}})
+        return normalized, failures
+
+    async def _normalize_launch_action(
+        self,
+        state: RunState,
+        action: str,
+        params: dict,
+        planner_output: Optional[dict],
+    ) -> tuple[str, dict, Optional[str]]:
+        if str(action).upper() != ActionType.LAUNCH_APP.value:
+            return action, params, None
+
+        app_id = str((params or {}).get("app_id", "")).strip()
+        if app_id:
+            return action, params, None
+
+        merged_output: dict[str, Any] = dict(planner_output or {})
+        merged_output.setdefault("target_app_name", params.get("target_app_name") or params.get("app_name"))
+        merged_output.setdefault("target_app_domain", params.get("target_app_domain"))
+        merged_output.setdefault("target_app_hint", params.get("target_app_hint") or params.get("app_name"))
+        launch_parameters = dict(merged_output.get("launch_parameters") or {})
+        for k, v in (params or {}).items():
+            if k not in {"app_id", "app_name", "target_app_name", "target_app_domain", "target_app_hint", "launch_mode"}:
+                launch_parameters.setdefault(k, v)
+        merged_output["launch_parameters"] = launch_parameters
+
+        resolved = await self._app_resolver.resolve_target_app(
+            goal=state.goal,
+            planner_output=merged_output,
+            execution_state={
+                "session_id": state.run_id,
+                "device_id": self._config.dab_device_id,
+            },
+        )
+        if resolved is None:
+            target_debug = (
+                params.get("app_name")
+                or params.get("target_app_name")
+                or merged_output.get("target_app_name")
+                or merged_output.get("target_app_hint")
+                or "unknown"
+            )
+            state.resolution_failures += 1
+            return self._targeted_ambiguity_action(state), {}, (
+                f"Could not resolve launch target '{target_debug}' from applications/list"
+            )
+
+        normalized_params = dict(launch_parameters)
+        normalized_params["app_id"] = resolved.app_id
+        return ActionType.LAUNCH_APP.value, normalized_params, None
+
+    def _targeted_ambiguity_action(self, state: RunState) -> str:
+        if self._is_youtube_player_task(state.goal):
+            ocr = str(state.latest_ocr_text or "").lower()
+            if not self._is_probably_video_playback_visible(state):
+                return ActionType.NEED_VIDEO_PLAYBACK_CONFIRMED.value
+            if "settings" not in ocr and "gear" not in ocr:
+                return ActionType.NEED_SETTINGS_GEAR_LOCATION.value
+            if "stats for nerds" not in ocr:
+                return ActionType.NEED_PLAYER_MENU_CONFIRMATION.value
+            return ActionType.NEED_STATS_FOR_NERDS_TOGGLE_CONFIRMATION.value
+        return ActionType.NEED_BETTER_VIEW.value
 
     async def _execute_action(self, state: RunState, planned: PlannedAction) -> bool:
         """Execute the planned action via DAB and return whether it succeeded."""
         action = planned.action
         params = planned.params or {}
+
+        def _log_req(op: str, payload: dict) -> None:
+            state.record_dab_event({
+                "type": "request",
+                "step": state.step_count,
+                "op": op,
+                "payload": payload,
+            })
+
+        def _log_resp(op: str, resp) -> None:
+            state.record_dab_event({
+                "type": "response",
+                "step": state.step_count,
+                "op": op,
+                "success": bool(getattr(resp, "success", False)),
+                "status": int(getattr(resp, "status", 0) or 0),
+                "topic": getattr(resp, "topic", ""),
+                "request_id": getattr(resp, "request_id", ""),
+                "data": getattr(resp, "data", {}) or {},
+            })
+
         try:
             if action in KEY_MAP:
-                resp = await self._dab.key_press(KEY_MAP[action])
+                key_code = KEY_MAP[action]
+                if state.supported_keys and key_code not in set(state.supported_keys):
+                    logger.warning("Skipping unsupported key action=%s key_code=%s", action, key_code)
+                    return False
+                _log_req("input/key-press", {"keyCode": key_code})
+                resp = await self._dab.key_press(key_code)
+                _log_resp("input/key-press", resp)
                 return resp.success
             elif action == ActionType.LAUNCH_APP:
                 app_id = params.get("app_id", "")
                 if not app_id:
                     logger.warning("LAUNCH_APP missing app_id param")
                     return False
-                resp = await self._dab.launch_app(app_id)
+                launch_parameters = {}
+                content = str(params.get("content", "")).strip()
+                if content:
+                    launch_parameters["content"] = content
+                _log_req(
+                    "applications/launch",
+                    {"appId": app_id, **({"content": content} if content else {})},
+                )
+                resp = await self._dab.launch_app(app_id, parameters=launch_parameters or None)
+                _log_resp("applications/launch", resp)
                 if resp.success:
                     state.current_app = app_id
+                    state.current_app_id = app_id
+                return resp.success
+            elif str(action).upper() == "OPEN_CONTENT":
+                content = str(params.get("content", "")).strip()
+                if not content:
+                    return False
+                op = "content/open"
+                _log_req(op, {"content": content})
+                resp = await self._dab.open_content(content, parameters=params)
+                _log_resp(op, resp)
+                return resp.success
+            elif action == ActionType.GET_SETTING:
+                setting_key = str(params.get("key", "")).strip()
+                if not setting_key:
+                    return False
+                _log_req("system/settings/get", {"key": setting_key})
+                resp = await self._dab.get_setting(setting_key)
+                _log_resp("system/settings/get", resp)
+                return resp.success
+            elif action == ActionType.SET_SETTING:
+                setting_key = str(params.get("key", "")).strip()
+                if not setting_key:
+                    return False
+                _log_req("system/settings/set", {"key": setting_key, "value": params.get("value")})
+                resp = await self._dab.set_setting(setting_key, params.get("value"))
+                _log_resp("system/settings/set", resp)
                 return resp.success
             elif action == ActionType.GET_STATE:
-                app_id = state.current_app or params.get("app_id", "")
+                app_id = (
+                    state.current_app
+                    or params.get("app_id", "")
+                    or self._config.youtube_app_id
+                )
+                _log_req("applications/get-state", {"appId": app_id})
                 resp = await self._dab.get_app_state(app_id)
+                _log_resp("applications/get-state", resp)
                 if resp.success:
                     state.current_app = resp.data.get("appId", state.current_app)
+                    state.current_app_id = resp.data.get("appId", state.current_app_id)
                     state.current_screen = resp.data.get("state")
+                    state.current_app_state = str(resp.data.get("state", ""))
+                    if state.current_app_state.upper() == "FOREGROUND" and state.current_app_id:
+                        state.last_verified_foreground_app = state.current_app_id
                 return resp.success
-            elif action in (ActionType.CAPTURE_SCREENSHOT, ActionType.NEED_BETTER_VIEW):
+            elif action in (
+                ActionType.CAPTURE_SCREENSHOT,
+                ActionType.NEED_BETTER_VIEW,
+                ActionType.NEED_PLAYER_CONTROLS_VISIBLE,
+                ActionType.NEED_VIDEO_PLAYBACK_CONFIRMED,
+                ActionType.NEED_SETTINGS_GEAR_LOCATION,
+                ActionType.NEED_PLAYER_MENU_CONFIRMATION,
+                ActionType.NEED_STATS_FOR_NERDS_TOGGLE_CONFIRMATION,
+            ):
                 await self._update_capture(state)
-                return state.latest_screenshot_b64 is not None
+                self._refresh_player_context(state)
+                if action == ActionType.CAPTURE_SCREENSHOT:
+                    return state.latest_screenshot_b64 is not None
+                if action == ActionType.NEED_BETTER_VIEW:
+                    return self._has_usable_ocr_text(state)
+                if action == ActionType.NEED_PLAYER_CONTROLS_VISIBLE:
+                    return self._is_player_controls_visible(state)
+                if action == ActionType.NEED_VIDEO_PLAYBACK_CONFIRMED:
+                    return self._is_probably_video_playback_visible(state)
+                if action == ActionType.NEED_SETTINGS_GEAR_LOCATION:
+                    focus = str(state.focus_target_guess or "").lower()
+                    return "settings" in focus or "gear" in focus
+                if action == ActionType.NEED_PLAYER_MENU_CONFIRMATION:
+                    ocr = str(state.latest_ocr_text or "").lower()
+                    return any(k in ocr for k in ("stats for nerds", "quality", "captions", "playback speed"))
+                if action == ActionType.NEED_STATS_FOR_NERDS_TOGGLE_CONFIRMATION:
+                    ocr = str(state.latest_ocr_text or "").lower()
+                    return "stats for nerds" in ocr
+                return False
             elif action == ActionType.WAIT:
                 seconds = params.get("seconds", 1)
                 await asyncio.sleep(float(seconds))
@@ -181,6 +1813,12 @@ class Orchestrator:
                 return False
         except Exception as exc:
             logger.error("Action execution failed: action=%s error=%s", action, exc)
+            state.record_dab_event({
+                "type": "error",
+                "step": state.step_count,
+                "op": str(action),
+                "error": str(exc),
+            })
             return False
 
     async def _update_capture(self, state: RunState) -> None:

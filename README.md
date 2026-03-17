@@ -102,10 +102,12 @@ pytest tests/ -v
 | `GOOGLE_CLOUD_PROJECT` | `` | GCP project ID for Vertex AI |
 | `GOOGLE_CLOUD_LOCATION` | `asia-south1` | GCP region |
 | `GOOGLE_APPLICATION_CREDENTIALS` | `` | Path to service account JSON |
-| `VERTEX_LIVE_MODEL` | `gemini-2.0-flash-live-preview-04-09` | Gemini model |
+| `VERTEX_PLANNER_MODEL` | `gemini-2.5-flash` | Gemini model for `/run/start` and `/planner/debug` |
+| `VERTEX_LIVE_MODEL` | `gemini-2.0-flash-live-preview-04-09` | Gemini Live/LiveKit model |
 | `LIVEKIT_URL` | `` | LiveKit server WebSocket URL |
 | `LIVEKIT_API_KEY` | `` | LiveKit API key |
 | `LIVEKIT_API_SECRET` | `` | LiveKit API secret |
+| `ENABLE_LIVEKIT_AGENT` | `false` | Start LiveKit worker in background with API process |
 | `MAX_STEPS_PER_RUN` | `50` | Max steps before timeout |
 | `ARTIFACTS_BASE_DIR` | `./artifacts` | Where to store run artifacts |
 | `API_HOST` | `0.0.0.0` | FastAPI bind host |
@@ -122,6 +124,14 @@ pytest tests/ -v
 | `HDMI_CAPTURE_FPS` | `30.0` | Requested HDMI capture FPS |
 | `HDMI_CAPTURE_FOURCC` | `MJPG` | FOURCC codec (`MJPG` or `YUYV`) |
 | `HDMI_STREAM_JPEG_QUALITY` | `80` | JPEG quality for browser live stream |
+| `HDMI_AUDIO_ENABLED` | `false` | Enable HDMI audio streaming endpoint |
+| `HDMI_AUDIO_INPUT_FORMAT` | `auto` | Audio input format: `auto`, `alsa`, or `pulse` |
+| `HDMI_AUDIO_DEVICE` | `` | ALSA input device (e.g. `hw:1,0`); auto-select when empty |
+| `HDMI_AUDIO_SAMPLE_RATE` | `48000` | Audio sample rate |
+| `HDMI_AUDIO_CHANNELS` | `2` | Audio channels |
+| `HDMI_AUDIO_BITRATE` | `128k` | MP3 bitrate for `/stream/audio` |
+| `HDMI_AUDIO_CHUNK_BYTES` | `4096` | Chunk size for audio stream generator |
+| `YOUTUBE_APP_ID` | `youtube` | Only allowed `app_id` for `LAUNCH_APP` |
 
 ## API Endpoints
 
@@ -131,15 +141,23 @@ pytest tests/ -v
 | `GET` | `/health` | Health check |
 | `GET` | `/config` | Configuration summary (non-sensitive) |
 | `GET` | `/capture/source` | Capture source diagnostics (HDMI availability, active mode) |
+| `GET` | `/audio/source` | HDMI audio diagnostics (ALSA devices, ffmpeg availability) |
 | `POST` | `/run/start` | Start a new automation run |
 | `GET` | `/runs` | List all runs (most-recent first) |
 | `GET` | `/run/{id}/status` | Get run status |
 | `GET` | `/run/{id}/history` | Get full action history |
+| `GET` | `/run/{id}/ai-transcript` | Get full AI planner transcript |
 | `GET` | `/run/{id}/screenshot` | Get latest screenshot (base64 PNG) |
 | `POST` | `/run/{id}/stop` | Stop a running run |
 | `POST` | `/action` | Execute a manual action |
+| `POST` | `/actions/batch` | Execute multiple manual actions in one request |
+| `POST` | `/task/macro` | Convert natural-language task to actions (optional execute) |
+| `GET` | `/dab/operations` | List supported DAB operations from device |
+| `GET` | `/dab/keys` | List supported DAB key codes from device |
+| `GET` | `/dab/apps` | List launchable applications from device |
 | `POST` | `/screenshot` | Capture a screenshot now |
 | `GET` | `/stream/hdmi` | Live MJPEG stream from HDMI capture card |
+| `GET` | `/stream/audio` | Live MP3 audio stream from HDMI/ALSA input |
 | `POST` | `/planner/debug` | Debug the planner |
 
 ### Example: Start a run
@@ -147,7 +165,7 @@ pytest tests/ -v
 ```bash
 curl -X POST http://localhost:8000/run/start \
   -H "Content-Type: application/json" \
-  -d '{"goal": "Launch Netflix and verify the home screen", "max_steps": 20}'
+  -d '{"goal": "Open YouTube and verify the home screen", "app_id": "youtube", "content": "lofi music", "max_steps": 20}'
 ```
 
 ### Example: Manual key press
@@ -167,6 +185,16 @@ curl -X POST http://localhost:8000/planner/debug \
 ```
 
 ## Architecture Notes
+
+### LiveKit integration in API runtime
+
+The FastAPI service can now launch the LiveKit agent in-process at startup.
+
+- Set `ENABLE_LIVEKIT_AGENT=true`
+- Set `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and `LIVEKIT_API_SECRET`
+- Start API normally (`python -m vertex_live_dab_agent`)
+
+When enabled, a background LiveKit task starts with the API and is cancelled cleanly on shutdown.
 
 ### Mock mode (default)
 
@@ -213,11 +241,38 @@ When HDMI is active, both AI step screenshots and manual `/screenshot` requests
 use the HDMI frame source, and the UI can display the live stream from
 `/stream/hdmi`.
 
+To enable HDMI audio streaming in the UI:
+
+```bash
+export HDMI_AUDIO_ENABLED=true
+export HDMI_AUDIO_DEVICE=hw:1,0   # optional; auto-select if omitted
+# If ffmpeg says "Unknown input format: alsa", use pulse mode:
+export HDMI_AUDIO_INPUT_FORMAT=pulse
+export HDMI_AUDIO_DEVICE=default
+```
+
+The UI audio player uses `/stream/audio`.
+
+Linux permission note:
+
+If `sudo arecord ...` works but normal user capture fails, add your user to the
+`audio` group and re-login:
+
+```bash
+sudo usermod -aG audio $USER
+newgrp audio
+```
+
 For local desktop preview/testing of the capture card:
 
 ```bash
 python capture_view.py --list
 python capture_view.py --device /dev/video2
+
+# Audio capture test
+python capture_audio.py --list
+python capture_audio.py --device hw:1,0 --seconds 10 --out hdmi_audio.wav
+python capture_audio.py --format pulse --device default --seconds 10 --out hdmi_audio.wav
 ```
 
 ### Artifacts
@@ -268,6 +323,24 @@ pytest tests/test_api.py -v
 
 # Run with debug logging
 LOG_LEVEL=DEBUG python -m vertex_live_dab_agent
+```
+
+### Vertex AI live smoke tests (real API)
+
+```bash
+# Install vertex extras if not already installed
+pip install -e ".[dev,vertex]"
+
+# Required auth/env
+export GOOGLE_CLOUD_PROJECT="<your-project>"
+export GOOGLE_CLOUD_LOCATION="asia-south1"
+export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service-account.json"
+
+# Optional model override
+export VERTEX_TEST_MODEL="gemini-2.5-flash"
+
+# Run real Vertex tests
+RUN_VERTEX_INTEGRATION_TESTS=1 pytest tests/test_vertex_integration.py -v -s
 ```
 
 ## Frontend on GCP, harness local (recommended)
