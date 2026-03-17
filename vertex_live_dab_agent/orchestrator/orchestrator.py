@@ -255,6 +255,12 @@ class Orchestrator:
                 "repeated_commit_count": state.repeated_commit_count,
                 "no_progress_count": state.no_progress_count,
                 "last_player_phase": state.last_player_phase,
+                # World model fields from requirement 2
+                "current_subgoal": state.current_subgoal,
+                "target_app_name": state.target_app_name,
+                "target_app_domain": state.target_app_domain,
+                "grounded_screenshot_summary": state.grounded_screenshot_summary,
+                "blocked_actions": state.blocked_actions,
                 "recent_ai_events": state.ai_transcript[-10:],
                 "recent_dab_events": state.dab_transcript[-8:],
                 "recent_action_records": [
@@ -314,7 +320,9 @@ class Orchestrator:
                 "DIRECT_APP_LAUNCH",
                 "DIRECT_APP_LAUNCH_WITH_PARAMS",
                 "GO_HOME_THEN_LAUNCH",
+                "GO_HOME_AND_RECOVER",
                 "RECOVERY_RELAUNCH",
+                "RELAUNCH_TARGET_APP",
             }:
                 has_launch_step = any(
                     str((item or {}).get("action", "")).upper() == ActionType.LAUNCH_APP.value
@@ -328,13 +336,24 @@ class Orchestrator:
                         "device_id": self._config.dab_device_id,
                     },
                 )
+                if resolved is not None:
+                    # Track resolved target app on state
+                    if not state.target_app_name:
+                        state.target_app_name = resolved.app_name or nav_plan.target_app_name
+                    if not state.target_app_domain:
+                        state.target_app_domain = nav_plan.target_app_domain
                 if resolved is not None and not has_launch_step:
                     launch_step = self._app_resolver.build_launch_action(
                         resolved_target=resolved,
                         launch_parameters=nav_plan.launch_parameters,
                     )
                     strategy_batch: list[dict] = []
-                    if str(nav_plan.execution_mode) in {"GO_HOME_THEN_LAUNCH", "RECOVERY_RELAUNCH"}:
+                    if str(nav_plan.execution_mode) in {
+                        "GO_HOME_THEN_LAUNCH",
+                        "GO_HOME_AND_RECOVER",
+                        "RECOVERY_RELAUNCH",
+                        "RELAUNCH_TARGET_APP",
+                    }:
                         strategy_batch.append({"action": ActionType.PRESS_HOME.value, "params": {}})
                     strategy_batch.append(launch_step)
                     strategy_batch.append({"action": ActionType.WAIT.value, "params": {"seconds": 1.0}})
@@ -704,6 +723,7 @@ class Orchestrator:
 
         decision, reason, batch = await self._decide_recovery_from_context(state, ctx)
         state.strategy_selected = decision
+        state.record_recovery(decision=decision, reason=reason, step=step)
         state.record_ai_event(
             {
                 "type": "stuck-diagnosis",
@@ -755,8 +775,11 @@ class Orchestrator:
         )
         ocr = str(state.latest_ocr_text or "").strip()
         screenshot_summary = ocr[:220] if ocr else "No OCR text from screenshot"
+        # Update grounded screenshot summary on state for Gemini to use
+        state.grounded_screenshot_summary = screenshot_summary
         return {
             "test_goal": state.goal,
+            "current_subgoal": state.current_subgoal,
             "current_step_goal": (state.task_preplan or {}).get("expected_outcome") or state.goal,
             "current_screenshot_summary": screenshot_summary,
             "current_app": state.current_app_id or state.current_app,
@@ -776,6 +799,9 @@ class Orchestrator:
             "repeated_commit_count": state.repeated_commit_count,
             "no_progress_count": state.no_progress_count,
             "last_player_phase": state.last_player_phase,
+            "target_app_name": state.target_app_name,
+            "target_app_domain": state.target_app_domain,
+            "recovery_history": state.recovery_history[-5:],
         }
 
     @staticmethod
@@ -1045,6 +1071,11 @@ class Orchestrator:
                 execution_state={"session_id": state.run_id, "device_id": self._config.dab_device_id},
             )
             if resolved is not None:
+                # Track resolved target app on RunState world model
+                if not state.target_app_name:
+                    state.target_app_name = resolved.app_name or target_name
+                if not state.target_app_domain:
+                    state.target_app_domain = "media" if not self._is_settings_goal(state.goal) else "system_settings"
                 state.strategy_selected = (
                     "DIRECT_APP_LAUNCH_WITH_PARAMS"
                     if has_content and (can_launch_with_content or can_content_open)
@@ -1223,8 +1254,11 @@ class Orchestrator:
             "DIRECT_APP_LAUNCH",
             "DIRECT_APP_LAUNCH_WITH_PARAMS",
             "GO_HOME_THEN_LAUNCH",
+            "GO_HOME_AND_RECOVER",
             "RECOVERY_RELAUNCH",
+            "RELAUNCH_TARGET_APP",
             "DIRECT_SETTING_OPERATION",
+            "DIRECT_DAB_OPERATION",
         }:
             return False
         return True
