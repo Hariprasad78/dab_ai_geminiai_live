@@ -90,6 +90,38 @@ def list_alsa_capture_devices() -> List[Dict[str, str]]:
     return devices
 
 
+def list_alsa_pcm_names(limit: int = 80) -> List[str]:
+    """Return ALSA PCM endpoint names from `arecord -L` output."""
+    arecord = shutil.which("arecord")
+    if not arecord:
+        return []
+    try:
+        proc = subprocess.run(
+            [arecord, "-L"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except Exception:
+        return []
+
+    names: List[str] = []
+    for line in (proc.stdout or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if line[:1].isspace():
+            continue
+        # first token on non-indented lines is PCM name
+        token = stripped.split()[0]
+        if token and token not in names:
+            names.append(token)
+        if len(names) >= int(limit):
+            break
+    return names
+
+
 class HdmiAudioStreamSession:
     """Streams HDMI-capture-card audio via ffmpeg -> stdout (mp3)."""
 
@@ -299,6 +331,10 @@ def resolve_audio_input(preferred_format: str = "auto", configured_device: str =
             devs = list_alsa_capture_devices()
             if devs:
                 return "arecord", str(devs[0].get("alsa_device") or "")
+            pcm_names = set(list_alsa_pcm_names())
+            for fallback in ("default", "pulse"):
+                if fallback in pcm_names:
+                    return "arecord", fallback
             return None, None
         if not ffmpeg_has_input_format(pf):
             return None, None
@@ -329,5 +365,9 @@ def resolve_audio_input(preferred_format: str = "auto", configured_device: str =
         devs = list_alsa_capture_devices()
         if devs:
             return "arecord", str(devs[0].get("alsa_device") or "")
+        pcm_names = set(list_alsa_pcm_names())
+        for fallback in ("default", "pulse"):
+            if fallback in pcm_names:
+                return "arecord", fallback
 
     return None, None

@@ -1027,8 +1027,9 @@ async def stream_audio() -> StreamingResponse:
     c = get_config()
     if not c.hdmi_audio_enabled:
         raise HTTPException(status_code=400, detail="HDMI audio streaming disabled. Set HDMI_AUDIO_ENABLED=true")
-    if not ffmpeg_available() and not arecord_available():
-        raise HTTPException(status_code=500, detail="ffmpeg not found on host")
+    # MP3 output for browser playback always requires ffmpeg (including arecord fallback path).
+    if not ffmpeg_available():
+        raise HTTPException(status_code=500, detail="ffmpeg not found on host; required for /stream/audio")
 
     input_format, device = _resolve_audio_input()
     if not input_format or not device:
@@ -1078,7 +1079,15 @@ async def stream_audio() -> StreamingResponse:
         finally:
             session.close()
 
-    return StreamingResponse(audio_generator(), media_type="audio/mpeg")
+    return StreamingResponse(
+        audio_generator(),
+        media_type="audio/mpeg",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/action", response_model=ManualActionResponse)

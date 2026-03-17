@@ -6,20 +6,54 @@
   <title>Vertex Live DAB Agent</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
-    header { background: #1e293b; padding: 1rem 2rem; border-bottom: 1px solid #334155; display: flex; align-items: center; gap: 1rem; }
-    header h1 { font-size: 1.25rem; font-weight: 600; color: #f8fafc; }
-    .badge { background: #0ea5e9; color: white; font-size: 0.7rem; padding: 0.2rem 0.5rem; border-radius: 9999px; font-weight: 600; }
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: radial-gradient(1200px 400px at 10% -10%, rgba(56, 189, 248, 0.16), transparent 60%),
+                  radial-gradient(1000px 460px at 100% 0%, rgba(59, 130, 246, 0.12), transparent 60%),
+                  #050b18;
+      color: #e2e8f0;
+      min-height: 100vh;
+      background-attachment: fixed;
+    }
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background-image: linear-gradient(rgba(56, 189, 248, 0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(56, 189, 248, 0.04) 1px, transparent 1px);
+      background-size: 30px 30px;
+      mask-image: radial-gradient(circle at center, black, transparent 75%);
+    }
+    header {
+      background: rgba(10, 18, 37, 0.85);
+      backdrop-filter: blur(10px);
+      padding: 1rem 2rem;
+      border-bottom: 1px solid #1f3b63;
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      position: sticky;
+      top: 0;
+      z-index: 30;
+    }
+    header h1 { font-size: 1.25rem; font-weight: 700; color: #f8fafc; letter-spacing: 0.02em; }
+    .badge { background: linear-gradient(135deg, #06b6d4, #3b82f6); color: white; font-size: 0.7rem; padding: 0.2rem 0.5rem; border-radius: 9999px; font-weight: 700; }
     .badge.mock { background: #f59e0b; }
-    main { max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
-    .card { background: #1e293b; border: 1px solid #334155; border-radius: 0.75rem; padding: 1.5rem; }
+    main { max-width: 1480px; margin: 1.2rem auto 2rem; padding: 0 1.25rem; display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    .card {
+      background: linear-gradient(180deg, rgba(15, 25, 45, 0.93), rgba(11, 19, 37, 0.93));
+      border: 1px solid #243d62;
+      box-shadow: 0 10px 24px rgba(2, 8, 23, 0.45), inset 0 1px 0 rgba(148, 163, 184, 0.08);
+      border-radius: 1rem;
+      padding: 1rem;
+    }
     .card h2 { font-size: 0.9rem; font-weight: 600; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 1rem; }
     label { display: block; font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.35rem; }
     input, textarea, select {
       width: 100%; background: #0f172a; border: 1px solid #334155; border-radius: 0.5rem;
       color: #e2e8f0; padding: 0.6rem 0.75rem; font-size: 0.9rem; outline: none;
     }
-    input:focus, textarea:focus { border-color: #0ea5e9; }
+    input:focus, textarea:focus { border-color: #38bdf8; box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.18); }
     textarea { resize: vertical; min-height: 60px; }
     button {
       background: #0ea5e9; color: white; border: none; border-radius: 0.5rem;
@@ -46,15 +80,15 @@
     #run-list { display: flex; flex-direction: column; gap: 0.6rem; max-height: 380px; overflow-y: auto; }
     .run-item {
       background: #0f172a; border: 1px solid #334155; border-radius: 0.5rem;
-      padding: 0.75rem 1rem; cursor: pointer; transition: border-color 0.15s;
+      padding: 0.75rem 1rem; cursor: pointer; transition: border-color 0.15s, transform 0.12s;
     }
-    .run-item:hover { border-color: #0ea5e9; }
+    .run-item:hover { border-color: #38bdf8; transform: translateY(-1px); }
     .run-item.selected { border-color: #0ea5e9; background: #0c1a2e; }
     .run-goal { font-size: 0.9rem; font-weight: 500; margin-bottom: 0.3rem; }
     .run-meta { font-size: 0.75rem; color: #64748b; }
     #detail-panel { grid-column: 1 / -1; }
     .detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0.75rem; margin-bottom: 1rem; }
-    .stat { background: #0f172a; border: 1px solid #334155; border-radius: 0.5rem; padding: 0.75rem 1rem; }
+    .stat { background: #0f172a; border: 1px solid #334155; border-radius: 0.65rem; padding: 0.75rem 1rem; }
     .stat-label { font-size: 0.75rem; color: #64748b; margin-bottom: 0.2rem; }
     .stat-value { font-size: 1.1rem; font-weight: 600; color: #f1f5f9; }
     #action-log, #ai-log, #dab-log { max-height: 220px; overflow-y: auto; font-family: monospace; font-size: 0.8rem; color: #94a3b8; }
@@ -81,24 +115,77 @@
     .key-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.4rem; max-width: 220px; }
     .key-grid button { padding: 0.5rem; font-size: 0.8rem; }
     .full-width { grid-column: 1 / -1; }
-    #status-bar { text-align: center; font-size: 0.75rem; color: #475569; margin-top: 0.5rem; display:flex; gap:0.4rem; align-items:center; justify-content:center; flex-wrap:wrap; padding: 0 1rem 1rem; }
+    #status-bar { text-align: center; font-size: 0.75rem; color: #94a3b8; margin-top: 0.5rem; display:flex; gap:0.4rem; align-items:center; justify-content:center; flex-wrap:wrap; padding: 0 1rem 1rem; }
     #api-base-input { width: min(460px, 90vw); background:#0f172a; border:1px solid #334155; color:#cbd5e1; border-radius:0.4rem; padding:0.3rem 0.5rem; font-size:0.75rem; }
     .mini-btn { padding: 0.3rem 0.55rem; font-size:0.7rem; border-radius:0.4rem; }
     .empty-state { color: #475569; font-size: 0.85rem; text-align: center; padding: 1.5rem; }
     .error-msg { color: #f87171; font-size: 0.8rem; margin-top: 0.5rem; }
+    .subtitle { font-size: 0.75rem; color: #7dd3fc; letter-spacing: 0.06em; text-transform: uppercase; }
+    .header-right { margin-left:auto; display:flex; gap:0.6rem; align-items:center; }
+    .health-dot { width: 10px; height: 10px; border-radius: 50%; background: #ef4444; box-shadow: 0 0 12px rgba(239,68,68,0.6); }
+    .health-dot.ok { background: #22c55e; box-shadow: 0 0 14px rgba(34,197,94,0.8); }
+    .hero { grid-column: 1 / -1; display:grid; grid-template-columns: 1.2fr 1fr; gap:1rem; }
+    .hero-panel { background: linear-gradient(120deg, rgba(14,165,233,0.16), rgba(59,130,246,0.08)); border:1px solid #1f3d66; border-radius: 0.9rem; padding: 1rem; }
+    .hero-title { font-size: 1.05rem; font-weight: 700; margin-bottom: 0.4rem; }
+    .hero-sub { color:#93c5fd; font-size:0.83rem; line-height:1.35; }
+    .kpi-grid { display:grid; grid-template-columns: repeat(3, minmax(90px,1fr)); gap:0.55rem; }
+    .kpi { background: rgba(2, 6, 23, 0.52); border:1px solid #284268; border-radius:0.65rem; padding:0.65rem; }
+    .kpi .k { color:#93c5fd; font-size:0.7rem; }
+    .kpi .v { font-size:1rem; font-weight:700; margin-top:0.2rem; }
+    .quick-nav { grid-column:1 / -1; display:flex; gap:0.5rem; flex-wrap:wrap; }
+    .quick-nav button { background:#132744; border:1px solid #27466f; color:#bae6fd; }
+    .quick-nav button:hover { background:#1b365c; }
+    .detail-tabs { display:flex; gap:0.45rem; flex-wrap:wrap; margin:0.8rem 0; }
+    .tab-btn { background:#132744; border:1px solid #2f4d74; color:#93c5fd; padding:0.35rem 0.7rem; border-radius:0.5rem; font-size:0.78rem; cursor:pointer; }
+    .tab-btn.active { background:#0ea5e9; border-color:#0284c7; color:white; }
+    .detail-section { display:none; }
+    .detail-section.active { display:block; }
+    @media (max-width: 980px) {
+      .hero { grid-template-columns: 1fr; }
+      .remote-layout { grid-template-columns: 1fr; }
+      main { grid-template-columns: 1fr; }
+    }
   </style>
 </head>
 <body>
 
 <header>
-  <h1>🤖 Vertex Live DAB Agent</h1>
+  <div>
+    <h1>🤖 Vertex Live DAB Agent</h1>
+    <div class="subtitle">Autonomous TV QA Command Center</div>
+  </div>
   <span class="badge mock" id="mode-badge">MOCK</span>
-  <span style="margin-left:auto; font-size:0.8rem; color:#475569;" id="health-status">Connecting...</span>
+  <div class="header-right">
+    <span class="health-dot" id="health-dot"></span>
+    <span style="font-size:0.8rem; color:#94a3b8;" id="health-status">Connecting...</span>
+  </div>
 </header>
 
 <main>
+  <div class="hero">
+    <div class="hero-panel">
+      <div class="hero-title">Realtime Robotic Navigation Console</div>
+      <div class="hero-sub">Live run telemetry, screenshot-grounded planning, recovery diagnosis, and DAB command stream in one integrated control surface.</div>
+    </div>
+    <div class="hero-panel">
+      <div class="kpi-grid">
+        <div class="kpi"><div class="k">Controller</div><div class="v" id="kpi-controller">--</div></div>
+        <div class="kpi"><div class="k">Active Run</div><div class="v" id="kpi-run">None</div></div>
+        <div class="kpi"><div class="k">Run Status</div><div class="v" id="kpi-status">--</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card quick-nav">
+    <button onclick="scrollToSection('new-run-card')">New Run</button>
+    <button onclick="scrollToSection('remote-card')">Remote + Stream</button>
+    <button onclick="scrollToSection('runs-card')">Runs</button>
+    <button onclick="scrollToSection('detail-panel')">Run Detail</button>
+    <button onclick="scrollToSection('planner-debug-card')">Planner Debug</button>
+  </div>
+
   <!-- Start Run -->
-  <div class="card">
+  <div class="card" id="new-run-card">
     <h2>New Run</h2>
     <label>Goal</label>
     <textarea id="goal-input" placeholder="e.g. Launch Netflix and verify home screen loads"></textarea>
@@ -111,7 +198,7 @@
   </div>
 
   <!-- Virtual Remote + HDMI Live Stream -->
-  <div class="card full-width">
+  <div class="card full-width" id="remote-card">
     <h2>Virtual Remote + HDMI Live Stream</h2>
     <div class="remote-layout">
       <div class="remote-panel">
@@ -224,7 +311,7 @@
   </div>
 
   <!-- Run List -->
-  <div class="card">
+  <div class="card" id="runs-card">
     <h2>Runs <button class="secondary" style="float:right; font-size:0.7rem; padding:0.2rem 0.5rem;" onclick="loadRuns()">↻ Refresh</button></h2>
     <div id="run-list"><div class="empty-state">No runs yet. Start a run above.</div></div>
   </div>
@@ -253,24 +340,48 @@
       <div class="stat"><div class="stat-label">Phase</div><div class="stat-value" id="d-phase" style="font-size:0.85rem;">-</div></div>
       <div class="stat"><div class="stat-label">Intent</div><div class="stat-value" id="d-intent" style="font-size:0.85rem;">-</div></div>
     </div>
-    <label>Current Batch</label>
-    <div id="batch-log"><div class="empty-state">No batch planned yet.</div></div>
-    <label style="margin-top:0.8rem;">Simple Step Explanations</label>
-    <div id="friendly-log"><div class="empty-state">No explanations yet.</div></div>
-    <label style="margin-top:0.8rem;">Final Diagnosis (Simple)</label>
-    <div id="diagnosis-log"><div class="empty-state">Diagnosis will appear when available.</div></div>
-    <label style="margin-top:0.8rem;">Voice Narration (Subtitles)</label>
-    <div id="narration-log"><div class="empty-state">No narration yet.</div></div>
-    <label>Action History (full)</label>
-    <div id="action-log"><div class="empty-state">No actions yet.</div></div>
-    <label style="margin-top:0.8rem;">AI Transcript (full)</label>
-    <div id="ai-log"><div class="empty-state">No AI logs yet.</div></div>
-    <label style="margin-top:0.8rem;">DAB Transcript (full)</label>
-    <div id="dab-log"><div class="empty-state">No DAB logs yet.</div></div>
+    <div class="detail-tabs">
+      <button class="tab-btn active" data-tab="tab-batch">Batch</button>
+      <button class="tab-btn" data-tab="tab-friendly">Step Explain</button>
+      <button class="tab-btn" data-tab="tab-diagnosis">Diagnosis</button>
+      <button class="tab-btn" data-tab="tab-narration">Narration</button>
+      <button class="tab-btn" data-tab="tab-action">Action Log</button>
+      <button class="tab-btn" data-tab="tab-ai">AI Transcript</button>
+      <button class="tab-btn" data-tab="tab-dab">DAB Transcript</button>
+    </div>
+
+    <div class="detail-section active" id="tab-batch">
+      <label>Current Batch</label>
+      <div id="batch-log"><div class="empty-state">No batch planned yet.</div></div>
+    </div>
+    <div class="detail-section" id="tab-friendly">
+      <label>Simple Step Explanations</label>
+      <div id="friendly-log"><div class="empty-state">No explanations yet.</div></div>
+    </div>
+    <div class="detail-section" id="tab-diagnosis">
+      <label>Final Diagnosis (Simple)</label>
+      <div id="diagnosis-log"><div class="empty-state">Diagnosis will appear when available.</div></div>
+    </div>
+    <div class="detail-section" id="tab-narration">
+      <label>Voice Narration (Subtitles)</label>
+      <div id="narration-log"><div class="empty-state">No narration yet.</div></div>
+    </div>
+    <div class="detail-section" id="tab-action">
+      <label>Action History (full)</label>
+      <div id="action-log"><div class="empty-state">No actions yet.</div></div>
+    </div>
+    <div class="detail-section" id="tab-ai">
+      <label>AI Transcript (full)</label>
+      <div id="ai-log"><div class="empty-state">No AI logs yet.</div></div>
+    </div>
+    <div class="detail-section" id="tab-dab">
+      <label>DAB Transcript (full)</label>
+      <div id="dab-log"><div class="empty-state">No DAB logs yet.</div></div>
+    </div>
   </div>
 
   <!-- Planner Debug -->
-  <div class="card full-width">
+  <div class="card full-width" id="planner-debug-card">
     <h2>Planner Debug</h2>
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:1rem;">
       <div>
@@ -317,6 +428,27 @@
     const s = (v || '').trim();
     if (!s) return '';
     return s.replace(/\/+$/, '');
+  }
+
+  function scrollToSection(id) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function initDetailTabs() {
+    const buttons = Array.from(document.querySelectorAll('.tab-btn'));
+    const sections = Array.from(document.querySelectorAll('.detail-section'));
+    buttons.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const tab = btn.dataset.tab;
+        buttons.forEach(b => b.classList.remove('active'));
+        sections.forEach(s => s.classList.remove('active'));
+        btn.classList.add('active');
+        const target = document.getElementById(tab);
+        if (target) target.classList.add('active');
+      });
+    });
   }
 
   function isStaticHostMode() {
@@ -384,12 +516,16 @@
       const data = await api('/health');
       document.getElementById('health-status').textContent = `✓ Controller connected (${data.status})`;
       document.getElementById('health-status').style.color = '#4ade80';
+      document.getElementById('health-dot').classList.add('ok');
       const badge = document.getElementById('mode-badge');
       if (data.mock_mode) { badge.textContent = 'MOCK MODE'; badge.className = 'badge mock'; }
       else { badge.textContent = 'LIVE'; badge.className = 'badge'; }
+      document.getElementById('kpi-controller').textContent = data.status || 'ok';
     } catch (e) {
       document.getElementById('health-status').textContent = '✗ Controller disconnected';
       document.getElementById('health-status').style.color = '#f87171';
+      document.getElementById('health-dot').classList.remove('ok');
+      document.getElementById('kpi-controller').textContent = 'offline';
     }
   }
 
@@ -446,18 +582,57 @@
     hdmiStreamRunning = false;
   }
 
-  function toggleAudioStream() {
+  async function toggleAudioStream() {
     if (hdmiAudioRunning) stopAudioStream();
-    else startAudioStream();
+    else await startAudioStream();
   }
 
-  function startAudioStream() {
+  async function startAudioStream() {
+    const resultEl = document.getElementById('manual-result');
+    try {
+      const status = await api('/audio/source');
+      if (!status.enabled) {
+        throw new Error('Audio streaming is disabled. Set HDMI_AUDIO_ENABLED=true and restart server.');
+      }
+      if (!status.ffmpeg_available) {
+        throw new Error('ffmpeg is not available on host. Install ffmpeg for /stream/audio.');
+      }
+      if (!status.input_format || !status.device) {
+        throw new Error('No usable audio device detected (alsa/pulse). Check /audio/source.');
+      }
+    } catch (e) {
+      if (resultEl) {
+        resultEl.textContent = `✗ ${e.message}`;
+        resultEl.style.color = '#f87171';
+      }
+      return;
+    }
+
     const url = `${apiBase}/stream/audio?ts=${Date.now()}`;
     document.getElementById('audio-stream-container').innerHTML =
-      `<audio id="audio-stream-player" controls autoplay src="${url}"></audio>`;
+      `<audio id="audio-stream-player" controls autoplay playsinline src="${url}"></audio>`;
+    const p = document.getElementById('audio-stream-player');
+    if (p) {
+      p.addEventListener('error', () => {
+        stopAudioStream();
+        if (resultEl) {
+          resultEl.textContent = '✗ Audio stream failed. Check /audio/source diagnostics and ffmpeg/device settings.';
+          resultEl.style.color = '#f87171';
+        }
+      });
+      try {
+        await p.play();
+      } catch (_) {
+        // Browser may require additional interaction; controls remain visible.
+      }
+    }
     document.getElementById('audio-toggle-btn').textContent = '■ Stop Audio';
     document.getElementById('audio-toggle-btn').className = 'danger';
     hdmiAudioRunning = true;
+    if (resultEl) {
+      resultEl.textContent = '✓ Audio stream started';
+      resultEl.style.color = '#4ade80';
+    }
   }
 
   function stopAudioStream() {
@@ -492,6 +667,7 @@
 
   async function selectRun(runId) {
     selectedRunId = runId;
+    document.getElementById('kpi-run').textContent = runId ? runId.slice(0, 8) : 'None';
     lastNarrationIdx = -1;
     document.getElementById('detail-panel').style.display = '';
     document.getElementById('detail-run-id').textContent = runId;
@@ -506,6 +682,7 @@
     try {
       const data = await api(`/run/${selectedRunId}/status`);
       document.getElementById('d-status').innerHTML = `<span class="status-pill ${data.status}">${data.status}</span>`;
+      document.getElementById('kpi-status').textContent = data.status || '--';
       document.getElementById('d-steps').textContent = data.step_count;
       document.getElementById('d-retries').textContent = data.retries;
       document.getElementById('d-app').textContent = data.current_app || '-';
@@ -761,6 +938,7 @@
 
   // Init
   initApiBase();
+  initDetailTabs();
   checkHealth();
   loadRuns();
   loadCaptureSource();
