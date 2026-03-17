@@ -26,7 +26,11 @@ import warnings
 from typing import Any
 
 import pytest
-from google.api_core import exceptions as gexc
+
+try:
+    from google.api_core import exceptions as gexc
+except ImportError:  # pragma: no cover
+    gexc = None  # type: ignore[assignment]
 
 from vertex_live_dab_agent.capture.validator import ValidationResult, Validator
 from vertex_live_dab_agent.planner.planner import Planner
@@ -96,9 +100,10 @@ def vertex_client() -> AsyncVertexTextClient:
     async def _probe() -> None:
         await client.generate_content('Return only JSON: {"ok": true}')
 
+    _catch = (gexc.NotFound, gexc.PermissionDenied, gexc.Unauthenticated) if gexc is not None else ()
     try:
         asyncio.run(_probe())
-    except (gexc.NotFound, gexc.PermissionDenied, gexc.Unauthenticated) as exc:
+    except _catch as exc:
         pytest.skip(
             f"Model not accessible in this project/region: {model_name}. "
             "Check credentials/service-account state and set VERTEX_TEST_MODEL "

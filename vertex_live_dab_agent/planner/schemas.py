@@ -49,14 +49,25 @@ class NavigationBatchAction(BaseModel):
 
 
 class ExecutionMode(str, Enum):
+    # Direct DAB protocol operation (key validation, settings ops, etc.)
+    DIRECT_DAB_OPERATION = "DIRECT_DAB_OPERATION"
+    # Legacy alias kept for backward compatibility
     DIRECT_SETTING_OPERATION = "DIRECT_SETTING_OPERATION"
     DIRECT_APP_LAUNCH = "DIRECT_APP_LAUNCH"
     DIRECT_APP_LAUNCH_WITH_PARAMS = "DIRECT_APP_LAUNCH_WITH_PARAMS"
     DIRECT_CONTENT_OPEN = "DIRECT_CONTENT_OPEN"
     CONTINUE_IN_CURRENT_APP = "CONTINUE_IN_CURRENT_APP"
+    # Navigate home first, then launch target app
+    GO_HOME_AND_RECOVER = "GO_HOME_AND_RECOVER"
+    # Legacy alias kept for backward compatibility
     GO_HOME_THEN_LAUNCH = "GO_HOME_THEN_LAUNCH"
     UI_NAVIGATION_ONLY = "UI_NAVIGATION_ONLY"
+    # Re-launch target app after being displaced
+    RELAUNCH_TARGET_APP = "RELAUNCH_TARGET_APP"
+    # Legacy alias kept for backward compatibility
     RECOVERY_RELAUNCH = "RECOVERY_RELAUNCH"
+    # Terminal failure with grounded explanation
+    FAIL_WITH_GROUNDED_REASON = "FAIL_WITH_GROUNDED_REASON"
 
 
 class StepType(str, Enum):
@@ -96,7 +107,9 @@ class NavigationPlan(BaseModel):
 
     phase: str
     intent: str
+    subgoal: Optional[str] = None
     execution_mode: ExecutionMode = ExecutionMode.UI_NAVIGATION_ONLY
+    strategy: Optional[str] = None
     target_app_name: Optional[str] = None
     target_app_domain: Optional[str] = None
     target_app_hint: Optional[str] = None
@@ -110,6 +123,8 @@ class NavigationPlan(BaseModel):
     fallback_if_failed: Optional[NavigationBatchAction] = None
     need_screenshot: bool = False
     done: bool = False
+    evidence_used: list[str] = Field(default_factory=list)
+    user_explanation: str = ""
 
     @model_validator(mode="before")
     @classmethod

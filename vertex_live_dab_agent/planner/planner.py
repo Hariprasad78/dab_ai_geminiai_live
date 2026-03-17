@@ -40,13 +40,26 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _SUPPORTED_ACTIONS: List[str] = [a.value for a in ActionType]
 
-# Known direct-launch app names for heuristic mode.
+# Keyword-to-canonical-name hints used in heuristic mode only.
+# Values are *logical* app names / short IDs — NOT package names.
+# Package-style IDs are intentionally avoided here; the runtime AppResolver
+# queries DAB's applications/list to turn a name into the real app_id.
 _APP_NAME_HINTS: Dict[str, str] = {
     "youtube": "youtube",
     "netflix": "netflix",
     "settings": "settings",
-    "prime video": "com.amazon.amazonvideo.livingroom",
-    "disney": "com.disney.disneyplus",
+    "prime video": "prime video",
+    "amazon prime": "prime video",
+    "disney": "disney+",
+    "disney plus": "disney+",
+    "disney+": "disney+",
+    "hulu": "hulu",
+    "hbo": "hbo max",
+    "hbo max": "hbo max",
+    "max": "hbo max",
+    "peacock": "peacock",
+    "paramount": "paramount+",
+    "apple tv": "apple tv",
 }
 
 # ---------------------------------------------------------------------------
@@ -272,7 +285,12 @@ class Planner:
         )
 
     def _infer_direct_launch_app_id(self, goal: str) -> Optional[str]:
-        """Infer direct app launch target from natural-language goal in heuristic mode."""
+        """Infer direct app launch target from natural-language goal in heuristic mode.
+
+        Returns the *logical* app id or canonical name.  Package-style IDs are
+        never returned here — the runtime AppResolver resolves canonical names
+        to real app IDs via DAB's applications/list.
+        """
         g = (goal or "").strip().lower()
         if not g:
             return None
@@ -281,11 +299,11 @@ class Planner:
         if not any(v in g for v in launch_verbs):
             return None
 
-        for name, app_id in _APP_NAME_HINTS.items():
+        for name, canonical in _APP_NAME_HINTS.items():
             if name in g:
-                if app_id == "youtube":
+                if canonical == "youtube":
                     return self._config.youtube_app_id
-                return app_id
+                return canonical
         return None
 
     def _build_context(
@@ -893,6 +911,8 @@ class Planner:
                     data["subplan"] = cleaned
 
             # Normalize known app package aliases to logical app IDs.
+            # Only the youtube_app_id is normalized here because it comes from
+            # config; all other aliases are handled by AppResolver at runtime.
             if isinstance(data, dict) and data.get("action") == ActionType.LAUNCH_APP.value:
                 params = data.get("params")
                 if isinstance(params, dict):
@@ -902,8 +922,6 @@ class Planner:
                         or "youtube" in raw_app_id
                     ):
                         params["app_id"] = self._config.youtube_app_id
-                    elif raw_app_id in {"com.netflix.ninja", "netflix"}:
-                        params["app_id"] = "netflix"
 
             action = PlannedAction(**data)
             return self._validate_action(action)
