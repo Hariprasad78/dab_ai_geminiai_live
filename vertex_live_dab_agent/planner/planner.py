@@ -287,9 +287,9 @@ class Planner:
     def _infer_direct_launch_app_id(self, goal: str) -> Optional[str]:
         """Infer direct app launch target from natural-language goal in heuristic mode.
 
-        Returns the *logical* app id or canonical name.  Package-style ids are
+        Returns the *logical* app id or canonical name.  Package-style IDs are
         never returned here — the runtime AppResolver resolves canonical names
-        to real app ids via DAB's applications/list.
+        to real app IDs via DAB's applications/list.
         """
         g = (goal or "").strip().lower()
         if not g:

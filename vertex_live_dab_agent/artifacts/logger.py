@@ -69,7 +69,7 @@ class ArtifactStore:
         """Decode *image_b64* and write it to ``screenshots/step_NNNN.png``.
 
         Returns the :class:`~pathlib.Path` of the saved file, or *None* when
-        the input is not valid base-64 or any write error occurs.
+        the input is not valid base64 or any write error occurs.
         """
         dest = self._run_dir / "screenshots" / f"step_{step:04d}.png"
         try:
