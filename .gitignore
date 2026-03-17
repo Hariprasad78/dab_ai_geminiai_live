@@ -16,8 +16,8 @@ venv/
 ENV/
 .env
 
-# Artifacts
-artifacts/
+# Artifacts (run-time outputs only — NOT source code in vertex_live_dab_agent/artifacts/)
+/artifacts/
 
 # Pytest
 .pytest_cache/
