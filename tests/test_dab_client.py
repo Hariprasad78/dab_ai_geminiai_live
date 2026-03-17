@@ -3,10 +3,15 @@ import pytest
 
 from vertex_live_dab_agent.dab.client import DABResponse, MockDABClient, create_dab_client
 from vertex_live_dab_agent.dab.topics import (
+    TOPIC_APPLICATIONS_EXIT,
     KEY_MAP,
     TOPIC_APPLICATIONS_GET_STATE,
+    TOPIC_APPLICATIONS_LIST,
+    TOPIC_INPUT_KEY_LIST,
     TOPIC_APPLICATIONS_LAUNCH,
+    TOPIC_INPUT_LONG_KEY_PRESS,
     TOPIC_INPUT_KEY_PRESS,
+    TOPIC_OPERATIONS_LIST,
     TOPIC_OUTPUT_IMAGE,
 )
 
@@ -18,10 +23,11 @@ def client():
 
 @pytest.mark.asyncio
 async def test_launch_app(client):
-    resp = await client.launch_app("com.netflix.ninja")
+    resp = await client.launch_app("youtube", parameters={"content": "lofi"})
     assert resp.success is True
     assert resp.status == 200
-    assert resp.data["appId"] == "com.netflix.ninja"
+    assert resp.data["appId"] == "youtube"
+    assert resp.data["content"] == "lofi"
     assert resp.data["state"] == "FOREGROUND"
     assert resp.topic == TOPIC_APPLICATIONS_LAUNCH
     assert resp.request_id
@@ -31,8 +37,22 @@ async def test_launch_app(client):
 async def test_get_app_state(client):
     resp = await client.get_app_state("com.netflix.ninja")
     assert resp.success is True
-    assert resp.data["appId"] == "com.netflix.ninja"
+    assert resp.data["appId"] == "netflix"
     assert resp.topic == TOPIC_APPLICATIONS_GET_STATE
+
+
+@pytest.mark.asyncio
+async def test_get_app_state_normalizes_settings_package(client):
+    resp = await client.get_app_state("com.android.settings")
+    assert resp.success is True
+    assert resp.data["appId"] == "settings"
+
+
+@pytest.mark.asyncio
+async def test_launch_app_normalizes_tv_settings_package(client):
+    resp = await client.launch_app("com.android.tv.settings")
+    assert resp.success is True
+    assert resp.data["appId"] == "settings"
 
 
 @pytest.mark.asyncio
@@ -54,6 +74,47 @@ async def test_capture_screenshot(client):
     import base64
     decoded = base64.b64decode(resp.data["image"])
     assert len(decoded) > 0
+
+
+@pytest.mark.asyncio
+async def test_list_operations(client):
+    resp = await client.list_operations()
+    assert resp.success is True
+    assert "operations" in resp.data
+    assert resp.topic == TOPIC_OPERATIONS_LIST
+
+
+@pytest.mark.asyncio
+async def test_list_apps(client):
+    resp = await client.list_apps()
+    assert resp.success is True
+    assert "applications" in resp.data
+    assert resp.topic == TOPIC_APPLICATIONS_LIST
+
+
+@pytest.mark.asyncio
+async def test_exit_app(client):
+    resp = await client.exit_app("youtube")
+    assert resp.success is True
+    assert resp.data["appId"] == "youtube"
+    assert resp.topic == TOPIC_APPLICATIONS_EXIT
+
+
+@pytest.mark.asyncio
+async def test_list_keys(client):
+    resp = await client.list_keys()
+    assert resp.success is True
+    assert "keys" in resp.data
+    assert resp.topic == TOPIC_INPUT_KEY_LIST
+
+
+@pytest.mark.asyncio
+async def test_long_key_press(client):
+    resp = await client.long_key_press("KEY_ENTER", duration_ms=1200)
+    assert resp.success is True
+    assert resp.data["keyCode"] == "KEY_ENTER"
+    assert resp.data["durationMs"] == 1200
+    assert resp.topic == TOPIC_INPUT_LONG_KEY_PRESS
 
 
 @pytest.mark.asyncio

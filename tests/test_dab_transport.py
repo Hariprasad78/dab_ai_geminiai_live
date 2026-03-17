@@ -13,9 +13,14 @@ from vertex_live_dab_agent.dab.client import (
     create_dab_client,
 )
 from vertex_live_dab_agent.dab.topics import (
+    TOPIC_APPLICATIONS_EXIT,
     TOPIC_APPLICATIONS_GET_STATE,
+    TOPIC_APPLICATIONS_LIST,
     TOPIC_APPLICATIONS_LAUNCH,
+    TOPIC_INPUT_KEY_LIST,
+    TOPIC_INPUT_LONG_KEY_PRESS,
     TOPIC_INPUT_KEY_PRESS,
+    TOPIC_OPERATIONS_LIST,
     TOPIC_OUTPUT_IMAGE,
     format_topic,
 )
@@ -208,7 +213,7 @@ async def test_adapter_launch_app(adapter):
     assert isinstance(resp, DABResponse)
     assert resp.success is True
     assert resp.status == 200
-    assert resp.data["appId"] == "com.netflix.ninja"
+    assert resp.data["appId"] == "netflix"
     assert "test-device" in resp.topic
     assert TOPIC_APPLICATIONS_LAUNCH.split("{device_id}")[1] in resp.topic
 
@@ -224,6 +229,7 @@ async def test_adapter_launch_app_with_parameters(adapter):
 async def test_adapter_get_app_state(adapter):
     resp = await adapter.get_app_state("com.netflix.ninja")
     assert resp.success is True
+    assert resp.data["appId"] == "netflix"
     assert "test-device" in resp.topic
     assert TOPIC_APPLICATIONS_GET_STATE.split("{device_id}")[1] in resp.topic
 
@@ -243,6 +249,44 @@ async def test_adapter_capture_screenshot(adapter):
     assert resp.success is True
     assert "test-device" in resp.topic
     assert TOPIC_OUTPUT_IMAGE.split("{device_id}")[1] in resp.topic
+
+
+@pytest.mark.asyncio
+async def test_adapter_long_key_press(adapter):
+    resp = await adapter.long_key_press("KEY_ENTER", duration_ms=1100)
+    assert resp.success is True
+    assert resp.data["keyCode"] == "KEY_ENTER"
+    assert resp.data["durationMs"] == 1100
+    assert TOPIC_INPUT_LONG_KEY_PRESS.split("{device_id}")[1] in resp.topic
+
+
+@pytest.mark.asyncio
+async def test_adapter_list_keys(adapter):
+    resp = await adapter.list_keys()
+    assert resp.success is True
+    assert TOPIC_INPUT_KEY_LIST.split("{device_id}")[1] in resp.topic
+
+
+@pytest.mark.asyncio
+async def test_adapter_list_operations(adapter):
+    resp = await adapter.list_operations()
+    assert resp.success is True
+    assert TOPIC_OPERATIONS_LIST.split("{device_id}")[1] in resp.topic
+
+
+@pytest.mark.asyncio
+async def test_adapter_list_apps(adapter):
+    resp = await adapter.list_apps()
+    assert resp.success is True
+    assert TOPIC_APPLICATIONS_LIST.split("{device_id}")[1] in resp.topic
+
+
+@pytest.mark.asyncio
+async def test_adapter_exit_app(adapter):
+    resp = await adapter.exit_app("youtube")
+    assert resp.success is True
+    assert resp.data["appId"] == "youtube"
+    assert TOPIC_APPLICATIONS_EXIT.split("{device_id}")[1] in resp.topic
 
 
 @pytest.mark.asyncio

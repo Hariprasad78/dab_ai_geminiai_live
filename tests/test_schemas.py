@@ -2,7 +2,7 @@
 import pytest
 from pydantic import ValidationError
 
-from vertex_live_dab_agent.planner.schemas import ActionType, PlannedAction
+from vertex_live_dab_agent.planner.schemas import ActionType, NavigationPlan, PlannedAction
 
 
 def test_planned_action_valid():
@@ -21,10 +21,10 @@ def test_planned_action_with_params():
         action=ActionType.LAUNCH_APP,
         confidence=0.8,
         reason="Launching Netflix",
-        params={"app_id": "com.netflix.ninja"},
+        params={"app_id": "youtube"},
     )
     assert action.action == "LAUNCH_APP"
-    assert action.params == {"app_id": "com.netflix.ninja"}
+    assert action.params == {"app_id": "youtube"}
 
 
 def test_planned_action_confidence_bounds():
@@ -50,7 +50,7 @@ def test_all_action_types_valid():
     # LAUNCH_APP requires app_id
     pa = PlannedAction(
         action=ActionType.LAUNCH_APP, confidence=0.5, reason="test",
-        params={"app_id": "com.example"},
+        params={"app_id": "youtube"},
     )
     assert pa.action == ActionType.LAUNCH_APP.value
 
@@ -65,6 +65,16 @@ def test_all_action_types_valid():
 def test_planned_action_invalid_action():
     with pytest.raises(ValidationError):
         PlannedAction(action="INVALID_ACTION", confidence=0.5, reason="bad")
+
+
+def test_planned_action_launch_app_allows_non_youtube_app_id():
+    action = PlannedAction(
+        action=ActionType.LAUNCH_APP,
+        confidence=0.8,
+        reason="Launch app",
+        params={"app_id": "com.netflix.ninja"},
+    )
+    assert action.params["app_id"] == "com.netflix.ninja"
 
 
 def test_planned_action_done():
@@ -85,3 +95,80 @@ def test_planned_action_wait_params():
         params={"seconds": 3},
     )
     assert action.params["seconds"] == 3
+
+
+def test_planned_action_with_subplan():
+    action = PlannedAction(
+        action=ActionType.PRESS_HOME,
+        confidence=0.8,
+        reason="Go home first",
+        subplan=[
+            {"action": ActionType.PRESS_RIGHT.value},
+            {"action": ActionType.PRESS_OK.value},
+        ],
+    )
+    assert action.subplan is not None
+    assert len(action.subplan) == 2
+
+
+def test_planned_action_rejects_terminal_subplan_action():
+    with pytest.raises(ValidationError):
+        PlannedAction(
+            action=ActionType.PRESS_HOME,
+            confidence=0.8,
+            reason="Invalid subplan",
+            subplan=[{"action": ActionType.DONE.value}],
+        )
+
+
+def test_navigation_plan_normalizes_legacy_string_fallback():
+    plan = NavigationPlan.model_validate(
+        {
+            "phase": "test",
+            "intent": "normalize",
+            "confidence": 0.8,
+            "starting_assumption": "legacy fallback",
+            "action_batch": [{"action": "GET_STATE", "params": {}}],
+            "fallback_if_failed": "PRESS_HOME",
+            "done": False,
+        }
+    )
+    assert plan.fallback_if_failed is not None
+    assert plan.fallback_if_failed.action == ActionType.PRESS_HOME.value
+    assert plan.fallback_if_failed.params == {}
+
+
+def test_navigation_plan_accepts_structured_fallback():
+    plan = NavigationPlan.model_validate(
+        {
+            "phase": "test",
+            "intent": "structured",
+            "confidence": 0.8,
+            "starting_assumption": "new schema",
+            "action_batch": [{"action": "GET_STATE", "params": {}}],
+            "fallback_if_failed": {"action": "PRESS_BACK", "params": {}},
+            "done": False,
+        }
+    )
+    assert plan.fallback_if_failed is not None
+    assert plan.fallback_if_failed.action == ActionType.PRESS_BACK.value
+
+
+def test_navigation_plan_supports_strategy_and_logical_target_fields():
+    plan = NavigationPlan.model_validate(
+        {
+            "phase": "strategy",
+            "intent": "launch-first",
+            "execution_mode": "DIRECT_APP_LAUNCH",
+            "target_app_name": "Settings",
+            "target_app_domain": "system_settings",
+            "target_app_hint": "settings",
+            "launch_parameters": {},
+            "confidence": 0.9,
+            "starting_assumption": "task requires settings",
+            "action_batch": [],
+            "done": False,
+        }
+    )
+    assert plan.execution_mode == "DIRECT_APP_LAUNCH"
+    assert plan.target_app_name == "Settings"

@@ -1,0 +1,7 @@
+# Cloud Build source exclusions
+# Start from gitignore, then re-include required runtime package modules.
+#!include:.gitignore
+
+# The runtime package submodule must be included for Cloud Run startup.
+!vertex_live_dab_agent/artifacts/
+!vertex_live_dab_agent/artifacts/**

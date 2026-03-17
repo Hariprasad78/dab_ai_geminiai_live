@@ -13,20 +13,76 @@ def planner():
 
 @pytest.mark.asyncio
 async def test_planner_no_last_actions(planner):
-    """With no prior actions, planner should capture screenshot first."""
+    """Direct app intents should launch app immediately."""
     result = await planner.plan(goal="Launch Netflix", last_actions=[])
-    assert result.action == ActionType.CAPTURE_SCREENSHOT
+    assert result.action == ActionType.LAUNCH_APP
+    assert result.params["app_id"] == "netflix"
     assert result.confidence > 0
 
 
 @pytest.mark.asyncio
 async def test_planner_after_screenshot(planner):
-    """After a screenshot, planner should get app state."""
+    """Direct app intent should still launch app if not active."""
     result = await planner.plan(
         goal="Launch Netflix",
         last_actions=[ActionType.CAPTURE_SCREENSHOT],
     )
+    assert result.action == ActionType.LAUNCH_APP
+    assert result.params["app_id"] == "netflix"
+
+
+@pytest.mark.asyncio
+async def test_planner_open_youtube_direct_launch(planner):
+    """Heuristic planner should directly launch YouTube for explicit open goal."""
+    result = await planner.plan(goal="Open YouTube", last_actions=[])
+    assert result.action == ActionType.LAUNCH_APP
+    assert result.params["app_id"] == "youtube"
+
+
+@pytest.mark.asyncio
+async def test_planner_open_youtube_done_if_already_active(planner):
+    """When YouTube is already active, planner should return DONE."""
+    result = await planner.plan(
+        goal="Open YouTube",
+        current_app="youtube",
+        last_actions=[ActionType.GET_STATE.value],
+    )
+    assert result.action == ActionType.DONE
+
+
+@pytest.mark.asyncio
+async def test_planner_open_youtube_not_done_without_get_state(planner):
+    """Planner must not return DONE just because current_app is pre-set."""
+    result = await planner.plan(
+        goal="Open YouTube",
+        current_app="youtube",
+        last_actions=[ActionType.LAUNCH_APP.value],
+    )
     assert result.action == ActionType.GET_STATE
+
+
+@pytest.mark.asyncio
+async def test_planner_open_youtube_with_content(planner):
+    result = await planner.plan(
+        goal="Open YouTube",
+        last_actions=[],
+        launch_content="lofi music",
+    )
+    assert result.action == ActionType.LAUNCH_APP
+    assert result.params["content"] == "lofi music"
+
+
+@pytest.mark.asyncio
+async def test_planner_launches_target_app_when_content_is_present(planner):
+    """Known app goals should launch their app IDs even with content hints."""
+    result = await planner.plan(
+        goal="open netflix",
+        last_actions=[],
+        launch_content="netflix",
+    )
+    assert result.action == ActionType.LAUNCH_APP
+    assert result.params["app_id"] == "netflix"
+    assert result.params["content"] == "netflix"
 
 
 @pytest.mark.asyncio
@@ -46,7 +102,7 @@ async def test_planner_max_retries(planner):
 async def test_planner_heuristic_after_many_retries(planner):
     """Heuristic planner returns FAILED after >3 retries."""
     result = await planner.plan(
-        goal="Launch Netflix",
+        goal="Find channel guide",
         last_actions=["PRESS_OK", "GET_STATE", "PRESS_OK"],
         retry_count=4,
     )
@@ -61,6 +117,38 @@ async def test_planner_need_better_view(planner):
         last_actions=["PRESS_OK", "GET_STATE"],
         retry_count=1,
     )
+    assert result.action == ActionType.NEED_BETTER_VIEW
+
+
+@pytest.mark.asyncio
+async def test_planner_vertex_error_fallback_uses_real_context():
+    class FailingVertexClient:
+        async def generate_content(self, *_args, **_kwargs):
+            raise RuntimeError("429 Resource exhausted")
+
+    planner = Planner(vertex_client=FailingVertexClient())
+    result = await planner.plan(
+        goal="set time zone",
+        last_actions=[ActionType.PRESS_DOWN.value],
+        retry_count=1,
+    )
+    assert result.action == ActionType.WAIT
+    assert result.params and float(result.params.get("seconds", 0)) > 0
+
+
+@pytest.mark.asyncio
+async def test_planner_non_429_vertex_error_fallback_still_uses_heuristic_context():
+    class FailingVertexClient:
+        async def generate_content(self, *_args, **_kwargs):
+            raise RuntimeError("temporary upstream parse error")
+
+    planner = Planner(vertex_client=FailingVertexClient())
+    result = await planner.plan(
+        goal="set time zone",
+        last_actions=[ActionType.PRESS_DOWN.value],
+        retry_count=1,
+    )
+    # Non-quota errors still use heuristic fallback with run context.
     assert result.action == ActionType.NEED_BETTER_VIEW
 
 
@@ -85,6 +173,61 @@ def test_planner_parse_invalid_json(planner):
     assert result.action == ActionType.FAILED
 
 
+def test_planner_navigation_parse_failure_uses_deterministic_fallback(planner):
+    result = planner._parse_navigation_plan("not valid json at all")
+    assert result.intent == "parse_failure"
+    assert result.action_batch
+    assert result.action_batch[0].action == ActionType.GET_STATE.value
+
+
+def test_planner_navigation_parse_failure_limit_returns_failed(planner):
+    planner._parse_navigation_plan("not valid json at all")
+    planner._parse_navigation_plan("not valid json at all")
+    result = planner._parse_navigation_plan("not valid json at all")
+    assert result.intent == "parse_failure_limit_reached"
+    assert result.done is True
+    assert result.action_batch
+    assert result.action_batch[0].action == ActionType.FAILED.value
+
+
+def test_planner_parse_navigation_plan_with_strategy_fields(planner):
+    response = (
+        '{"phase":"strategy","intent":"launch first",'
+        '"execution_mode":"DIRECT_APP_LAUNCH",'
+        '"target_app_name":"Settings",'
+        '"target_app_domain":"system_settings",'
+        '"target_app_hint":"settings",'
+        '"launch_parameters":{},'
+        '"confidence":0.9,'
+        '"starting_assumption":"open settings first",'
+        '"action_batch":[],'
+        '"checkpoint_required":true,'
+        '"validate_before_commit":false,'
+        '"expected_result":"settings in foreground",'
+        '"fallback_if_failed":{"action":"PRESS_HOME","params":{}},'
+        '"need_screenshot":true,'
+        '"done":false}'
+    )
+    result = planner._parse_navigation_plan(response)
+    assert result.execution_mode == "DIRECT_APP_LAUNCH"
+    assert result.target_app_name == "Settings"
+
+
+def test_planner_parse_action_with_subplan(planner):
+    response = (
+        '{"action": "PRESS_HOME", "confidence": 0.9, "reason": "go home", '
+        '"subplan": ['
+        '{"action": "PRESS_RIGHT"}, '
+        '{"action": "DONE"}, '
+        '{"action": "PRESS_OK"}]}'
+    )
+    result = planner._parse_action(response)
+    assert result.action == ActionType.PRESS_HOME.value
+    assert result.subplan is not None
+    assert all(a.action != ActionType.DONE.value for a in result.subplan)
+    assert len(result.subplan) == 2
+
+
 def test_planner_build_context(planner):
     """Test context builder includes all fields."""
     context = planner._build_context(
@@ -95,6 +238,11 @@ def test_planner_build_context(planner):
         current_screen="HOME",
         last_actions=["PRESS_OK"],
         retry_count=2,
+        execution_state={
+            "recent_ai_events": [{"type": "planner-decision", "action": "PRESS_OK"}],
+            "recent_dab_events": [{"type": "response", "op": "input/key-press", "status": 200}],
+            "recent_action_records": [{"step": 1, "action": "PRESS_OK", "result": "PASS"}],
+        },
     )
     assert "Launch Netflix" in context
     assert "launcher" in context
@@ -104,6 +252,7 @@ def test_planner_build_context(planner):
     assert "2" in context
     assert "Has screenshot: True" in context
     assert "Supported actions:" in context
+    assert "Session history:" in context
 
 
 # ---------------------------------------------------------------------------
@@ -212,9 +361,9 @@ def test_schema_accepts_launch_app_with_valid_app_id():
     """LAUNCH_APP accepts a valid app_id."""
     action = PlannedAction(
         action=ActionType.LAUNCH_APP, confidence=0.9, reason="Launch Netflix",
-        params={"app_id": "com.netflix.ninja"},
+        params={"app_id": "youtube"},
     )
-    assert action.params["app_id"] == "com.netflix.ninja"
+    assert action.params["app_id"] == "youtube"
 
 
 def test_schema_accepts_wait_with_seconds():
@@ -278,11 +427,11 @@ def test_planner_parse_launch_app_with_app_id_succeeds(planner):
     """JSON with LAUNCH_APP and valid app_id must parse correctly."""
     response = (
         '{"action": "LAUNCH_APP", "confidence": 0.95, "reason": "open app",'
-        ' "params": {"app_id": "com.netflix.ninja"}}'
+        ' "params": {"app_id": "youtube"}}'
     )
     result = planner._parse_action(response)
     assert result.action == ActionType.LAUNCH_APP.value
-    assert result.params["app_id"] == "com.netflix.ninja"
+    assert result.params["app_id"] == "youtube"
 
 
 def test_planner_parse_done_action(planner):
