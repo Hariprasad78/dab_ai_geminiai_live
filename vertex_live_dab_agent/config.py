@@ -59,6 +59,12 @@ class Config:
 
     # Capture
     image_source: str = field(default_factory=lambda: os.environ.get("IMAGE_SOURCE", "auto"))
+    enable_hdmi_capture: bool = field(
+        default_factory=lambda: os.environ.get("ENABLE_HDMI_CAPTURE", "true").lower() == "true"
+    )
+    enable_camera_capture: bool = field(
+        default_factory=lambda: os.environ.get("ENABLE_CAMERA_CAPTURE", "true").lower() == "true"
+    )
     hdmi_capture_device: str = field(default_factory=lambda: os.environ.get("HDMI_CAPTURE_DEVICE", ""))
     hdmi_capture_width: int = field(default_factory=lambda: int(os.environ.get("HDMI_CAPTURE_WIDTH", "1920")))
     hdmi_capture_height: int = field(default_factory=lambda: int(os.environ.get("HDMI_CAPTURE_HEIGHT", "1080")))
@@ -99,6 +105,10 @@ class Config:
 
     # Artifacts
     artifacts_base_dir: str = field(default_factory=lambda: os.environ.get("ARTIFACTS_BASE_DIR", "./artifacts"))
+    device_profiles_dir: str = field(default_factory=lambda: os.environ.get("DEVICE_PROFILES_DIR", ""))
+    trajectory_memory_path: str = field(default_factory=lambda: os.environ.get("TRAJECTORY_MEMORY_PATH", ""))
+    hybrid_policy_mode: str = field(default_factory=lambda: os.environ.get("HYBRID_POLICY_MODE", "auto"))
+    local_ranker_model_path: str = field(default_factory=lambda: os.environ.get("LOCAL_RANKER_MODEL_PATH", ""))
 
     # API
     api_host: str = field(default_factory=lambda: os.environ.get("API_HOST", "0.0.0.0"))

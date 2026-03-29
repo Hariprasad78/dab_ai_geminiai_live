@@ -391,6 +391,7 @@ class MockDABClient(DABClientBase):
             data={
                 "settings": [
                     {"key": "timezone", "friendlyName": "Time Zone", "writable": True},
+                    {"key": "language", "friendlyName": "Language", "writable": True},
                     {"key": "brightness", "friendlyName": "Brightness", "writable": True},
                 ]
             },

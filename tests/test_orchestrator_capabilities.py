@@ -130,7 +130,7 @@ async def test_stuck_diagnosis_uses_goal_aware_relaunch() -> None:
     state.supported_operations = ["applications/launch", "applications/list"]
     state.app_catalog = [{"appId": "youtube", "friendlyName": "YouTube"}]
     state.current_app_state = "BACKGROUND"
-    state.latest_ocr_text = "Home screen with app tiles"
+    state.latest_visual_summary = "Home screen with app tiles"
     state.last_actions = ["GET_STATE", "NEED_BETTER_VIEW", "GET_STATE"]
     state.retries = 2
 
@@ -218,7 +218,7 @@ async def test_youtube_play_video_goal_continues_after_launch() -> None:
     state = RunState(goal="Play video in YouTube")
     state.current_app_id = "youtube"
     state.current_app_state = "FOREGROUND"
-    state.latest_ocr_text = "Home Shorts Subscriptions"
+    state.latest_visual_summary = "Home Shorts Subscriptions"
     state.step_count = 2
     state.task_preplan = orch._build_task_preplan(state).model_dump()
 
@@ -235,19 +235,19 @@ def test_youtube_goal_verified_requires_playback_or_overlay() -> None:
     play_goal = RunState(goal="Play video in YouTube")
     play_goal.current_app_id = "youtube"
     play_goal.current_app_state = "FOREGROUND"
-    play_goal.latest_ocr_text = "Home Shorts Subscriptions"
+    play_goal.latest_visual_summary = "Home Shorts Subscriptions"
     assert orch._is_youtube_goal_verified(play_goal) is False
 
-    play_goal.latest_ocr_text = "Pause Settings Up next"
+    play_goal.latest_visual_summary = "Pause Settings Up next"
     assert orch._is_youtube_goal_verified(play_goal) is True
 
     stats_goal = RunState(goal="Play any YouTube video and enable Stats for Nerds")
     stats_goal.current_app_id = "youtube"
     stats_goal.current_app_state = "FOREGROUND"
-    stats_goal.latest_ocr_text = "Pause Settings"
+    stats_goal.latest_visual_summary = "Pause Settings"
     assert orch._is_youtube_goal_verified(stats_goal) is False
 
-    stats_goal.latest_ocr_text = "Pause Settings Stats for Nerds"
+    stats_goal.latest_visual_summary = "Pause Settings Stats for Nerds"
     assert orch._is_youtube_goal_verified(stats_goal) is True
 
 
@@ -256,7 +256,7 @@ def test_youtube_playback_blocks_blind_ok_without_intent() -> None:
     orch._config = _Cfg()
     state = RunState(goal="Play any YouTube video and enable Stats for Nerds")
     state.current_app_id = "youtube"
-    state.latest_ocr_text = "Pause Up next"
+    state.latest_visual_summary = "Pause Up next"
 
     planned = PlannedAction(action="PRESS_OK", confidence=0.8, reason="blind commit")
     blocked = orch._sanitize_planned_action_for_goal(state, planned)
@@ -268,7 +268,7 @@ def test_youtube_playback_one_ok_reveal_rule_enforced() -> None:
     orch._config = _Cfg()
     state = RunState(goal="Play any YouTube video and enable Stats for Nerds")
     state.current_app_id = "youtube"
-    state.latest_ocr_text = "Pause Up next"
+    state.latest_visual_summary = "Pause Up next"
     state.repeated_commit_count = 1
 
     planned = PlannedAction(
@@ -286,7 +286,7 @@ def test_youtube_playback_blocks_repeated_commit_without_progress() -> None:
     orch._config = _Cfg()
     state = RunState(goal="Play any YouTube video and enable Stats for Nerds")
     state.current_app_id = "youtube"
-    state.latest_ocr_text = "Pause Settings"
+    state.latest_visual_summary = "Pause Settings"
     state.focus_target_guess = "settings gear"
     state.repeated_commit_count = 2
     state.no_progress_count = 2
@@ -302,7 +302,7 @@ def test_youtube_playback_blocks_repeated_commit_without_progress() -> None:
 
 
 @pytest.mark.asyncio
-async def test_youtube_recovery_waits_when_ocr_missing() -> None:
+async def test_youtube_recovery_waits_when_visual_summary_missing() -> None:
     dab = _FakeDAB()
     orch = object.__new__(Orchestrator)
     orch._dab = dab
@@ -312,22 +312,93 @@ async def test_youtube_recovery_waits_when_ocr_missing() -> None:
     state = RunState(goal="Play any YouTube video and enable Stats for Nerds")
     state.current_app_id = "youtube"
     state.current_app_state = "FOREGROUND"
-    state.latest_ocr_text = "No OCR text from screenshot"
+    state.latest_visual_summary = "No visual summary from screenshot"
 
     ctx = orch._build_stuck_context(state)
     decision, reason, batch = await orch._decide_recovery_from_context(state, ctx)
 
     assert decision == "YOUTUBE_WAIT_FOR_VISUAL_STABILITY"
-    assert "ocr" in reason.lower()
+    assert "visual summary" in reason.lower()
     assert batch and batch[0]["action"] == "WAIT"
 
 
-def test_focus_before_select_uses_directional_correction_when_ocr_available() -> None:
+@pytest.mark.asyncio
+async def test_youtube_recovery_no_visual_summary_wait_is_bounded() -> None:
+    dab = _FakeDAB()
+    orch = object.__new__(Orchestrator)
+    orch._dab = dab
+    orch._config = _Cfg()
+    orch._app_resolver = AppResolver(dab)
+
+    state = RunState(goal="Play any YouTube video and enable Stats for Nerds")
+    state.current_app_id = "youtube"
+    state.current_app_state = "FOREGROUND"
+    state.latest_visual_summary = "No visual summary from screenshot"
+    state.recovery_history = [
+        {"decision": "YOUTUBE_WAIT_FOR_VISUAL_STABILITY"},
+        {"decision": "YOUTUBE_WAIT_FOR_VISUAL_STABILITY"},
+        {"decision": "YOUTUBE_WAIT_FOR_VISUAL_STABILITY"},
+        {"decision": "YOUTUBE_WAIT_FOR_VISUAL_STABILITY"},
+    ]
+
+    ctx = orch._build_stuck_context(state)
+    decision, reason, batch = await orch._decide_recovery_from_context(state, ctx)
+
+    assert decision == "FAIL_WITH_GROUNDED_REASON"
+    assert "unavailable" in reason.lower() or "missing" in reason.lower()
+    assert batch and batch[0]["action"] == "FAILED"
+
+
+@pytest.mark.asyncio
+async def test_youtube_recovery_no_visual_summary_escalates_to_relaunch_reset() -> None:
+    dab = _FakeDAB()
+    orch = object.__new__(Orchestrator)
+    orch._dab = dab
+    orch._config = _Cfg()
+    orch._app_resolver = AppResolver(dab)
+
+    state = RunState(goal="Play any YouTube video and enable Stats for Nerds")
+    state.current_app_id = "youtube"
+    state.current_app_state = "FOREGROUND"
+    state.latest_visual_summary = "No visual summary from screenshot"
+    state.recovery_history = [
+        {"decision": "YOUTUBE_WAIT_FOR_VISUAL_STABILITY"},
+        {"decision": "YOUTUBE_WAIT_FOR_VISUAL_STABILITY"},
+    ]
+
+    ctx = orch._build_stuck_context(state)
+    decision, reason, batch = await orch._decide_recovery_from_context(state, ctx)
+
+    assert decision == "YOUTUBE_RELAUNCH_FOR_VISUAL_RESET"
+    assert "relaunch" in reason.lower()
+    assert batch and any(step.get("action") == "LAUNCH_APP" for step in batch)
+
+
+@pytest.mark.asyncio
+async def test_youtube_recovery_does_not_wait_when_screenshot_exists_without_visual_summary() -> None:
+    dab = _FakeDAB()
+    orch = object.__new__(Orchestrator)
+    orch._dab = dab
+    orch._config = _Cfg()
+    orch._app_resolver = AppResolver(dab)
+
+    state = RunState(goal="Play any YouTube video and enable Stats for Nerds")
+    state.current_app_id = "youtube"
+    state.current_app_state = "FOREGROUND"
+    state.latest_visual_summary = ""
+    state.latest_screenshot_b64 = "ZmFrZQ=="
+
+    ctx = orch._build_stuck_context(state)
+    decision, _reason, _batch = await orch._decide_recovery_from_context(state, ctx)
+    assert decision != "YOUTUBE_WAIT_FOR_VISUAL_STABILITY"
+
+
+def test_focus_before_select_uses_directional_correction_when_visual_summary_available() -> None:
     orch = object.__new__(Orchestrator)
     orch._config = _Cfg()
     state = RunState(goal="Play any YouTube video and enable Stats for Nerds")
     state.current_app_id = "youtube"
-    state.latest_ocr_text = "Pause Up next"
+    state.latest_visual_summary = "Pause Up next"
 
     planned = PlannedAction(
         action="PRESS_OK",
@@ -337,3 +408,14 @@ def test_focus_before_select_uses_directional_correction_when_ocr_available() ->
     )
     blocked = orch._sanitize_planned_action_for_goal(state, planned)
     assert blocked.action == "PRESS_RIGHT"
+
+
+def test_anti_flake_guard_blocks_repeated_need_better_view() -> None:
+    orch = object.__new__(Orchestrator)
+    orch._config = _Cfg()
+    state = RunState(goal="open youtube")
+    state.current_app_id = "youtube"
+    state.last_actions = ["NEED_BETTER_VIEW", "NEED_BETTER_VIEW"]
+    planned = PlannedAction(action="NEED_BETTER_VIEW", confidence=0.7, reason="ambiguous")
+    guarded = orch._sanitize_planned_action_for_goal(state, planned)
+    assert guarded.action == "GET_STATE"

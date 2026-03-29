@@ -140,10 +140,61 @@
     .tab-btn.active { background:#0ea5e9; border-color:#0284c7; color:white; }
     .detail-section { display:none; }
     .detail-section.active { display:block; }
+
+    /* New YTS Styles */
+    .yts-layout { display: grid; grid-template-columns: 220px 1fr; gap: 1rem; margin-top: 1rem; }
+    .yts-nav { display: flex; flex-direction: column; gap: 0.25rem; border-right: 1px solid #334155; padding-right: 1rem; max-height: 500px; overflow-y: auto; }
+    .yts-nav-item { padding: 0.5rem 0.75rem; border-radius: 0.5rem; cursor: pointer; font-size: 0.85rem; color: #94a3b8; border: 1px solid transparent; white-space: nowrap; }
+    .yts-nav-item:hover { background: #1e293b; color: #e2e8f0; }
+    .yts-nav-item.active { background: #0ea5e9; color: white; font-weight: 600; border-color: #0284c7; }
+    .yts-panel { display: none; }
+    .yts-panel.active { display: block; }
+    .yts-panel h3 { font-size: 1.1rem; font-weight: 600; margin-bottom: 0.5rem; color: #f1f5f9; }
+    .yts-panel .description { font-size: 0.85rem; color: #94a3b8; margin-bottom: 1.25rem; }
+    .yts-result-box { margin-top:1rem; background:#0f172a; border:1px solid #334155; border-radius:0.5rem; padding:0.75rem; font-family:monospace; font-size:0.8rem; color:#94a3b8; white-space:pre-wrap; max-height:280px; overflow-y:auto; min-height:60px; }
+    .yts-runner-grid { display:grid; grid-template-columns:1fr 1fr; gap:0.75rem; }
+    .yts-chip-list { display:flex; flex-wrap:wrap; gap:0.5rem; min-height:2.5rem; padding:0.75rem; border:1px solid #334155; border-radius:0.5rem; background:#0f172a; }
+    .yts-chip { display:inline-flex; align-items:center; gap:0.45rem; border:1px solid #0ea5e9; background:rgba(14,165,233,0.12); color:#e0f2fe; border-radius:999px; padding:0.3rem 0.65rem; font-size:0.78rem; }
+    .yts-chip button { background:none; border:none; color:#7dd3fc; cursor:pointer; padding:0; font-size:0.85rem; }
+    .yts-hint { font-size:0.78rem; color:#94a3b8; margin-top:0.4rem; }
+    .yts-inline-actions { display:flex; flex-wrap:wrap; gap:0.5rem; margin-top:0.75rem; }
+    .yts-search-results { display:none; position:absolute; background:#1e293b; border:1px solid #334155; border-radius:0.5rem; max-height:220px; overflow-y:auto; z-index:10; width:100%; }
+    .yts-search-item { padding:0.55rem 0.65rem; cursor:pointer; border-bottom:1px solid #334155; }
+    .yts-search-item:last-child { border-bottom:none; }
+    .yts-search-item:hover { background:#132744; }
+    .yts-select-multiple { min-height:220px; }
+    .yts-prompt-box { margin-top:0.75rem; padding:0.75rem; border:1px solid #334155; border-radius:0.5rem; background:#111827; }
+    .yts-prompt-actions { display:flex; gap:0.5rem; flex-wrap:wrap; margin-top:0.75rem; }
+    .yts-prompt-chip { background:#1e293b; color:#cbd5e1; border:1px solid #334155; border-radius:999px; padding:0.25rem 0.6rem; font-size:0.78rem; }
+    .yts-runner-layout { display:grid; grid-template-columns: 1.4fr 0.8fr; gap:1rem; }
+    .yts-runner-panel { background:#0f172a; border:1px solid #334155; border-radius:0.75rem; padding:0.9rem; }
+    .yts-runner-panel h3 { font-size:0.95rem; color:#e2e8f0; margin-bottom:0.6rem; }
+    .yts-job-list { display:flex; flex-direction:column; gap:0.55rem; max-height:720px; overflow-y:auto; }
+    .yts-job-item { background:#111827; border:1px solid #334155; border-radius:0.65rem; padding:0.75rem; cursor:pointer; }
+    .yts-job-item:hover { border-color:#38bdf8; }
+    .yts-job-item.active { border-color:#0ea5e9; background:#102038; }
+    .yts-job-meta { font-size:0.75rem; color:#94a3b8; margin-top:0.25rem; }
+    .yts-job-title { font-size:0.82rem; color:#e2e8f0; word-break:break-word; }
+    .yts-job-links { display:flex; flex-wrap:wrap; gap:0.4rem; margin-top:0.5rem; }
+    .yts-status-badge { display:inline-block; padding:0.18rem 0.5rem; border-radius:999px; font-size:0.72rem; font-weight:600; }
+    .yts-status-running { background:#082f49; color:#7dd3fc; }
+    .yts-status-completed { background:#052e16; color:#86efac; }
+    .yts-status-failed { background:#450a0a; color:#fca5a5; }
+    .yts-status-stopped { background:#3f3f46; color:#d4d4d8; }
+    .yts-inline-input { display:flex; gap:0.5rem; flex-wrap:wrap; align-items:center; }
+    .yts-inline-input input { flex:1 1 240px; }
+    .yts-subtle { font-size:0.78rem; color:#94a3b8; }
+    .yts-download-link { display:inline-flex; align-items:center; justify-content:center; padding:0.55rem 0.9rem; border-radius:0.55rem; border:1px solid #334155; background:#2563eb; color:#fff; text-decoration:none; font-size:0.82rem; }
+    .yts-download-link.secondary { background:#132744; color:#bae6fd; }
+    .yts-download-link:hover { filter:brightness(1.08); }
+
+
     @media (max-width: 980px) {
       .hero { grid-template-columns: 1fr; }
       .remote-layout { grid-template-columns: 1fr; }
       main { grid-template-columns: 1fr; }
+      .yts-runner-grid { grid-template-columns: 1fr; }
+      .yts-runner-layout { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -178,7 +229,9 @@
 
   <div class="card quick-nav">
     <button onclick="scrollToSection('new-run-card')">New Run</button>
+    <button onclick="scrollToSection('yts-control-center')">🔧 YTS Control</button>
     <button onclick="scrollToSection('remote-card')">Remote + Stream</button>
+    <button onclick="scrollToSection('yts-runner-card')">🧪 YTS Runner</button>
     <button onclick="scrollToSection('runs-card')">Runs</button>
     <button onclick="scrollToSection('detail-panel')">Run Detail</button>
     <button onclick="scrollToSection('planner-debug-card')">Planner Debug</button>
@@ -197,6 +250,35 @@
     <div class="error-msg" id="start-error"></div>
   </div>
 
+  <!-- YTS Control Center -->
+  <div class="card full-width" id="yts-control-center">
+    <h2>YouTube Testing Suite (YTS) Control Center</h2>
+    <div class="yts-layout">
+      <div class="yts-nav" id="yts-nav-container">
+        <!-- JS will populate this -->
+      </div>
+      <div class="yts-content">
+        <!-- Global Options -->
+        <div class="yts-panel" id="yts-panel-global-options">
+          <h3>Global Options</h3>
+          <p class="description">These options apply to all YTS commands you run.</p>
+          <label><input type="checkbox" id="yts-opt-verbose"> --verbose</label>
+          <label><input type="checkbox" id="yts-opt-analytics" disabled> --analytics (deprecated)</label>
+          <label><input type="checkbox" id="yts-opt-colors" checked> --colors</label>
+          <label style="margin-top:0.75rem;">ADB Path</label>
+          <input id="yts-opt-adb_path" placeholder="adb">
+          <label style="margin-top:0.75rem;">Logging Level</label>
+          <input id="yts-opt-logging-level" placeholder="INFO">
+          <label style="margin-top:0.75rem;">Verbose Output File</label>
+          <input id="yts-opt-verbose-output" placeholder="/path/to/verbose.log">
+        </div>
+
+        <!-- Command Panels will be dynamically generated here -->
+        <div id="yts-panels-container"></div>
+      </div>
+    </div>
+  </div>
+
   <!-- Virtual Remote + HDMI Live Stream -->
   <div class="card full-width" id="remote-card">
     <h2>Virtual Remote + HDMI Live Stream</h2>
@@ -205,11 +287,39 @@
         <div style="font-size:0.8rem; color:#94a3b8; margin-bottom:0.75rem;" id="capture-source-info">
           Checking capture source...
         </div>
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0.5rem; margin-bottom:0.65rem;">
+          <select id="capture-mode-select">
+            <option value="auto">auto</option>
+            <option value="hdmi-capture">hdmi-capture</option>
+            <option value="camera-capture">camera-capture</option>
+            <option value="dab">dab</option>
+          </select>
+          <select id="capture-kind-select">
+            <option value="auto">kind: auto</option>
+            <option value="hdmi">kind: hdmi</option>
+            <option value="camera">kind: camera</option>
+          </select>
+        </div>
+        <div style="display:grid; grid-template-columns: 1fr auto auto; gap:0.5rem; margin-bottom:0.75rem;">
+          <select id="capture-device-select">
+            <option value="">device: auto</option>
+          </select>
+          <button class="secondary" onclick="refreshCaptureDevices()">↻ Devices</button>
+          <button onclick="applyCaptureSelection()">Apply</button>
+        </div>
         <div class="btn-row" style="margin-top:0; margin-bottom:0.75rem;">
           <button class="secondary" id="stream-toggle-btn" onclick="toggleHdmiStream()">▶ Start Stream</button>
           <button class="secondary" id="audio-toggle-btn" onclick="toggleAudioStream()">🔊 Start Audio</button>
           <button class="secondary" onclick="captureScreenshot()">📷 Screenshot</button>
         </div>
+
+        <details style="margin-bottom:0.75rem;">
+          <summary style="cursor:pointer; color:#93c5fd; font-size:0.8rem;">Stream Status & Diagnostics</summary>
+          <div id="stream-diagnostics" style="margin-top:0.5rem; padding:0.5rem; background:#0f172a; border-radius:0.5rem; font-size:0.8rem; color:#94a3b8;">
+            Checking...
+          </div>
+        </details>
+
         <div id="hdmi-stream-container">
           <div class="empty-state">HDMI stream is stopped.</div>
         </div>
@@ -306,6 +416,42 @@
         </details>
 
         <div id="manual-result" style="margin-top:0.75rem; font-size:0.8rem; color:#64748b;"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card full-width" id="yts-runner-card">
+    <h2>YTS Runner & Job History</h2>
+    <div class="yts-runner-layout">
+      <div class="yts-runner-panel">
+        <h3>Live Job Console</h3>
+        <div id="yts-command-result-container">
+          <div id="yts-command-status" style="margin-bottom:0.5rem;"><span class="yts-subtle">No YTS job selected yet.</span></div>
+          <div class="btn-row" style="margin-top:0; margin-bottom:0.75rem;">
+            <button class="danger" id="yts-command-stop-btn" onclick="stopLiveYtsCommand()" style="display:none;">■ Stop Command</button>
+          </div>
+          <div class="yts-inline-input" style="margin-bottom:0.75rem;">
+            <input id="yts-terminal-manual-input" placeholder="Send manual terminal input to the active YTS job" />
+            <button class="secondary" onclick="sendManualTerminalInputToYtsJob()">Send Input</button>
+          </div>
+          <div class="yts-subtle">Use this field to send manual terminal input even if the CLI is waiting mid-execution.</div>
+          <div id="yts-interactive-prompt" style="display:none;"></div>
+          <label style="margin-top:1rem;">Terminal Log</label>
+          <div class="yts-result-box" id="yts-command-output">Select or start a YTS job to view logs.</div>
+          <label style="margin-top:1rem;">Interactive / Gemini Log</label>
+          <div class="yts-result-box" id="yts-interaction-log">Gemini suggestions, prompt history, and manual terminal responses will appear here.</div>
+          <div id="yts-download-container" style="margin-top:0.75rem;"></div>
+        </div>
+      </div>
+      <div class="yts-runner-panel">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:0.5rem; margin-bottom:0.75rem;">
+          <h3 style="margin:0;">Recent YTS Jobs</h3>
+          <button class="secondary" onclick="loadYtsCommandHistory(true)">↻ Refresh</button>
+        </div>
+        <div class="yts-subtle" style="margin-bottom:0.75rem;">Jobs are stored by job ID in the backend database, so you can reopen them after refreshing the page.</div>
+        <div id="yts-job-history-list" class="yts-job-list">
+          <div class="empty-state" style="padding:1rem;">No YTS jobs yet.</div>
+        </div>
       </div>
     </div>
   </div>
@@ -423,6 +569,10 @@
   let hdmiAudioRunning = false;
   let lastNarrationIdx = -1;
   let currentNarrationAudio = null;
+  let currentYtsCommandId = null;
+  let ytsCommandPollInterval = null;
+  const YTS_COMMAND_STORAGE_KEY = 'dab_yts_live_command_id';
+  let ytsCommandHistory = [];
 
   function normalizeApiBase(v) {
     const s = (v || '').trim();
@@ -465,14 +615,35 @@
     if (urlEl) urlEl.textContent = apiBase || `(same-origin: ${window.location.origin})`;
   }
 
+  function isLocalOrigin() {
+    const host = window.location.hostname || '';
+    return host === '127.0.0.1' || host === 'localhost';
+  }
+
+  function getApiOrigin() {
+    return apiBase || window.location.origin;
+  }
+
   function initApiBase() {
     const cfgApi = (window.__HARNESS_API_BASE__ || '').trim();
     const qsApi = new URLSearchParams(window.location.search).get('api');
     if (qsApi !== null) {
       setApiBase(qsApi);
+      checkHealth();
+      loadCaptureSource();
+      refreshCaptureDevices();
+      loadRuns();
+      loadTestCatalog();
       return;
     }
-    setApiBase(localStorage.getItem(API_STORAGE_KEY) || cfgApi || '');
+    const storedApi = (localStorage.getItem(API_STORAGE_KEY) || '').trim();
+    const shouldPreferSameOrigin = isLocalOrigin() && !cfgApi;
+    setApiBase(shouldPreferSameOrigin ? '' : (storedApi || cfgApi || ''));
+    checkHealth();
+    loadCaptureSource();
+    refreshCaptureDevices();
+    loadRuns();
+    loadTestCatalog();
   }
 
   function saveApiBase() {
@@ -480,14 +651,18 @@
     setApiBase(v);
     checkHealth();
     loadCaptureSource();
+    refreshCaptureDevices();
     loadRuns();
+    loadTestCatalog();
   }
 
   function resetApiBase() {
     setApiBase('');
     checkHealth();
     loadCaptureSource();
+    refreshCaptureDevices();
     loadRuns();
+    loadTestCatalog();
   }
 
   function toImageSrc(imageValue) {
@@ -533,11 +708,16 @@
     const infoEl = document.getElementById('capture-source-info');
     try {
       const data = await api('/capture/source');
+      const modeSel = document.getElementById('capture-mode-select');
+      const kindSel = document.getElementById('capture-kind-select');
+      if (modeSel && data.configured_source) modeSel.value = data.configured_source;
+      if (kindSel && data.preferred_video_kind) kindSel.value = data.preferred_video_kind;
       const ad = await api('/audio/source').catch(() => null);
       const mode = data.configured_source || 'auto';
       if (data.hdmi_available) {
         const device = data.hdmi_device || 'auto';
-        let msg = `Capture source: ${mode} · HDMI video ready (${device})`;
+        const kind = data.preferred_video_kind || 'auto';
+        let msg = `Capture source: ${mode} · kind=${kind} · video ready (${device})`;
         if (ad) {
           msg += ad.enabled
             ? ` · audio ${ad.device || 'auto'} ${ad.ffmpeg_available ? 'ready' : 'ffmpeg-missing'}`
@@ -555,6 +735,78 @@
     } catch (e) {
       infoEl.textContent = 'Failed to read capture source status';
       infoEl.style.color = '#f87171';
+    }
+  }
+
+  async function refreshCaptureDevices() {
+    const sel = document.getElementById('capture-device-select');
+    if (!sel) return;
+    try {
+      const data = await api('/capture/devices');
+      const devices = Array.isArray(data.devices) ? data.devices : [];
+      sel.innerHTML = '<option value="">device: auto</option>';
+      for (const d of devices) {
+        const dev = d.device || '';
+        if (!dev) continue;
+        const name = d.name ? ` - ${d.name}` : '';
+        const kind = d.kind ? `[${d.kind}]` : '';
+        const readable = d.readable ? 'ok' : 'no-access';
+        const label = `${dev} ${kind} ${readable}${name}`.trim();
+        const opt = document.createElement('option');
+        opt.value = dev;
+        opt.textContent = label;
+        sel.appendChild(opt);
+      }
+      if (data.selected_video_device) sel.value = data.selected_video_device;
+    } catch (e) {
+      // keep existing options on failure
+    }
+  }
+
+  async function refreshStreamDiagnostics() {
+    const box = document.getElementById('stream-diagnostics');
+    if (!box) return;
+    try {
+      const data = await api('/stream/status');
+      const video = data?.video || {};
+      const audio = data?.audio || {};
+      const lines = [
+        `video.source: ${video.configured_source || 'unknown'}`,
+        `video.device: ${video.hdmi_device || video.selected_video_device || 'auto'}`,
+        `video.ready: ${video.hdmi_available ? 'yes' : 'no'}`,
+        `video.kind: ${video.preferred_video_kind || 'auto'}`,
+        `audio.enabled: ${audio.enabled ? 'yes' : 'no'}`,
+        `audio.ffmpeg: ${audio.ffmpeg_available ? 'yes' : 'no'}`,
+      ];
+      box.textContent = lines.join('\n');
+    } catch (e) {
+      box.textContent = `Failed to load stream diagnostics: ${e.message}`;
+    }
+  }
+
+  async function applyCaptureSelection() {
+    const modeSel = document.getElementById('capture-mode-select');
+    const kindSel = document.getElementById('capture-kind-select');
+    const devSel = document.getElementById('capture-device-select');
+    const resultEl = document.getElementById('manual-result');
+    try {
+      await api('/capture/select', 'POST', {
+        source: modeSel ? modeSel.value : 'auto',
+        preferred_kind: kindSel ? kindSel.value : 'auto',
+        device: devSel ? devSel.value : '',
+        persist: true,
+      });
+      await loadCaptureSource();
+      await refreshCaptureDevices();
+      if (resultEl) {
+        resultEl.textContent = '✓ Capture selection updated';
+        resultEl.style.color = '#4ade80';
+      }
+    } catch (e) {
+      if (resultEl) {
+        resultEl.textContent = `✗ ${e.message}`;
+        resultEl.style.color = '#f87171';
+      }
     }
   }
 
@@ -663,6 +915,315 @@
         </div>
       `).join('');
     } catch (e) { console.error(e); }
+  }
+
+  async function loadTestCatalog() {
+    try {
+      const tests = await api('/testlist.json');
+      const select = document.getElementById('test-select');
+      if (!select) return;
+      select.innerHTML = '<option value="">-- pick a test --</option>';
+      for (const t of Array.isArray(tests) ? tests : []) {
+        const option = document.createElement('option');
+        option.value = t.name || '';
+        option.textContent = `${t.name} (${t.file || 'unknown'})`;
+        select.appendChild(option);
+      }
+    } catch (e) {
+      console.warn('Failed to load test catalog', e);
+    }
+  }
+
+  // YTS Tab Management
+  function switchYtsTab(tab) {
+    const tabs = ['discover', 'list', 'run', 'job'];
+    const tabContainer = document.getElementById('yts-cli-card');
+    
+    tabs.forEach(t => {
+      const el = document.getElementById(`yts-tab-${t}`);
+      const btn = tabContainer.querySelector(`button[onclick="switchYtsTab('${t}')"]`);
+      if (t === tab) {
+        if (el) {
+          el.classList.add('active');
+          el.style.display = 'block';
+        }
+        if (btn) {
+          btn.classList.add('active');
+        }
+      } else {
+        if (el) {
+          el.classList.remove('active');
+          el.style.display = 'none';
+        }
+        if (btn) {
+          btn.classList.remove('active');
+        }
+      }
+    });
+  }
+
+  // YTS Discover Devices
+  async function ytsDiscoverDevices() {
+    const output = document.getElementById('yts-discover-output');
+    output.textContent = '🔍 Discovering devices...';
+    try {
+      const data = await api('/yts/discover');
+      if (data.returncode === 0) {
+        const lines = data.stdout.split('\n').filter(l => l.trim());
+        if (lines.length === 0) {
+          output.textContent = '✓ Discovery completed.\n(No devices found or no new devices discovered.)';
+        } else {
+          output.innerHTML = '✓ Discovered Devices:\n' + escHtml(lines.join('\n'));
+        }
+        output.style.color = '#4ade80';
+      } else {
+        output.innerHTML = '✗ Discovery failed:\n' + escHtml(data.stderr || data.stdout);
+        output.style.color = '#f87171';
+      }
+    } catch (e) {
+      output.textContent = `✗ Error: ${e.message}`;
+      output.style.color = '#f87171';
+    }
+  }
+
+  // YTS List Tests
+  let ytsTestsCache = [];
+  async function ytsListTests() {
+    const output = document.getElementById('yts-list-output');
+    output.innerHTML = '<div class="empty-state" style="padding:1rem;">📋 Loading test catalog...</div>';
+    try {
+      const data = await api('/yts/tests');
+      ytsTestsCache = Array.isArray(data) ? data : [];
+      document.getElementById('yts-test-count').textContent = ytsTestsCache.length;
+      
+      // Populate filters
+      const suites = [...new Set(ytsTestsCache.map(t => t.test_suite).filter(Boolean))];
+      const categories = [...new Set(ytsTestsCache.map(t => t.test_category).filter(Boolean))];
+      
+      const suiteFilter = document.getElementById('yts-suite-filter');
+      suiteFilter.innerHTML = '<option value="">All Suites</option>';
+      suites.sort().forEach(s => suiteFilter.add(new Option(s, s)));
+
+      const categoryFilter = document.getElementById('yts-category-filter');
+      categoryFilter.innerHTML = '<option value="">All Categories</option>';
+      categories.sort().forEach(c => categoryFilter.add(new Option(c, c)));
+
+      ytsRenderTests(ytsTestsCache);
+    } catch (e) {
+      output.innerHTML = `<div class="empty-state" style="padding:1rem; color:#f87171;">✗ Error loading tests: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  function ytsRenderTests(tests) {
+    const output = document.getElementById('yts-list-output');
+    if (tests.length === 0) {
+      output.innerHTML = '<div class="empty-state" style="padding:1rem;">No tests match your search.</div>';
+      return;
+    }
+    
+    // Using a more structured HTML table
+    let table = `<style>
+      .yts-table { width:100%; border-collapse:collapse; font-size:0.78rem; }
+      .yts-table th, .yts-table td { padding: 0.45rem 0.6rem; text-align:left; border-bottom:1px solid #1e293b; }
+      .yts-table th { font-weight:600; color:#94a3b8; background: #0f172a; position: sticky; top: 0; }
+      .yts-table tr { cursor:pointer; }
+      .yts-table tr:hover { background: #132744; }
+      .yts-table .id { color:#7dd3fc; max-width:180px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      .yts-table .suite { color:#fcd34d; }
+    </style>
+    <table class="yts-table">
+      <thead><tr><th>Test ID</th><th>Title</th><th>Suite</th></tr></thead>
+      <tbody>`;
+
+    const paginatedTests = tests.slice(0, 100); // Show first 100 results for performance
+    paginatedTests.forEach(t => {
+      const testId = t.test_id || 'N/A';
+      const testTitle = t.test_title || 'No Title';
+      const testSuite = t.test_suite || 'Unknown';
+      table += `<tr onclick="selectTestFromList('${escHtml(testId)}')">
+        <td class="id" title="${escHtml(testId)}">${escHtml(testId)}</td>
+        <td>${escHtml(testTitle)}</td>
+        <td class="suite">${escHtml(testSuite)}</td>
+      </tr>`;
+    });
+    table += `</tbody></table>`;
+    
+    if (tests.length > 100) {
+      table += `<div style="padding:0.5rem; text-align:center; font-size:0.8rem; color:#64748b;">Showing 100 of ${tests.length} tests. Use search to refine.</div>`;
+    }
+
+    output.innerHTML = table;
+  }
+
+  function ytsFilterTests() {
+    const suite = document.getElementById('yts-suite-filter').value;
+    const category = document.getElementById('yts-category-filter').value;
+    const query = document.getElementById('yts-search-input').value.toLowerCase();
+    
+    const filtered = ytsTestsCache.filter(t => 
+      (!suite || t.test_suite === suite) &&
+      (!category || t.test_category === category) &&
+      (
+        !query ||
+        (t.test_id && t.test_id.toLowerCase().includes(query)) ||
+        (t.test_title && t.test_title.toLowerCase().includes(query))
+      )
+    );
+    ytsRenderTests(filtered);
+  }
+
+  function ytsSelectTest(testId) {
+    // Update the "Run Test" tab
+    document.getElementById('yts-run-test').value = testId;
+    
+    // Also update the "New Run" card's selected test display
+    const selectedTestInput = document.getElementById('selected-yts-test-input');
+    if (selectedTestInput) {
+      selectedTestInput.value = testId;
+    }
+
+    switchYtsTab('run');
+    // Optional: flash the input field
+    const input = document.getElementById('yts-run-test');
+    input.style.transition = 'none';
+    input.style.background = '#38bdf8';
+    setTimeout(() => {
+      input.style.transition = 'background 0.3s';
+      input.style.background = '';
+    }, 200);
+  }
+
+
+  // YTS Download Test List as JSON
+  function ytsDownloadTestList() {
+    if (ytsTestsCache.length === 0) {
+      alert('No tests loaded. Click "Load/Refresh" first.');
+      return;
+    }
+    const data = {
+      test_count: ytsTestsCache.length,
+      tests: ytsTestsCache
+    };
+    const json = JSON.stringify(data, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `yts-tests-${new Date().toISOString().slice(0,10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // YTS Run Test
+  async function ytsRunTest() {
+    const device = document.getElementById('yts-run-device').value.trim();
+    const test = document.getElementById('yts-run-test').value.trim();
+    
+    // Collect args from the new multi-select dropdown
+    const commonArgsEl = document.getElementById('yts-common-args');
+    const selectedArgs = [...commonArgsEl.options].filter(option => option.selected).map(option => option.value);
+    
+    // Collect args from the text input
+    const additionalArgs = document.getElementById('yts-run-args').value.trim().split(/\s+/).filter(f => f);
+
+    const args = [...selectedArgs, ...additionalArgs];
+    const saveJson = document.getElementById('yts-run-json-output').checked;
+
+    if (!device || !test) {
+      document.getElementById('yts-run-status').innerHTML = '<span style="color:#f87171;">✗ Device ID and Test ID/Name are required.</span>';
+      return;
+    }
+
+    const statusEl = document.getElementById('yts-run-status');
+    const outputEl = document.getElementById('yts-run-output');
+    statusEl.innerHTML = '<span style="color:#38bdf8;">▌ Running test...</span>';
+    outputEl.innerHTML = '';
+
+    try {
+      const body = { device, test, args };
+      if (saveJson) body.json_output = '/tmp/yts_test_result.json';
+      
+      const data = await api('/yts/test', 'POST', body);
+      
+      if (data.returncode === 0) {
+        statusEl.innerHTML = '<span style="color:#4ade80;">✓ Test completed successfully</span>';
+        outputEl.style.color = '#4ade80';
+      } else {
+        statusEl.innerHTML = `<span style="color:#f87171;">✗ Test failed (exit code: ${data.returncode})</span>`;
+        outputEl.style.color = '#f87171';
+      }
+
+      // Display output
+      let output = `<strong>Command:</strong> ${escHtml(data.command)}\n\n`;
+      if (data.stdout) output += `<strong>STDOUT:</strong>\n${escHtml(data.stdout)}\n\n`;
+      if (data.stderr) output += `<strong>STDERR:</strong>\n${escHtml(data.stderr)}\n\n`;
+      
+      outputEl.innerHTML = output;
+
+      if (data.details) {
+        outputEl.innerHTML += `<strong>JSON Result:</strong><details open><summary>Click to view/hide</summary><pre>${JSON.stringify(data.details, null, 2)}</pre></details>`;
+      }
+      
+    } catch (e) {
+      statusEl.innerHTML = `<span style="color:#f87171;">✗ Error: ${escHtml(e.message)}</span>`;
+      outputEl.textContent = `Error: ${e.message}`;
+      outputEl.style.color = '#f87171';
+    }
+  }
+
+  // YTS Submit Job
+  async function ytsSubmitJob() {
+    const goal = document.getElementById('yts-job-goal').value.trim();
+    const device = document.getElementById('yts-job-device').value.trim();
+    const steps = document.getElementById('yts-job-steps').value.trim();
+
+    if (!goal) {
+      document.getElementById('yts-job-output').textContent = 'Job goal is required.';
+      return;
+    }
+
+    const outputEl = document.getElementById('yts-job-output');
+    outputEl.textContent = '📤 Submitting job...';
+
+    try {
+      const body = { goal };
+      if (device) body.device = device;
+      if (steps) body.max_steps = parseInt(steps, 10);
+
+      const data = await api('/yts/job', 'POST', body);
+      
+      outputEl.innerHTML = `✓ Job submitted successfully!\n\nRun ID: ${escHtml(data.run_id)}\nStatus: ${escHtml(data.status)}\n\n${JSON.stringify(data, null, 2)}`;
+      outputEl.style.color = '#4ade80';
+      
+      // Clear form
+      document.getElementById('yts-job-goal').value = '';
+      document.getElementById('yts-job-device').value = '';
+      document.getElementById('yts-job-steps').value = '';
+    } catch (e) {
+      outputEl.textContent = `✗ Error: ${e.message}`;
+      outputEl.style.color = '#f87171';
+    }
+  }
+
+  // Clear YTS Output
+  function ytsClearOutput() {
+    document.getElementById('yts-discover-output').innerHTML = '<div class="empty-state" style="padding:0;">No devices discovered yet. Click "Discover Devices" to scan.</div>';
+    document.getElementById('yts-list-output').innerHTML = '<div class="empty-state" style="padding:0;">No tests loaded. Click "List Tests" to load catalog.</div>';
+    document.getElementById('yts-run-status').innerHTML = '<div class="empty-state" style="padding:0;">No test running.</div>';
+    document.getElementById('yts-run-output').innerHTML = '<div class="empty-state" style="padding:0;">Results will appear here.</div>';
+    document.getElementById('yts-job-output').innerHTML = '<div class="empty-state" style="padding:0;">Job results will appear here.</div>';
+  }
+
+  async function discoverDevices() {
+    ytsDiscoverDevices();
+  }
+
+  async function listYtsTests() {
+    ytsListTests();
+  }
+
+  async function runYtsTest() {
+    ytsRunTest();
   }
 
   async function selectRun(runId) {
@@ -936,15 +1497,1377 @@
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
 
+  function parseQuotedTokens(value) {
+    const input = String(value || '').trim();
+    if (!input) return [];
+    const matches = [...input.matchAll(/"([^"]+)"|'([^']+)'|(\S+)/g)];
+    return matches
+      .map(match => match[1] || match[2] || match[3] || '')
+      .map(token => token.trim())
+      .filter(Boolean);
+  }
+
+  function isYtsGuidedModeEnabled() {
+    return !!(document.getElementById('yts-arg-test-guided')?.checked || document.getElementById('yts-list-guided')?.checked);
+  }
+
+  function setYtsGuidedMode(enabled, reloadCatalog = true) {
+    const testCheckbox = document.getElementById('yts-arg-test-guided');
+    const listCheckbox = document.getElementById('yts-list-guided');
+    if (testCheckbox) testCheckbox.checked = enabled;
+    if (listCheckbox) listCheckbox.checked = enabled;
+    clearSelectedYtsTests();
+    if (reloadCatalog) {
+      loadYtsTestCatalog();
+    }
+  }
+
+  function handleYtsGuidedModeChange(sourceId) {
+    const source = document.getElementById(sourceId);
+    setYtsGuidedMode(!!source?.checked, true);
+  }
+
+  function clearYtsCommandPolling() {
+    if (ytsCommandPollInterval) {
+      clearInterval(ytsCommandPollInterval);
+      ytsCommandPollInterval = null;
+    }
+  }
+
+  function setCurrentYtsCommand(commandId) {
+    currentYtsCommandId = commandId || null;
+    if (currentYtsCommandId) {
+      localStorage.setItem(YTS_COMMAND_STORAGE_KEY, currentYtsCommandId);
+    } else {
+      localStorage.removeItem(YTS_COMMAND_STORAGE_KEY);
+    }
+  }
+
+  function startYtsCommandPolling(commandId) {
+    clearYtsCommandPolling();
+    if (!commandId) return;
+    ytsCommandPollInterval = setInterval(() => {
+      if (currentYtsCommandId) {
+        pollLiveYtsCommand(currentYtsCommandId);
+      }
+    }, 1000);
+  }
+
+  function formatYtsStatusBadge(status) {
+    const normalized = String(status || 'unknown').toLowerCase();
+    const className = {
+      running: 'yts-status-running',
+      completed: 'yts-status-completed',
+      failed: 'yts-status-failed',
+      stopped: 'yts-status-stopped',
+    }[normalized] || 'yts-status-stopped';
+    return `<span class="yts-status-badge ${className}">${escHtml(normalized)}</span>`;
+  }
+
+  function renderYtsInteractionLog(data) {
+    const box = document.getElementById('yts-interaction-log');
+    if (!box) return;
+
+    const prompts = Array.isArray(data.prompts) ? data.prompts : [];
+    const responses = Array.isArray(data.responses) ? data.responses : [];
+
+    if (!prompts.length && !responses.length) {
+      box.textContent = 'No interactive prompts or Gemini responses recorded for this job yet.';
+      return;
+    }
+
+    const lines = [];
+    prompts.forEach((prompt, index) => {
+      lines.push(`Prompt ${index + 1}: ${prompt.text || '(empty prompt)'}`);
+      if (prompt.options?.length) lines.push(`  Options: ${prompt.options.join(', ')}`);
+      if (prompt.ai_suggestion) lines.push(`  Gemini: ${prompt.ai_suggestion} (${prompt.ai_source || 'gemini'})`);
+      if (prompt.ai_visual_summary) lines.push(`  TV: ${prompt.ai_visual_summary}`);
+      if (prompt.response) lines.push(`  Sent: ${prompt.response}`);
+      if (prompt.answered && !prompt.response) lines.push('  Sent automatically');
+    });
+
+    if (responses.length) {
+      lines.push('');
+      lines.push('Responses:');
+      responses.forEach((response, index) => {
+        lines.push(`  ${index + 1}. [${response.source || 'manual'}] ${response.message || ''}`);
+      });
+    }
+
+    box.textContent = lines.join('\n');
+  }
+
+  function renderYtsCommandHistory() {
+    const container = document.getElementById('yts-job-history-list');
+    if (!container) return;
+
+    if (!Array.isArray(ytsCommandHistory) || !ytsCommandHistory.length) {
+      container.innerHTML = '<div class="empty-state" style="padding:1rem;">No YTS jobs yet.</div>';
+      return;
+    }
+
+    container.innerHTML = ytsCommandHistory.map(item => {
+      const commandId = item.command_id || '';
+      const commandText = item.command || '(starting...)';
+      const updatedAt = item.updated_at ? new Date(item.updated_at).toLocaleString() : 'unknown';
+      const isActive = commandId === currentYtsCommandId;
+      const apiOrigin = getApiOrigin();
+      const artifactBits = [];
+      artifactBits.push('terminal-log');
+      if (item.result_file_name) artifactBits.push(`result:${item.result_file_name}`);
+      if (item.record_video) artifactBits.push(`video:${item.video_recording_status || 'pending'}`);
+      const links = [];
+      links.push(`<a class="yts-download-link secondary" href="${apiOrigin}/yts/command/live/${encodeURIComponent(commandId)}/terminal-log" target="_blank" rel="noopener" download onclick="event.stopPropagation()">Terminal Log</a>`);
+      if (item.result_file_name) {
+        links.push(`<a class="yts-download-link secondary" href="${apiOrigin}/yts/command/live/${encodeURIComponent(commandId)}/result" target="_blank" rel="noopener" download="${escHtml(item.result_file_name)}" onclick="event.stopPropagation()">Saved Result</a>`);
+      }
+      if (item.video_file_name && (item.video_recording_status || '') !== 'unavailable' && (item.video_recording_status || '') !== 'failed') {
+        links.push(`<a class="yts-download-link secondary" href="${apiOrigin}/yts/command/live/${encodeURIComponent(commandId)}/video" target="_blank" rel="noopener" download="${escHtml(item.video_file_name)}" onclick="event.stopPropagation()">Video</a>`);
+      }
+      return `
+        <div class="yts-job-item ${isActive ? 'active' : ''}" onclick="openYtsCommandHistoryItem(${JSON.stringify(commandId)})">
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:0.5rem;">
+            <div class="yts-job-title">${escHtml(commandId)}</div>
+            ${formatYtsStatusBadge(item.status)}
+          </div>
+          <div class="yts-job-meta">Updated: ${escHtml(updatedAt)}</div>
+          <div class="yts-job-meta">${escHtml(commandText)}</div>
+          <div class="yts-job-meta">Artifacts: ${escHtml(artifactBits.join(' · '))}</div>
+          <div class="yts-job-links">${links.join(' ')}</div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  async function loadYtsCommandHistory(keepSelection = false) {
+    try {
+      const history = await api('/yts/command/live?limit=100');
+      ytsCommandHistory = Array.isArray(history) ? history : [];
+      const currentStillExists = currentYtsCommandId && ytsCommandHistory.some(item => item.command_id === currentYtsCommandId);
+      if (currentYtsCommandId && !currentStillExists) {
+        setCurrentYtsCommand(null);
+      }
+      renderYtsCommandHistory();
+
+      if ((!keepSelection || !currentYtsCommandId) && !currentYtsCommandId && ytsCommandHistory.length) {
+        await openYtsCommandHistoryItem(ytsCommandHistory[0].command_id, { startPollingIfRunning: false });
+      }
+    } catch (e) {
+      const container = document.getElementById('yts-job-history-list');
+      if (container) {
+        container.innerHTML = `<div class="empty-state" style="padding:1rem; color:#f87171;">Failed to load YTS jobs: ${escHtml(e.message)}</div>`;
+      }
+    }
+  }
+
+  async function openYtsCommandHistoryItem(commandId, options = {}) {
+    if (!commandId) return;
+    const { startPollingIfRunning = true } = options;
+    setCurrentYtsCommand(commandId);
+    renderYtsCommandHistory();
+    const data = await pollLiveYtsCommand(commandId);
+    if (data?.status === 'running' && startPollingIfRunning) {
+      startYtsCommandPolling(commandId);
+    }
+    await loadYtsCommandHistory(true);
+    return data;
+  }
+
+  async function sendManualTerminalInputToYtsJob() {
+    if (!currentYtsCommandId) return;
+    const input = document.getElementById('yts-terminal-manual-input');
+    const value = input?.value?.trim();
+    if (!value) return;
+    await api(`/yts/command/live/${currentYtsCommandId}/respond`, 'POST', { response: value });
+    input.value = '';
+    await pollLiveYtsCommand(currentYtsCommandId);
+    await loadYtsCommandHistory(true);
+  }
+
+  function renderYtsLiveCommandState(data) {
+    const statusEl = document.getElementById('yts-command-status');
+    const outputEl = document.getElementById('yts-command-output');
+    const downloadContainer = document.getElementById('yts-download-container');
+    const stopBtn = document.getElementById('yts-command-stop-btn');
+    const promptBox = document.getElementById('yts-interactive-prompt');
+    const isRunning = data.status === 'running';
+
+    stopBtn.style.display = isRunning ? '' : 'none';
+    if (isRunning) {
+      statusEl.innerHTML = '<span style="color:#38bdf8;">▌ YTS command running...</span>';
+    } else if (data.status === 'completed') {
+      statusEl.innerHTML = '<span style="color:#4ade80;">✓ Command finished successfully</span>';
+    } else if (data.status === 'stopped') {
+      statusEl.innerHTML = '<span style="color:#fbbf24;">■ Command stopped</span>';
+    } else {
+      statusEl.innerHTML = `<span style="color:#f87171;">✗ Command failed${data.returncode !== null ? ` (exit code: ${data.returncode})` : ''}</span>`;
+    }
+
+    const liveLog = Array.isArray(data.logs) && data.logs.length
+      ? data.logs.map(entry => `[${entry.stream}] ${entry.message}`).join('\n')
+      : '(waiting for output)';
+
+    let output = `<strong>Command:</strong> ${escHtml(data.command || '(starting...)')}\n\n`;
+    output += `<strong>Job ID:</strong> ${escHtml(data.command_id || '(unknown)')}\n`;
+    output += `<strong>Last Updated:</strong> ${escHtml(data.updated_at || '(unknown)')}\n\n`;
+    if (data.record_video) {
+      output += `<strong>Video Recording:</strong> ${escHtml(data.video_recording_status || 'pending')}\n`;
+      if (data.video_file_name) {
+        output += `<strong>Video Artifact:</strong> ${escHtml(data.video_file_name)}\n`;
+      }
+      output += `\n`;
+    }
+    output += `<strong>Live Terminal Log:</strong>\n${escHtml(liveLog)}`;
+
+    if (!isRunning) {
+      output += `\n\n<strong>STDOUT:</strong>\n${escHtml(data.stdout || '(empty)')}\n\n<strong>STDERR:</strong>\n${escHtml(data.stderr || '(empty)')}`;
+    }
+
+    outputEl.innerHTML = output;
+  renderYtsInteractionLog(data);
+
+    const pendingPrompt = data.pending_prompt;
+    if (pendingPrompt && data.awaiting_input) {
+      const options = Array.isArray(pendingPrompt.options) ? pendingPrompt.options : [];
+      const buttonOptions = options.length ? options : ['yes', 'no', '1', '2', '3', '4'];
+      const aiWatchingTv = !!data.ai_observing_tv;
+      const aiStatusMessage = data.ai_status_message || 'Gemini is watching the TV stream and reading the terminal guide...';
+      promptBox.style.display = 'block';
+      promptBox.innerHTML = `
+        <div class="yts-prompt-box">
+          <div><strong>Interactive Prompt</strong></div>
+          <div style="margin-top:0.5rem; color:#e2e8f0;">${escHtml(pendingPrompt.text || '')}</div>
+          ${aiWatchingTv ? `<div class="yts-hint" style="margin-top:0.55rem; color:#7dd3fc;">👀 ${escHtml(aiStatusMessage)}</div>` : ''}
+          <div class="yts-prompt-actions">
+            ${buttonOptions.map(option => `<button class="secondary" onclick="respondToYtsPrompt(${JSON.stringify(option)})">${escHtml(option)}</button>`).join('')}
+          </div>
+          <div class="yts-prompt-actions">
+            <input id="yts-prompt-custom-response" placeholder="Custom response" />
+            <button class="secondary" onclick="sendCustomYtsPromptResponse()">Send</button>
+          </div>
+          <div class="yts-prompt-actions">
+            <button class="secondary" onclick="suggestYtsPromptResponse(false)">Suggest with Gemini</button>
+            <button onclick="suggestYtsPromptResponse(true)">Send Gemini Suggestion</button>
+          </div>
+          ${pendingPrompt.ai_suggestion ? `<div class="yts-hint">Gemini suggestion: <span class="yts-prompt-chip">${escHtml(pendingPrompt.ai_suggestion)}</span> (${escHtml(pendingPrompt.ai_source || 'gemini')})</div>` : ''}
+          ${pendingPrompt.ai_visual_summary ? `<div class="yts-hint" style="margin-top:0.55rem;"><strong>TV visual context</strong> ${pendingPrompt.ai_visual_source ? `(${escHtml(pendingPrompt.ai_visual_source)})` : ''}: ${escHtml(pendingPrompt.ai_visual_summary)}</div>` : ''}
+        </div>`;
+    } else {
+      promptBox.style.display = 'none';
+      promptBox.innerHTML = '';
+    }
+
+    const downloadButtons = [];
+    const apiOrigin = getApiOrigin();
+    if (data.command_id) {
+      downloadButtons.push(`<a class="yts-download-link secondary" href="${apiOrigin}/yts/command/live/${encodeURIComponent(data.command_id)}/terminal-log" target="_blank" rel="noopener" download>⬇ Terminal Log</a>`);
+    }
+    if (data.result_file_content) {
+      const blob = new Blob([data.result_file_content], { type: 'application/octet-stream' });
+      const url = URL.createObjectURL(blob);
+      downloadButtons.push(`<a class="yts-download-link" href="${url}" target="_blank" rel="noopener" download="${escHtml(data.result_file_name || 'yts-result.json')}">⬇ ${escHtml(data.result_file_name || 'YTS Result')}</a>`);
+    }
+    if (data.result_file_name) {
+      downloadButtons.push(`<a class="yts-download-link secondary" href="${apiOrigin}/yts/command/live/${encodeURIComponent(data.command_id)}/result" target="_blank" rel="noopener" download="${escHtml(data.result_file_name)}">⬇ Saved Result File</a>`);
+    }
+    if (data.video_file_name && (data.video_recording_status || '') !== 'unavailable') {
+      downloadButtons.push(`<a class="yts-download-link" href="${apiOrigin}/yts/command/live/${encodeURIComponent(data.command_id)}/video" target="_blank" rel="noopener" download="${escHtml(data.video_file_name)}">⬇ ${escHtml(data.video_file_name)}</a>`);
+    } else if (data.record_video) {
+      downloadButtons.push(`<span class="yts-subtle">Video status: ${escHtml(data.video_recording_status || 'pending')}</span>`);
+    }
+    downloadContainer.innerHTML = downloadButtons.join(' ');
+  }
+
+  async function pollLiveYtsCommand(commandId) {
+    try {
+      const data = await api(`/yts/command/live/${commandId}`);
+      setCurrentYtsCommand(commandId);
+      renderYtsLiveCommandState(data);
+      renderYtsCommandHistory();
+      if (data.status !== 'running') {
+        clearYtsCommandPolling();
+      }
+      return data;
+    } catch (e) {
+      clearYtsCommandPolling();
+      setCurrentYtsCommand(null);
+      document.getElementById('yts-command-status').innerHTML = `<span style="color:#f87171;">✗ API Error: ${escHtml(e.message)}</span>`;
+      return null;
+    }
+  }
+
+  async function resumeLiveYtsCommand() {
+    let commandId = localStorage.getItem(YTS_COMMAND_STORAGE_KEY);
+
+    if (!commandId) {
+      try {
+        const activeCommands = await api('/yts/command/live?active_only=true&limit=1');
+        if (Array.isArray(activeCommands) && activeCommands.length) {
+          commandId = activeCommands[0].command_id;
+        }
+      } catch (_) {
+        return;
+      }
+    }
+
+    if (!commandId) return;
+
+    document.getElementById('yts-command-status').innerHTML = '<span style="color:#38bdf8;">▌ Reconnecting to live YTS command...</span>';
+    const data = await openYtsCommandHistoryItem(commandId, { startPollingIfRunning: false });
+    if (data?.status === 'running') {
+      startYtsCommandPolling(commandId);
+    } else if (!data && ytsCommandHistory.length) {
+      await openYtsCommandHistoryItem(ytsCommandHistory[0].command_id, { startPollingIfRunning: false });
+    }
+  }
+
+  async function stopLiveYtsCommand() {
+    if (!currentYtsCommandId) return;
+    try {
+      await api(`/yts/command/live/${currentYtsCommandId}/stop`, 'POST');
+      await pollLiveYtsCommand(currentYtsCommandId);
+      await loadYtsCommandHistory(true);
+    } catch (e) {
+      document.getElementById('yts-command-status').innerHTML = `<span style="color:#f87171;">✗ Failed to stop command: ${escHtml(e.message)}</span>`;
+    }
+  }
+
+  async function respondToYtsPrompt(responseText) {
+    if (!currentYtsCommandId) return;
+    await api(`/yts/command/live/${currentYtsCommandId}/respond`, 'POST', { response: responseText });
+    await pollLiveYtsCommand(currentYtsCommandId);
+    await loadYtsCommandHistory(true);
+  }
+
+  async function sendCustomYtsPromptResponse() {
+    const input = document.getElementById('yts-prompt-custom-response');
+    const value = input?.value?.trim();
+    if (!value) return;
+    await respondToYtsPrompt(value);
+    input.value = '';
+  }
+
+  async function suggestYtsPromptResponse(sendResponse) {
+    if (!currentYtsCommandId) return;
+    await api(`/yts/command/live/${currentYtsCommandId}/suggest`, 'POST', { send_response: !!sendResponse });
+    await pollLiveYtsCommand(currentYtsCommandId);
+    await loadYtsCommandHistory(true);
+  }
+
+  // --- New YTS Control Center Logic ---
+
+  const ytsCommands = {
+    'global-options': {
+      title: 'Global Options',
+      description: 'These options apply to all YTS commands.',
+      args: [],
+    },
+    'discover': {
+      title: 'Discover Devices',
+      description: 'Discover devices in the local network.',
+      args: [],
+    },
+    'launch': {
+      title: 'Launch App',
+      description: 'Launch YouTube app on the specified device.',
+      args: [{name: 'device', placeholder: 'device_id'}, {name: 'payload', placeholder: 'payload (optional)'}],
+    },
+    'stop': {
+      title: 'Stop App',
+      description: 'Stops YouTube app on the specified device.',
+      args: [{name: 'device', placeholder: 'device_id'}],
+    },
+    'test': {
+      title: 'Run Test',
+      description: 'Launches tests on the specified device.',
+      args: [
+        {name: 'device', placeholder: 'device_id'},
+        {name: 'filter', placeholder: 'filter... (optional)', multiple: true},
+        {name: 'guided', placeholder: '--guided', is_flag: true},
+        {name: 'json_output', placeholder: 'path/to/results.json', is_file: true},
+      ],
+    },
+    'list': {
+        title: 'List Tests',
+        description: 'Prints names of available tests.',
+        args: [{name: 'filter', placeholder: 'filter... (optional)', multiple: true}, {name: 'json_output', placeholder: 'path/to/testlist.json', is_file: true}],
+    },
+    'cert': {
+        title: 'Run Certification Tests',
+        description: 'Runs certification tests applicable to this device.',
+        args: [{name: 'device', placeholder: 'device_id'}, {name: 'filter', placeholder: 'filter... (optional)', multiple: true}],
+    },
+    'login': { title: 'Login', description: 'Login to YouTube Certification Portal.', args: [] },
+    'logout': { title: 'Logout', description: 'Logout from YouTube Certification Portal.', args: [] },
+    'user': { title: 'Check User', description: 'Use local credential to check membership in Saltmine.', args: [] },
+    'credits': { title: 'Show Credits', description: 'Prints the list of open source libraries used.', args: [] },
+    'update': {
+        title: 'Update YTS',
+        description: 'Updates YTS to the latest or a target version.',
+        args: [{name: 'target-version', placeholder: 'version (optional)'}],
+    },
+    'evergreen-channel': {
+        title: 'Evergreen Channel',
+        description: 'Returns or sets the Evergreen channel on a device.',
+        args: [{name: 'device', placeholder: 'device_id'}, {name: 'channel', placeholder: 'channel (optional)'}],
+    },
+    'evergreen-update': {
+        title: 'Evergreen Update',
+        description: 'Sets Evergreen updater channel and waits for the update to finish.',
+        args: [{name: 'device', placeholder: 'device_id'}, {name: 'channel', placeholder: 'channel'}],
+    },
+    'wakeup': {
+        title: 'Wake Up Device',
+        description: 'Sends a wakeup packet to the specified DIAL device.',
+        args: [{name: 'device', placeholder: 'device_id'}],
+    },
+    'check': {
+        title: 'Check Device',
+        description: 'Checks if the device is responding and prints its properties.',
+        args: [{name: 'device', placeholder: 'device_id'}],
+    },
+    'reset': {
+        title: 'Reset Device',
+        description: 'Clears cookies and local storage on the device.',
+        args: [{name: 'device', placeholder: 'device_id'}],
+    },
+  };
+
+  function initYtsControlCenter() {
+    const navContainer = document.getElementById('yts-nav-container');
+    const panelsContainer = document.getElementById('yts-panels-container');
+    
+    // Create nav and panels
+    for (const command in ytsCommands) {
+      const details = ytsCommands[command];
+      
+      // Nav item
+      const navItem = document.createElement('div');
+      navItem.className = 'yts-nav-item';
+      navItem.textContent = details.title;
+      navItem.dataset.command = command;
+      navItem.onclick = () => switchYtsPanel(command);
+      navContainer.appendChild(navItem);
+
+      if (command === 'global-options' || command === 'test' || command === 'list') continue;
+
+      // Panel
+      let panel = `<div class="yts-panel" id="yts-panel-${command}">
+        <h3>${escHtml(details.title)}</h3>
+        <p class="description">${escHtml(details.description)}</p>`;
+
+      details.args.forEach(arg => {
+        panel += `<label style="margin-top:0.75rem;">${escHtml(arg.name)}</label>`;
+        if (arg.multiple) {
+          panel += `<textarea id="yts-arg-${command}-${arg.name}" placeholder="${escHtml(arg.placeholder)}"></textarea>
+                    <div class="yts-hint">Enter repeated values as ${escHtml('"value1" "value2"')} or plain space-separated tokens.</div>`;
+        } else {
+          panel += `<input id="yts-arg-${command}-${arg.name}" placeholder="${escHtml(arg.placeholder)}">`;
+        }
+      });
+
+      panel += `<div class="btn-row" style="margin-top:1rem;">
+                  <button onclick="runYtsCommand('${command}')">▶ Run</button>
+                </div>
+              </div>`;
+      panelsContainer.innerHTML += panel;
+    }
+    
+    // Create a special, more detailed panel for the 'test' command
+    createCustomTestPanel(panelsContainer);
+    // Create another special panel for 'list'
+    createCustomListPanel(panelsContainer);
+
+    // Activate first one
+    switchYtsPanel('discover');
+  }
+
+  function createCustomTestPanel(container) {
+    const command = 'test';
+    const details = ytsCommands[command];
+    let panel = `
+    <div class="yts-panel" id="yts-panel-test">
+      <h3>${escHtml(details.title)}</h3>
+      <p class="description">${escHtml(details.description)}</p>
+      
+      <label>Device ID*</label>
+      <input id="yts-arg-test-device" placeholder="e.g., adb:123456 or 10.99.57.51" required>
+
+      <div class="yts-inline-actions">
+        <button class="secondary" onclick="refreshYtsTestCatalog()">↻ Refresh Test Catalog</button>
+      </div>
+
+      <label style="margin-top:1rem;">Run by suite / category / test name</label>
+      <div class="yts-runner-grid" style="margin-top:0.5rem;">
+        <div>
+          <label>Test Suite</label>
+          <select id="yts-arg-test-suite-select" onchange="handleYtsSuiteChange()">
+            <option value="">All Suites</option>
+          </select>
+        </div>
+        <div>
+          <label>Test Category</label>
+          <select id="yts-arg-test-category-select" onchange="handleYtsCategoryChange()">
+            <option value="">All Categories</option>
+          </select>
+        </div>
+      </div>
+
+      <label style="margin-top:0.75rem;">Test Name</label>
+      <select id="yts-arg-test-name-select" class="yts-select-multiple" multiple size="8"></select>
+      <div id="yts-test-filter-summary" class="yts-hint">Load the catalog to populate the runner filters.</div>
+      <div class="yts-inline-actions">
+        <button class="secondary" onclick="addSelectedTestsFromDropdown()">Add Selected Tests</button>
+        <button class="secondary" onclick="addFilteredTestsToRunner()">Add All Matches</button>
+      </div>
+
+      <label style="margin-top:1rem;">Add by Test ID</label>
+      <div style="position: relative;">
+        <input type="text" id="yts-arg-test-id-search" onkeyup="filterTestRunnerSelector()" onfocus="filterTestRunnerSelector()" onblur="setTimeout(() => {document.getElementById('yts-test-runner-selector-results').style.display = 'none';}, 200);" placeholder="Search by test ID, suite, category, or title...">
+        <div id="yts-test-runner-selector-results" class="yts-search-results"></div>
+      </div>
+
+      <label style="margin-top:1rem;">Manual Test IDs</label>
+      <textarea id="yts-arg-test-ids-manual" placeholder='Paste IDs like "ID1" "ID2" "ID3" or use plain space-separated IDs'></textarea>
+      <div class="yts-inline-actions">
+        <button class="secondary" onclick="addManualTestIds()">Add Test IDs</button>
+        <button class="secondary" onclick="clearSelectedYtsTests()">Clear Selected</button>
+      </div>
+
+      <label style="margin-top:1rem;">Selected Tests</label>
+      <div id="yts-selected-tests" class="yts-chip-list">
+        <div class="empty-state" style="padding:0;">No tests selected yet.</div>
+      </div>
+
+      <label style="margin-top:1rem;"><input type="checkbox" id="yts-arg-test-guided" style="width:auto; margin-right:0.45rem;" onchange="handleYtsGuidedModeChange('yts-arg-test-guided')"> --guided</label>
+      <div class="yts-hint">Run guided tests/filter mode when supported by the YTS CLI.</div>
+
+      <label style="margin-top:1rem;"><input type="checkbox" id="yts-arg-test-interactive-ai" style="width:auto; margin-right:0.45rem;"> Use Gemini for interactive guided responses</label>
+      <div class="yts-hint">When YTS asks terminal questions like yes/no or 1/2/3/4, Gemini briefly watches the TV stream, reads the terminal guide, and then auto-sends the reply it believes matches the on-screen state.</div>
+
+      <label style="margin-top:1rem;"><input type="checkbox" id="yts-arg-test-record-video" style="width:auto; margin-right:0.45rem;"> Record TV video while this YTS job runs</label>
+      <div class="yts-hint">Stores a per-job video artifact when the active capture source supports recording. The terminal transcript is also saved and can be downloaded after the run.</div>
+
+      <label style="margin-top:1rem;">Filter Tokens</label>
+      <textarea id="yts-arg-test-filter" placeholder='Optional filter tokens, e.g. "Time" "Smoke"'></textarea>
+
+      <label style="margin-top:1rem;">Additional YTS Args</label>
+      <textarea id="yts-arg-test-extra-args" placeholder='Optional extra YTS args, e.g. --module=https://... --test-version=20260319'></textarea>
+
+      <label style="margin-top:0.75rem;">JSON Output File</label>
+      <input id="yts-arg-test-json-output" placeholder="/tmp/yts-results.json" value="/tmp/yts-results.json">
+      <div class="yts-hint">If no explicit test IDs are selected, the current suite/category/name filter automatically expands to matching tests.</div>
+
+      <div class="btn-row" style="margin-top:1rem;">
+        <button onclick="runYtsCommand('test')">▶ Run Test</button>
+      </div>
+    </div>`;
+    container.innerHTML += panel;
+  }
+
+  function createCustomListPanel(container) {
+    const command = 'list';
+    const details = ytsCommands[command];
+    let panel = `
+    <div class="yts-panel" id="yts-panel-list">
+      <h3>${escHtml(details.title)}</h3>
+      <p class="description">${escHtml(details.description)}</p>
+      
+      <div class="btn-row">
+        <button onclick="refreshYtsTestCatalog()">📋 Load/Refresh Test Catalog</button>
+        <button onclick="downloadYtsTestList()" class="secondary">⬇ Export JSON</button>
+      </div>
+      <label style="margin-top:0.75rem;"><input type="checkbox" id="yts-list-guided" style="width:auto; margin-right:0.45rem;" onchange="handleYtsGuidedModeChange('yts-list-guided')"> Show guided catalog only</label>
+      
+      <div style="font-size:1.1rem; font-weight:600; color:#4ade80; margin:0.75rem 0;" id="yts-list-test-count">-- tests loaded</div>
+
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem; margin-bottom:0.75rem;">
+        <div>
+          <label>Filter by Suite</label>
+          <select id="yts-list-suite-filter" onchange="filterYtsListRender()">
+            <option value="">All Suites</option>
+          </select>
+        </div>
+        <div>
+          <label>Filter by Category</label>
+          <select id="yts-list-category-filter" onchange="filterYtsListRender()">
+            <option value="">All Categories</option>
+          </select>
+        </div>
+      </div>
+      <label>Search by Keyword</label>
+      <input type="text" id="yts-list-search-input" onkeyup="filterYtsListRender()" placeholder="Search by ID, title...">
+      
+      <div class="yts-result-box" id="yts-list-output-table" style="max-height: 400px; padding: 0;">
+        <div class="empty-state" style="padding:1rem;">No tests loaded. Click "Load/Refresh" to get started.</div>
+      </div>
+    </div>`;
+    container.innerHTML += panel;
+  }
+
+  function switchYtsPanel(command) {
+    document.querySelectorAll('.yts-nav-item').forEach(el => {
+      el.classList.toggle('active', el.dataset.command === command);
+    });
+    document.querySelectorAll('.yts-panel').forEach(el => {
+      el.style.display = 'none';
+      el.classList.remove('active');
+    });
+    const panel = document.getElementById(`yts-panel-${command}`);
+    if (panel) {
+      panel.style.display = 'block';
+      panel.classList.add('active');
+    }
+  }
+
+  async function runYtsCommand(command) {
+    const resultContainer = document.getElementById('yts-command-result-container');
+
+    clearYtsCommandPolling();
+    resultContainer.style.display = 'block';
+    document.getElementById('yts-command-status').innerHTML = `<span style="color:#38bdf8;">▌ Starting ${command}...</span>`;
+    document.getElementById('yts-command-output').textContent = '';
+    document.getElementById('yts-download-container').innerHTML = '';
+    document.getElementById('yts-command-stop-btn').style.display = '';
+
+    const details = ytsCommands[command];
+    const body = {
+      command: command,
+      params: [],
+      global_options: {},
+      output_file: null,
+      interactive_ai: false,
+    };
+
+    // Special handling for the 'test' command's detailed UI
+    if (command === 'test') {
+      const device = document.getElementById('yts-arg-test-device').value.trim();
+      if (!device) {
+        document.getElementById('yts-command-status').innerHTML = '<span style="color:#f87171;">✗ Device ID is required.</span>';
+        return;
+      }
+      body.params.push(device);
+
+      const manualIds = parseQuotedTokens(document.getElementById('yts-arg-test-ids-manual').value);
+      if (manualIds.length) {
+        addYtsSelectedTests(manualIds);
+        document.getElementById('yts-arg-test-ids-manual').value = '';
+      }
+
+      const dropdownIds = getSelectedSelectValues(document.getElementById('yts-arg-test-name-select'));
+      if (dropdownIds.length) {
+        addYtsSelectedTests(dropdownIds);
+      }
+
+      const selectedIds = Array.from(ytsSelectedTestIds);
+      const autoMatchedTests = selectedIds.length ? [] : getCurrentYtsRunnerMatches();
+      const resolvedIds = selectedIds.length ? selectedIds : autoMatchedTests.map(test => test.test_id).filter(Boolean);
+      const guided = document.getElementById('yts-arg-test-guided').checked;
+      const filterTokens = parseQuotedTokens(document.getElementById('yts-arg-test-filter').value);
+      const extraArgs = parseQuotedTokens(document.getElementById('yts-arg-test-extra-args').value);
+      const jsonOutput = document.getElementById('yts-arg-test-json-output').value.trim();
+      body.interactive_ai = document.getElementById('yts-arg-test-interactive-ai').checked;
+      body.record_video = document.getElementById('yts-arg-test-record-video').checked;
+
+      if (!resolvedIds.length && !filterTokens.length && !guided && !extraArgs.length) {
+        document.getElementById('yts-command-status').innerHTML = '<span style="color:#f87171;">✗ Select tests, add test IDs, or choose a suite/category/name before running.</span>';
+        return;
+      }
+
+      body.params.push(...resolvedIds, ...filterTokens);
+
+      if (guided) {
+        body.params.push('--guided');
+      }
+
+      body.params.push(...extraArgs);
+
+      if (jsonOutput) {
+        body.output_file = jsonOutput;
+        body.params.push('--json-output', jsonOutput);
+      }
+
+      const runTargetText = resolvedIds.length
+        ? `${resolvedIds.length} test${resolvedIds.length === 1 ? '' : 's'}`
+        : 'selected filters';
+      document.getElementById('yts-command-status').innerHTML = `<span style="color:#38bdf8;">▌ Running ${escHtml(runTargetText)}...</span>`;
+
+    } else {
+      // Generic param handling for all other commands
+      details.args.forEach(arg => {
+        const input = document.getElementById(`yts-arg-${command}-${arg.name}`);
+        if (input && input.value) {
+          if (arg.is_file) {
+            body.output_file = input.value;
+          }
+          if (arg.multiple) {
+            body.params.push(...parseQuotedTokens(input.value));
+          } else {
+            body.params.push(input.value);
+          }
+        }
+      });
+    }
+
+    // Collect global options
+    if(document.getElementById('yts-opt-verbose').checked) body.global_options['--verbose'] = true;
+    if(document.getElementById('yts-opt-colors').checked) body.global_options['--colors'] = true;
+    const adb = document.getElementById('yts-opt-adb_path').value;
+    if(adb) body.global_options['--adb_path'] = adb;
+    const log = document.getElementById('yts-opt-logging-level').value;
+    if(log) body.global_options['--logging-level'] = log;
+    const verboseOut = document.getElementById('yts-opt-verbose-output').value;
+    if(verboseOut) {
+        body.global_options['--verbose-output'] = verboseOut;
+    }
+
+    try {
+      const startData = await api('/yts/command/live', 'POST', body);
+      setCurrentYtsCommand(startData.command_id);
+      await loadYtsCommandHistory(true);
+      scrollToSection('yts-runner-card');
+      await pollLiveYtsCommand(currentYtsCommandId);
+      startYtsCommandPolling(currentYtsCommandId);
+
+    } catch(e) {
+      clearYtsCommandPolling();
+      setCurrentYtsCommand(null);
+      document.getElementById('yts-command-stop-btn').style.display = 'none';
+      document.getElementById('yts-command-status').innerHTML = `<span style="color:#f87171;">✗ API Error: ${escHtml(e.message)}</span>`;
+    }
+  }
+  
+  let ytsTestCatalogCache = [];
+  let ytsSelectedTestIds = new Set();
+
+  function getSelectedSelectValues(selectEl) {
+    if (!selectEl) return [];
+    return [...selectEl.options].filter(option => option.selected).map(option => option.value);
+  }
+
+  function addYtsSelectedTests(testIds) {
+    let added = 0;
+    testIds.forEach(testId => {
+      const value = String(testId || '').trim();
+      if (!value || ytsSelectedTestIds.has(value)) return;
+      ytsSelectedTestIds.add(value);
+      added += 1;
+    });
+    renderSelectedYtsTests();
+    return added;
+  }
+
+  function removeSelectedYtsTest(testId) {
+    ytsSelectedTestIds.delete(testId);
+    renderSelectedYtsTests();
+  }
+
+  function clearSelectedYtsTests() {
+    ytsSelectedTestIds = new Set();
+    renderSelectedYtsTests();
+  }
+
+  function renderSelectedYtsTests() {
+    const container = document.getElementById('yts-selected-tests');
+    if (!container) return;
+
+    const selectedIds = Array.from(ytsSelectedTestIds);
+    if (!selectedIds.length) {
+      container.innerHTML = '<div class="empty-state" style="padding:0;">No tests selected yet.</div>';
+      return;
+    }
+
+    container.innerHTML = selectedIds.map(testId => {
+      const match = ytsTestCatalogCache.find(test => test.test_id === testId);
+      const title = match?.test_title ? ` · ${match.test_title}` : '';
+      return `<span class="yts-chip">${escHtml(testId + title)}<button type="button" onclick="removeSelectedYtsTest(${JSON.stringify(testId)})">✕</button></span>`;
+    }).join('');
+  }
+
+  function getCurrentYtsRunnerMatches() {
+    const suite = document.getElementById('yts-arg-test-suite-select')?.value || '';
+    const category = document.getElementById('yts-arg-test-category-select')?.value || '';
+    const selectedIds = getSelectedSelectValues(document.getElementById('yts-arg-test-name-select'));
+
+    return ytsTestCatalogCache.filter(test => {
+      if (suite && test.test_suite !== suite) return false;
+      if (category && test.test_category !== category) return false;
+      if (selectedIds.length && !selectedIds.includes(test.test_id)) return false;
+      return true;
+    });
+  }
+
+  function syncYtsRunnerFilters() {
+    const suiteSelect = document.getElementById('yts-arg-test-suite-select');
+    if (!suiteSelect) return;
+
+    const currentSuite = suiteSelect.value;
+    const suites = [...new Set(ytsTestCatalogCache.map(test => test.test_suite).filter(Boolean))].sort();
+    suiteSelect.innerHTML = '<option value="">All Suites</option>';
+    suites.forEach(suite => suiteSelect.add(new Option(suite, suite)));
+    if (suites.includes(currentSuite)) {
+      suiteSelect.value = currentSuite;
+    }
+
+    updateYtsRunnerCategoryOptions();
+    updateYtsRunnerNameOptions();
+    updateYtsRunnerFilterSummary();
+    renderSelectedYtsTests();
+  }
+
+  function updateYtsRunnerCategoryOptions() {
+    const suite = document.getElementById('yts-arg-test-suite-select')?.value || '';
+    const categorySelect = document.getElementById('yts-arg-test-category-select');
+    if (!categorySelect) return;
+
+    const currentCategory = categorySelect.value;
+    const categories = [...new Set(
+      ytsTestCatalogCache
+        .filter(test => !suite || test.test_suite === suite)
+        .map(test => test.test_category)
+        .filter(Boolean)
+    )].sort();
+
+    categorySelect.innerHTML = '<option value="">All Categories</option>';
+    categories.forEach(category => categorySelect.add(new Option(category, category)));
+    if (categories.includes(currentCategory)) {
+      categorySelect.value = currentCategory;
+    }
+  }
+
+  function updateYtsRunnerNameOptions() {
+    const nameSelect = document.getElementById('yts-arg-test-name-select');
+    if (!nameSelect) return;
+
+    const previouslySelected = new Set(getSelectedSelectValues(nameSelect));
+    const suite = document.getElementById('yts-arg-test-suite-select')?.value || '';
+    const category = document.getElementById('yts-arg-test-category-select')?.value || '';
+    const filtered = ytsTestCatalogCache.filter(test => {
+      if (suite && test.test_suite !== suite) return false;
+      if (category && test.test_category !== category) return false;
+      return true;
+    });
+
+    nameSelect.innerHTML = '';
+    filtered.forEach(test => {
+      const label = `${test.test_title || test.test_id} · ${test.test_id}`;
+      const option = new Option(label, test.test_id, false, previouslySelected.has(test.test_id));
+      nameSelect.add(option);
+    });
+  }
+
+  function updateYtsRunnerFilterSummary() {
+    const summary = document.getElementById('yts-test-filter-summary');
+    if (!summary) return;
+
+    const suite = document.getElementById('yts-arg-test-suite-select')?.value || '';
+    const category = document.getElementById('yts-arg-test-category-select')?.value || '';
+    const selectedNames = getSelectedSelectValues(document.getElementById('yts-arg-test-name-select'));
+    const matches = getCurrentYtsRunnerMatches();
+
+    const parts = [];
+    if (suite) parts.push(`suite: ${suite}`);
+    if (category) parts.push(`category: ${category}`);
+    if (selectedNames.length) parts.push(`${selectedNames.length} named test${selectedNames.length === 1 ? '' : 's'} selected`);
+
+    summary.textContent = matches.length
+      ? `${matches.length} matching test${matches.length === 1 ? '' : 's'}${parts.length ? ` (${parts.join(', ')})` : ''}.`
+      : 'No tests match the current suite/category/name selection.';
+  }
+
+  function handleYtsSuiteChange() {
+    updateYtsRunnerCategoryOptions();
+    updateYtsRunnerNameOptions();
+    updateYtsRunnerFilterSummary();
+  }
+
+  function handleYtsCategoryChange() {
+    updateYtsRunnerNameOptions();
+    updateYtsRunnerFilterSummary();
+  }
+
+  function addSelectedTestsFromDropdown() {
+    const testIds = getSelectedSelectValues(document.getElementById('yts-arg-test-name-select'));
+    addYtsSelectedTests(testIds);
+    switchYtsPanel('test');
+  }
+
+  function addFilteredTestsToRunner() {
+    const matches = getCurrentYtsRunnerMatches().map(test => test.test_id).filter(Boolean);
+    addYtsSelectedTests(matches);
+    switchYtsPanel('test');
+  }
+
+  function addManualTestIds() {
+    const input = document.getElementById('yts-arg-test-ids-manual');
+    if (!input) return;
+    const values = parseQuotedTokens(input.value);
+    addYtsSelectedTests(values);
+    input.value = '';
+    switchYtsPanel('test');
+  }
+
+  async function loadYtsTestCatalog() {
+    const output = document.getElementById('yts-list-output-table');
+    output.innerHTML = '<div class="empty-state" style="padding:1rem;">📋 Loading test catalog from server...</div>';
+    
+    try {
+        const guided = isYtsGuidedModeEnabled();
+        const suffix = guided ? '?guided=1' : '';
+        const testData = await api(`/testlist.json${suffix}`);
+        ytsTestCatalogCache = Array.isArray(testData.tests) ? testData.tests : [];
+        if (!ytsTestCatalogCache.length && Array.isArray(testData)) {
+          ytsTestCatalogCache = testData;
+        }
+        
+        document.getElementById('yts-list-test-count').textContent = `${ytsTestCatalogCache.length} ${guided ? 'guided ' : ''}tests loaded`;
+        
+        // Populate filters
+        const suites = [...new Set(ytsTestCatalogCache.map(t => t.test_suite).filter(Boolean))].sort();
+        const categories = [...new Set(ytsTestCatalogCache.map(t => t.test_category).filter(Boolean))].sort();
+
+        const suiteFilter = document.getElementById('yts-list-suite-filter');
+        suiteFilter.innerHTML = '<option value="">All Suites</option>';
+        suites.forEach(suite => suiteFilter.add(new Option(suite, suite)));
+
+        const categoryFilter = document.getElementById('yts-list-category-filter');
+        categoryFilter.innerHTML = '<option value="">All Categories</option>';
+        categories.forEach(category => categoryFilter.add(new Option(category, category)));
+
+        syncYtsRunnerFilters();
+        filterYtsListRender();
+
+    } catch (e) {
+      output.innerHTML = `<div class="empty-state" style="padding:1rem; color:#f87171;">✗ Error loading test catalog: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  async function refreshYtsTestCatalog() {
+    const output = document.getElementById('yts-list-output-table');
+    output.innerHTML = '<div class="empty-state" style="padding:1rem;">🔄 Refreshing test catalog...</div>';
+    try {
+      const guided = isYtsGuidedModeEnabled();
+      const suffix = guided ? '?guided=1' : '';
+      await api(`/yts/tests/refresh${suffix}`, 'POST');
+      await loadYtsTestCatalog();
+    } catch (e) {
+      output.innerHTML = `<div class="empty-state" style="padding:1rem; color:#f87171;">✗ Error refreshing test catalog: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  function filterYtsListRender() {
+    const suite = document.getElementById('yts-list-suite-filter').value;
+    const category = document.getElementById('yts-list-category-filter').value;
+    const query = document.getElementById('yts-list-search-input').value.toLowerCase();
+    
+    const filtered = ytsTestCatalogCache.filter(t => 
+      (!suite || t.test_suite === suite) &&
+      (!category || t.test_category === category) &&
+      (
+        !query ||
+        (t.test_id && t.test_id.toLowerCase().includes(query)) ||
+        (t.test_title && t.test_title.toLowerCase().includes(query))
+      )
+    );
+    renderYtsTestTable(filtered);
+  }
+
+  function renderYtsTestTable(tests) {
+    const output = document.getElementById('yts-list-output-table');
+    if (tests.length === 0) {
+      output.innerHTML = '<div class="empty-state" style="padding:1rem;">No tests match your search.</div>';
+      return;
+    }
+    
+    let table = `<style>
+      .yts-table { width:100%; border-collapse:collapse; font-size:0.78rem; }
+      .yts-table th, .yts-table td { padding: 0.45rem 0.6rem; text-align:left; border-bottom:1px solid #1e293b; }
+      .yts-table th { font-weight:600; color:#94a3b8; background: #0f172a; position: sticky; top: 0; }
+      .yts-table tr { cursor:pointer; }
+      .yts-table tr:hover { background: #132744; }
+      .yts-table .id { color:#7dd3fc; max-width:180px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      .yts-table .suite { color:#fcd34d; }
+    </style>
+    <table class="yts-table">
+      <thead><tr><th>Test ID</th><th>Title</th><th>Suite</th></tr></thead>
+      <tbody>`;
+
+    const paginatedTests = tests.slice(0, 200); // Show first 200 results
+    paginatedTests.forEach(t => {
+      const testId = t.test_id || 'N/A';
+      const testTitle = t.test_title || 'No Title';
+      const testSuite = t.test_suite || 'Unknown';
+      table += `<tr onclick="selectTestFromList(${JSON.stringify(testId)})">
+        <td class="id" title="${escHtml(testId)}">${escHtml(testId)}</td>
+        <td>${escHtml(testTitle)}</td>
+        <td class="suite">${escHtml(testSuite)}</td>
+      </tr>`;
+    });
+    table += `</tbody></table>`;
+    
+    if (tests.length > 200) {
+      table += `<div style="padding:0.5rem; text-align:center; font-size:0.8rem; color:#64748b;">Showing 200 of ${tests.length} tests. Use filters to refine.</div>`;
+    }
+    output.innerHTML = table;
+  }
+
+  function selectTestFromList(testId) {
+    addYtsSelectedTests([testId]);
+    switchYtsPanel('test');
+  }
+
+  function filterTestRunnerSelector() {
+      const query = document.getElementById('yts-arg-test-id-search').value.toLowerCase();
+      const resultsContainer = document.getElementById('yts-test-runner-selector-results');
+      
+      if (!query || ytsTestCatalogCache.length === 0) {
+          resultsContainer.style.display = 'none';
+          return;
+      }
+      
+        const filtered = ytsTestCatalogCache.filter(t => 
+          (t.test_id && t.test_id.toLowerCase().includes(query)) ||
+          (t.test_title && t.test_title.toLowerCase().includes(query)) ||
+          (t.test_suite && t.test_suite.toLowerCase().includes(query)) ||
+          (t.test_category && t.test_category.toLowerCase().includes(query))
+      ).slice(0, 10); // Show top 10 matches
+      
+      if (filtered.length === 0) {
+          resultsContainer.style.display = 'none';
+          return;
+      }
+      
+      resultsContainer.style.display = 'block';
+      resultsContainer.innerHTML = filtered.map(t => 
+          `<div class="yts-search-item" onmousedown="selectTestFromRunnerSelector(${JSON.stringify(t.test_id)})">
+              <strong>${escHtml(t.test_id)}</strong><br>
+            <span style="font-size:0.8rem; color:#94a3b8;">${escHtml(t.test_suite || 'Unknown')} · ${escHtml(t.test_category || 'Uncategorized')} · ${escHtml(t.test_title || 'No title')}</span>
+           </div>`
+      ).join('');
+  }
+
+  function selectTestFromRunnerSelector(testId) {
+        addYtsSelectedTests([testId]);
+        document.getElementById('yts-arg-test-id-search').value = '';
+      document.getElementById('yts-test-runner-selector-results').style.display = 'none';
+        switchYtsPanel('test');
+  }
+
+  function downloadYtsTestList() {
+    if (ytsTestCatalogCache.length === 0) {
+      alert('No tests loaded. Click "Load/Refresh" first.');
+      return;
+    }
+    const data = {
+      test_count: ytsTestCatalogCache.length,
+      tests: ytsTestCatalogCache
+    };
+    const json = JSON.stringify(data, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `yts-tests-${new Date().toISOString().slice(0,10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+  
+  // -- End New YTS Logic --
+
+  async function selectRun(runId) {
+    selectedRunId = runId;
+    document.getElementById('kpi-run').textContent = runId ? runId.slice(0, 8) : 'None';
+    lastNarrationIdx = -1;
+    document.getElementById('detail-panel').style.display = '';
+    document.getElementById('detail-run-id').textContent = runId;
+    await refreshRunDetail();
+    if (pollInterval) clearInterval(pollInterval);
+    pollInterval = setInterval(refreshRunDetail, 2000);
+    loadRuns();
+  }
+
+  async function refreshRunDetail() {
+    if (!selectedRunId) return;
+    try {
+      const data = await api(`/run/${selectedRunId}/status`);
+      document.getElementById('d-status').innerHTML = `<span class="status-pill ${data.status}">${data.status}</span>`;
+      document.getElementById('kpi-status').textContent = data.status || '--';
+      document.getElementById('d-steps').textContent = data.step_count;
+      document.getElementById('d-retries').textContent = data.retries;
+      document.getElementById('d-app').textContent = data.current_app || '-';
+      document.getElementById('d-screen').textContent = data.current_screen || '-';
+      document.getElementById('d-ai-count').textContent = String(data.ai_log_count || 0);
+      document.getElementById('d-dab-count').textContent = String(data.dab_log_count || 0);
+
+      await Promise.all([
+        refreshActionHistory(selectedRunId),
+        refreshFriendlyExplain(selectedRunId),
+        refreshNarration(selectedRunId),
+        refreshAiTranscript(selectedRunId),
+        refreshDabTranscript(selectedRunId),
+      ]);
+
+      if (data.has_screenshot) {
+        try {
+          const ss = await api(`/run/${selectedRunId}/screenshot`);
+          const src = toImageSrc(ss.image_b64);
+          document.getElementById('screenshot-container').innerHTML =
+            `<img id="screenshot-img" src="${src}" alt="screenshot" />`;
+        } catch (_) {}
+      }
+
+      if (['DONE', 'FAILED', 'TIMEOUT', 'ERROR', 'STOPPED'].includes(data.status)) {
+        clearInterval(pollInterval);
+      }
+    } catch (e) { console.error(e); }
+  }
+
+  async function refreshActionHistory(runId) {
+    const log = document.getElementById('action-log');
+    try {
+      const h = await api(`/run/${runId}/history`);
+      if (!h.actions || !h.actions.length) {
+        log.innerHTML = '<div class="empty-state">No actions yet.</div>';
+        return;
+      }
+      log.innerHTML = h.actions.map(a => {
+        const p = a.params ? ` ${escHtml(JSON.stringify(a.params))}` : '';
+        return `<div class="log-line">#${a.step} ${escHtml(a.action)} <span class="${escHtml(a.result)}">${escHtml(a.result)}</span> · ${escHtml(a.reason)}${p}</div>`;
+      }).join('');
+    } catch (e) {
+      log.innerHTML = `<div class="empty-state">Failed to load actions: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  async function refreshFriendlyExplain(runId) {
+    const box = document.getElementById('friendly-log');
+    const diag = document.getElementById('diagnosis-log');
+    try {
+      const x = await api(`/run/${runId}/explain`);
+      if (!x.timeline || !x.timeline.length) {
+        box.innerHTML = '<div class="empty-state">No explanations yet.</div>';
+      } else {
+        box.innerHTML = x.timeline.map(t => {
+          return `<div class="log-line">
+            <strong>Step ${escHtml(t.step)}: ${escHtml(t.title || '-')}</strong><br/>
+            <div>Action: ${escHtml(t.simple_action || '-')}</div>
+            <div>What happened: ${escHtml(t.what_happened || '-')}</div>
+            <div>What screen was seen: ${escHtml(t.what_screen_was_seen || '-')}</div>
+            <div>Why: ${escHtml(t.why_this_step || '-')}</div>
+            <div>Why it failed: ${escHtml(t.why_it_failed || '-')}</div>
+            <div>Recovery tried: ${escHtml(t.what_recovery_was_tried || '-')}</div>
+            <div>What happens next: ${escHtml(t.what_happens_next || '-')}</div>
+            <div>Result: ${escHtml(t.result || '-')} <span class="${escHtml(t.simple_status || '')}">${escHtml(t.simple_status || '')}</span></div>
+          </div>`;
+        }).join('');
+      }
+
+      const d = x.diagnosis || null;
+      if (!d) {
+        diag.innerHTML = '<div class="empty-state">Diagnosis unavailable.</div>';
+      } else {
+        diag.innerHTML = `<div class="log-line"><strong>${escHtml(d.final_summary || '-')}</strong></div>
+          <div class="log-line">Root cause: ${escHtml(d.root_cause || '-')}</div>
+          <div class="log-line">Screen-based reason: ${escHtml(d.screen_based_reason || '-')}</div>
+          <div class="log-line">Goal-based reason: ${escHtml(d.goal_based_reason || '-')}</div>
+          <div class="log-line">Recovery summary: ${escHtml(d.recovery_summary || '-')}</div>
+          <div class="log-line">Simple reason: ${escHtml(d.user_friendly_reason || '-')}</div>
+          <div class="log-line">Technical reason: ${escHtml(d.technical_reason || '-')}</div>
+          <div class="log-line">Evidence used: ${escHtml((d.evidence_used || []).join('; ') || '-')}</div>
+          <div class="log-line">Recovery attempts: ${escHtml(d.recovery_attempts || 0)}</div>
+          <div class="log-line">First failure: ${escHtml(d.what_failed_first || '-')}</div>
+          <div class="log-line">Last failure: ${escHtml(d.what_failed_last || '-')}</div>`;
+      }
+    } catch (e) {
+      box.innerHTML = `<div class="empty-state">Failed to load explanations: ${escHtml(e.message)}</div>`;
+      diag.innerHTML = '<div class="empty-state">Diagnosis unavailable.</div>';
+    }
+  }
+
+  async function refreshNarration(runId) {
+    const box = document.getElementById('narration-log');
+    try {
+      const n = await api(`/run/${runId}/narration?since_idx=${lastNarrationIdx}`);
+      if (!n.events || !n.events.length) {
+        if (lastNarrationIdx < 0) {
+          box.innerHTML = '<div class="empty-state">No narration yet.</div>';
+        }
+        return;
+      }
+      const existing = (box.dataset.lines || '').split('\n').filter(Boolean);
+      for (const ev of n.events) {
+        lastNarrationIdx = Math.max(lastNarrationIdx, Number(ev.idx || -1));
+        existing.push(`${ev.step}. [${ev.tts_category}] ${ev.tts_text}`);
+      }
+      box.dataset.lines = existing.slice(-60).join('\n');
+      box.innerHTML = existing.slice(-60).map(x => `<div class="log-line">${escHtml(x)}</div>`).join('');
+
+      const toPlay = [...n.events].sort((a, b) => (b.tts_priority || 0) - (a.tts_priority || 0))[0];
+      if (toPlay && toPlay.tts_should_play) {
+        await playNarrationText(toPlay.tts_text, !!toPlay.tts_interruptible);
+      }
+    } catch (e) {
+      box.innerHTML = `<div class="empty-state">Failed to load narration: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  async function playNarrationText(text, interruptible) {
+    if (!text || typeof text !== 'string') return;
+    try {
+      if (interruptible && currentNarrationAudio && !currentNarrationAudio.paused) {
+        currentNarrationAudio.pause();
+      }
+      const r = await api('/tts/speak', 'POST', { text, use_ssml: true });
+      if (!r.success || !r.audio_b64) return;
+      const src = `data:audio/mpeg;base64,${r.audio_b64}`;
+      const audio = new Audio(src);
+      currentNarrationAudio = audio;
+      await audio.play();
+    } catch (_) {
+      // Ignore autoplay/TTS failures silently.
+    }
+  }
+
+  async function refreshAiTranscript(runId) {
+    const box = document.getElementById('ai-log');
+    try {
+      const t = await api(`/run/${runId}/ai-transcript`);
+      if (!t.events || !t.events.length) {
+        box.innerHTML = '<div class="empty-state">No AI logs yet.</div>';
+        document.getElementById('d-phase').textContent = '-';
+        document.getElementById('d-intent').textContent = '-';
+        document.getElementById('batch-log').innerHTML = '<div class="empty-state">No batch planned yet.</div>';
+        return;
+      }
+      const latestDecision = [...t.events].reverse().find(e => e && e.type === 'planner-decision');
+      if (latestDecision) {
+        document.getElementById('d-phase').textContent = latestDecision.phase || '-';
+        document.getElementById('d-intent').textContent = latestDecision.intent || '-';
+        const batch = Array.isArray(latestDecision.action_batch) ? latestDecision.action_batch : [];
+        if (batch.length) {
+          document.getElementById('batch-log').innerHTML = batch.map((b, i) => {
+            const p = b.params && Object.keys(b.params).length ? ` ${escHtml(JSON.stringify(b.params))}` : '';
+            return `<div class="log-line">${i + 1}. ${escHtml(b.action || 'UNKNOWN')}${p}</div>`;
+          }).join('');
+        } else {
+          document.getElementById('batch-log').innerHTML = '<div class="empty-state">No batch planned yet.</div>';
+        }
+      }
+      box.innerHTML = t.events.map((e, i) => `<div class="log-line">${i + 1}. ${escHtml(JSON.stringify(e))}</div>`).join('');
+    } catch (e) {
+      box.innerHTML = `<div class="empty-state">Failed to load AI logs: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  async function refreshDabTranscript(runId) {
+    const box = document.getElementById('dab-log');
+    try {
+      const t = await api(`/run/${runId}/dab-transcript`);
+      if (!t.events || !t.events.length) {
+        box.innerHTML = '<div class="empty-state">No DAB logs yet.</div>';
+        return;
+      }
+      box.innerHTML = t.events.map((e, i) => `<div class="log-line">${i + 1}. ${escHtml(JSON.stringify(e))}</div>`).join('');
+    } catch (e) {
+      box.innerHTML = `<div class="empty-state">Failed to load DAB logs: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  async function startRun() {
+    const goal = document.getElementById('goal-input').value.trim();
+    const appId = document.getElementById('app-id-input').value.trim();
+    const errEl = document.getElementById('start-error');
+    if (!goal) { errEl.textContent = 'Goal is required.'; return; }
+    errEl.textContent = '';
+    try {
+      const body = { goal };
+      if (appId) body.app_id = appId;
+      const data = await api('/run/start', 'POST', body);
+      await loadRuns();
+      selectRun(data.run_id);
+    } catch (e) { errEl.textContent = e.message; }
+  }
+
+  async function stopRun() {
+    if (!selectedRunId) return;
+    try {
+      await api(`/run/${selectedRunId}/stop`, 'POST');
+      refreshRunDetail();
+    } catch (e) { console.error(e); }
+  }
+
+  async function sendKey(action) {
+    const el = document.getElementById('manual-result');
+    try {
+      const data = await api('/action', 'POST', { action });
+      el.textContent = `✓ ${action}: ${JSON.stringify(data.result)}`;
+      el.style.color = '#4ade80';
+    } catch (e) {
+      el.textContent = `✗ ${e.message}`;
+      el.style.color = '#f87171';
+    }
+  }
+
+  async function captureScreenshot() {
+    try {
+      const data = await api('/screenshot', 'POST');
+      if (data.image_b64) {
+        const src = toImageSrc(data.image_b64);
+        document.getElementById('screenshot-container').innerHTML =
+          `<img id="screenshot-img" src="${src}" alt="screenshot" />`;
+      }
+      document.getElementById('manual-result').textContent = '✓ Screenshot captured';
+      document.getElementById('manual-result').style.color = '#4ade80';
+    } catch (e) {
+      document.getElementById('manual-result').textContent = `✗ ${e.message}`;
+      document.getElementById('manual-result').style.color = '#f87171';
+    }
+  }
+
+  async function debugPlanner() {
+    const goal = document.getElementById('debug-goal').value.trim();
+    if (!goal) { document.getElementById('debug-result').textContent = 'Goal is required.'; return; }
+    try {
+      const body = {
+        goal,
+        ocr_text: document.getElementById('debug-ocr').value || null,
+        current_app: document.getElementById('debug-app').value || null,
+      };
+      const data = await api('/planner/debug', 'POST', body);
+      document.getElementById('debug-result').textContent = JSON.stringify(data, null, 2);
+    } catch (e) {
+      document.getElementById('debug-result').textContent = `Error: ${e.message}`;
+      document.getElementById('debug-result').style.color = '#f87171';
+    }
+  }
+
+  function escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  async function initializeDashboard() {
+    initApiBase();
+    initDetailTabs();
+    initYtsControlCenter();
+    await Promise.allSettled([
+      checkHealth(),
+      loadRuns(),
+      loadCaptureSource(),
+      refreshCaptureDevices(),
+      refreshStreamDiagnostics(),
+      loadYtsTestCatalog(),
+    ]);
+    await loadYtsCommandHistory();
+    await resumeLiveYtsCommand();
+  }
+
   // Init
-  initApiBase();
-  initDetailTabs();
-  checkHealth();
-  loadRuns();
-  loadCaptureSource();
+  initializeDashboard();
   setInterval(checkHealth, 30000);
   setInterval(loadRuns, 5000);
   setInterval(loadCaptureSource, 10000);
+  setInterval(refreshCaptureDevices, 15000);
+  setInterval(refreshStreamDiagnostics, 20000);
 </script>
 </body>
 </html>

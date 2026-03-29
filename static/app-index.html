@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vertex Live DAB Agent</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div>
+      <div class="eyebrow">Vertex Live DAB Agent</div>
+      <h1>Operator Console</h1>
+      <p class="subhead">Cleaner frontend for the current backend: YTS device control, live TV, guided testing, and AI job status.</p>
+    </div>
+    <div class="header-status">
+      <span id="health-pill" class="pill pill-offline">Offline</span>
+      <button id="theme-toggle" class="ghost-btn" type="button">Light Theme</button>
+    </div>
+  </header>
+
+  <nav class="workspace-nav">
+    <button type="button" class="workspace-btn active" data-workspace="yts">YTS Lab</button>
+    <button type="button" class="workspace-btn" data-workspace="ai">AI Jobs</button>
+    <div class="api-summary" id="api-summary">API: same-origin</div>
+  </nav>
+
+  <div class="app-banner error hidden" id="app-error-banner"></div>
+  <div class="app-banner info hidden" id="app-info-banner"></div>
+
+  <main class="app-shell">
+    <section class="workspace active" id="workspace-yts">
+      <div class="workspace-grid">
+        <section class="card full-width" id="yts-device-ops-card">
+          <div class="section-head">
+            <div>
+              <div class="section-kicker">Step 1</div>
+              <h2>Target Device & Main Operations</h2>
+              <p>Select the target device first, then run discovery, load the catalog, or jump directly into the test runner.</p>
+            </div>
+          </div>
+          <div class="device-ops-grid">
+            <div class="panel surface">
+              <h3>Target Device Selection</h3>
+              <div class="field-grid device-grid">
+                <label>
+                  <span>Device Type</span>
+                  <select id="target-device-type">
+                    <option value="setup-box">Setup Box</option>
+                    <option value="tv">TV</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Device ID</span>
+                  <input id="target-device-id" placeholder="e.g. adb:123456 or living-room-tv" />
+                </label>
+                <button id="apply-target-device-btn" type="button">Apply Routing</button>
+              </div>
+              <div class="status-line" id="target-device-status">No target device selected yet.</div>
+            </div>
+            <div class="panel surface">
+              <h3>Main YTS Operations</h3>
+              <div class="quick-actions">
+                <button id="action-discover-btn" type="button">Discover Devices</button>
+                <button id="action-load-catalog-btn" type="button" class="secondary">Load Catalog</button>
+                <button id="action-open-catalog-btn" type="button" class="secondary">Open Catalog</button>
+                <button id="action-open-test-btn" type="button" class="secondary">Open Test Runner</button>
+                <button id="action-run-tests-btn" type="button">Run Selected Tests</button>
+                <button id="action-update-btn" type="button" class="secondary">Update YTS</button>
+                <button id="action-stop-app-btn" type="button" class="secondary">Stop App</button>
+                <button id="action-stop-live-btn" type="button" class="danger">Stop Live Job</button>
+              </div>
+              <div class="status-line muted">Main operations live here exactly once. Detailed tabs below expose the full command/test arguments without duplicating the operator flow.</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="card full-width" id="yts-live-card">
+          <div class="section-head split">
+            <div>
+              <div class="section-kicker">Step 2</div>
+              <h2>Live TV, D-Pad & Capture Routing</h2>
+              <p>Keep the target device visible while you run YTS. The right side stays focused on remote control and capture diagnostics.</p>
+            </div>
+            <div class="inline-actions">
+              <button id="toggle-stream-btn" type="button" class="secondary">Start Stream</button>
+              <button id="toggle-audio-btn" type="button" class="secondary">Start Audio</button>
+              <button id="capture-screenshot-btn" type="button" class="secondary">Screenshot</button>
+            </div>
+          </div>
+          <div class="live-grid">
+            <div class="surface live-stage">
+              <div class="live-frame" id="stream-frame">
+                <div class="empty-state">HDMI stream is stopped.</div>
+              </div>
+            </div>
+            <div class="live-sidebar">
+              <div class="surface">
+                <h3>D-Pad & Remote</h3>
+                <div class="dpad-grid">
+                  <div></div>
+                  <button type="button" data-key="PRESS_UP">▲</button>
+                  <div></div>
+                  <button type="button" data-key="PRESS_LEFT">◀</button>
+                  <button type="button" data-key="PRESS_OK">OK</button>
+                  <button type="button" data-key="PRESS_RIGHT">▶</button>
+                  <div></div>
+                  <button type="button" data-key="PRESS_DOWN">▼</button>
+                  <div></div>
+                </div>
+                <div class="remote-actions">
+                  <button type="button" data-key="PRESS_BACK" class="secondary">Back</button>
+                  <button type="button" data-key="PRESS_HOME" class="secondary">Home</button>
+                  <button type="button" data-key="PRESS_MENU" class="secondary">Menu</button>
+                  <button type="button" data-key="PRESS_INFO" class="secondary">Info</button>
+                  <button type="button" data-key="PRESS_PLAY_PAUSE" class="secondary">Play/Pause</button>
+                  <button type="button" data-key="PRESS_POWER" class="danger">Power</button>
+                </div>
+              </div>
+              <div class="surface">
+                <h3>Capture Routing</h3>
+                <div class="status-line" id="capture-source-info">Checking capture source…</div>
+                <div class="field-grid capture-grid">
+                  <label>
+                    <span>Source</span>
+                    <select id="capture-mode-select">
+                      <option value="auto">auto</option>
+                      <option value="hdmi-capture">hdmi-capture</option>
+                      <option value="camera-capture">camera-capture</option>
+                      <option value="dab">dab</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Preferred Kind</span>
+                    <select id="capture-kind-select">
+                      <option value="auto">auto</option>
+                      <option value="hdmi">hdmi</option>
+                      <option value="camera">camera</option>
+                    </select>
+                  </label>
+                  <label class="full-span">
+                    <span>Capture Device</span>
+                    <select id="capture-device-select">
+                      <option value="">device: auto</option>
+                    </select>
+                  </label>
+                </div>
+                <div class="inline-actions">
+                  <button id="refresh-capture-devices-btn" type="button" class="secondary">Refresh Devices</button>
+                  <button id="apply-capture-selection-btn" type="button">Apply Capture Selection</button>
+                </div>
+                <div class="audio-frame" id="audio-frame">
+                  <div class="empty-state slim">Audio stream is stopped.</div>
+                </div>
+                <pre class="diagnostics-box" id="stream-diagnostics">Checking stream diagnostics…</pre>
+                <div class="status-line" id="manual-result">No manual actions yet.</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="card full-width" id="yts-controls-card">
+          <div class="section-head">
+            <div>
+              <div class="section-kicker">Step 3</div>
+              <h2>YTS Test Runner & Commands</h2>
+              <p>Run YTS tests with full arguments, guided mode, Gemini interactive handling, and advanced command access.</p>
+            </div>
+          </div>
+          <div class="tab-bar" id="yts-tab-bar">
+            <button type="button" class="tab-btn active" data-tab="test">Test Runner</button>
+            <button type="button" class="tab-btn" data-tab="catalog">Catalog</button>
+            <button type="button" class="tab-btn" data-tab="discover">Discover</button>
+            <button type="button" class="tab-btn" data-tab="advanced">Advanced Commands</button>
+            <button type="button" class="tab-btn" data-tab="global">Global Options</button>
+          </div>
+
+          <div class="tab-panel active" id="tab-test">
+            <div class="field-grid two-col">
+              <label>
+                <span>Device ID*</span>
+                <input id="test-device-input" placeholder="e.g. adb:123456 or 10.99.57.51" />
+              </label>
+              <label>
+                <span>JSON Output File</span>
+                <input id="test-json-output-input" value="/tmp/yts-results.json" placeholder="/tmp/yts-results.json" />
+              </label>
+            </div>
+
+            <div class="field-grid two-col">
+              <label>
+                <span>Test Suite</span>
+                <select id="test-suite-select"><option value="">All Suites</option></select>
+              </label>
+              <label>
+                <span>Test Category</span>
+                <select id="test-category-select"><option value="">All Categories</option></select>
+              </label>
+            </div>
+
+            <label>
+              <span>Test Names</span>
+              <select id="test-name-select" multiple size="8"></select>
+            </label>
+            <div class="status-line muted" id="test-filter-summary">Load the catalog to populate the runner filters.</div>
+
+            <div class="inline-actions wrap">
+              <button id="add-selected-names-btn" type="button" class="secondary">Add Selected Tests</button>
+              <button id="add-filtered-tests-btn" type="button" class="secondary">Add All Filtered Matches</button>
+              <button id="refresh-catalog-from-test-btn" type="button" class="secondary">Refresh Catalog</button>
+            </div>
+
+            <label>
+              <span>Search By Test ID / Suite / Category / Title</span>
+              <input id="test-search-input" placeholder="Search catalog and add test IDs quickly" />
+            </label>
+            <div class="search-results hidden" id="test-search-results"></div>
+
+            <label>
+              <span>Manual Test IDs</span>
+              <textarea id="test-manual-ids-input" placeholder='Paste IDs like "ID1" "ID2" or plain space-separated tokens'></textarea>
+            </label>
+            <div class="inline-actions wrap">
+              <button id="add-manual-ids-btn" type="button" class="secondary">Add Manual Test IDs</button>
+              <button id="clear-selected-tests-btn" type="button" class="secondary">Clear Selected</button>
+            </div>
+
+            <div>
+              <div class="label-like">Selected Tests</div>
+              <div class="chip-list" id="selected-tests"></div>
+            </div>
+
+            <div class="options-grid">
+              <label class="checkbox-row"><input type="checkbox" id="guided-mode-checkbox" /> <span>Run in guided mode</span></label>
+              <label class="checkbox-row"><input type="checkbox" id="interactive-ai-checkbox" /> <span>Use Gemini for interactive responses</span></label>
+              <label class="checkbox-row"><input type="checkbox" id="record-video-checkbox" /> <span>Record TV video while tests run</span></label>
+            </div>
+
+            <label>
+              <span>Filter Tokens</span>
+              <textarea id="test-filter-tokens-input" placeholder='Optional filter tokens, e.g. "Smoke" "Time"'></textarea>
+            </label>
+            <label>
+              <span>Additional YTS Args</span>
+              <textarea id="test-extra-args-input" placeholder='Optional extra CLI args, e.g. --module=https://... --test-version=20260319'></textarea>
+            </label>
+
+            <div class="inline-actions wrap">
+              <button id="run-test-btn" type="button">Run Test</button>
+            </div>
+          </div>
+
+          <div class="tab-panel" id="tab-catalog">
+            <div class="inline-actions wrap">
+              <button id="catalog-refresh-btn" type="button">Load / Refresh Catalog</button>
+              <button id="catalog-export-btn" type="button" class="secondary">Export JSON</button>
+            </div>
+            <label class="checkbox-row compact"><input type="checkbox" id="catalog-guided-checkbox" /> <span>Show guided catalog only</span></label>
+            <div class="catalog-summary" id="catalog-count">No catalog loaded yet.</div>
+            <div class="field-grid two-col">
+              <label>
+                <span>Filter by Suite</span>
+                <select id="catalog-suite-filter"><option value="">All Suites</option></select>
+              </label>
+              <label>
+                <span>Filter by Category</span>
+                <select id="catalog-category-filter"><option value="">All Categories</option></select>
+              </label>
+            </div>
+            <label>
+              <span>Search by Keyword</span>
+              <input id="catalog-search-input" placeholder="Search by ID, suite, category, or title" />
+            </label>
+            <div class="table-wrap">
+              <table class="catalog-table">
+                <thead>
+                  <tr><th>Test ID</th><th>Title</th><th>Suite</th><th>Category</th></tr>
+                </thead>
+                <tbody id="catalog-table-body">
+                  <tr><td colspan="4" class="empty-cell">No tests loaded.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="tab-panel" id="tab-discover">
+            <div class="inline-actions wrap">
+              <button id="discover-run-btn" type="button">Run Discover</button>
+            </div>
+            <div class="result-box" id="discover-output">No discovery run yet.</div>
+          </div>
+
+          <div class="tab-panel" id="tab-advanced">
+            <div class="field-grid two-col">
+              <label>
+                <span>Command</span>
+                <select id="advanced-command-select"></select>
+              </label>
+              <div class="status-line muted" id="advanced-command-description">Select a command to configure its arguments.</div>
+            </div>
+            <div class="field-grid" id="advanced-command-args"></div>
+            <div class="inline-actions wrap">
+              <button id="advanced-run-btn" type="button">Run Command</button>
+            </div>
+          </div>
+
+          <div class="tab-panel" id="tab-global">
+            <div class="options-grid">
+              <label class="checkbox-row"><input type="checkbox" id="global-verbose-checkbox" /> <span>--verbose</span></label>
+              <label class="checkbox-row"><input type="checkbox" id="global-colors-checkbox" checked /> <span>--colors</span></label>
+            </div>
+            <div class="field-grid two-col">
+              <label>
+                <span>ADB Path</span>
+                <input id="global-adb-path-input" placeholder="adb" />
+              </label>
+              <label>
+                <span>Logging Level</span>
+                <input id="global-logging-level-input" placeholder="INFO" />
+              </label>
+            </div>
+            <label>
+              <span>Verbose Output File</span>
+              <input id="global-verbose-output-input" placeholder="/path/to/verbose.log" />
+            </label>
+          </div>
+        </section>
+
+        <section class="card full-width" id="yts-runner-card">
+          <div class="section-head split">
+            <div>
+              <div class="section-kicker">Step 4</div>
+              <h2>Live Runner, Prompt Handling & Past Results</h2>
+              <p>Watch the active YTS job, answer prompts, and reopen past command results from backend history.</p>
+            </div>
+            <div class="inline-actions">
+              <button id="refresh-history-btn" type="button" class="secondary">Refresh History</button>
+              <button id="stop-current-job-btn" type="button" class="danger">Stop Current Job</button>
+            </div>
+          </div>
+
+          <div class="runner-grid">
+            <div class="surface">
+              <div class="status-line" id="live-command-status">No YTS job selected yet.</div>
+              <div class="downloads-row" id="downloads-row"></div>
+              <div class="prompt-box hidden" id="prompt-box"></div>
+              <pre class="log-box tall" id="live-command-log">Select or start a YTS job to view logs.</pre>
+              <pre class="log-box" id="interaction-log">Gemini suggestions, prompt history, and manual responses will appear here.</pre>
+            </div>
+            <div class="surface">
+              <h3>Past Results</h3>
+              <div class="history-list" id="command-history-list">
+                <div class="empty-state slim">No YTS jobs yet.</div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <section class="workspace" id="workspace-ai">
+      <div class="workspace-grid ai-grid">
+        <section class="card">
+          <div class="section-head">
+            <div>
+              <div class="section-kicker">AI Jobs</div>
+              <h2>Start Run</h2>
+              <p>Minimal AI workspace while the YTS operator flow stays the primary experience.</p>
+            </div>
+          </div>
+          <label>
+            <span>Goal</span>
+            <textarea id="ai-goal-input" placeholder="e.g. Launch YouTube and verify home screen loads"></textarea>
+          </label>
+          <label>
+            <span>App ID (optional)</span>
+            <input id="ai-app-id-input" placeholder="youtube" />
+          </label>
+          <div class="inline-actions wrap">
+            <button id="ai-start-run-btn" type="button">Start Run</button>
+          </div>
+          <div class="status-line" id="ai-start-run-status">No run started yet.</div>
+        </section>
+
+        <section class="card">
+          <div class="section-head">
+            <div>
+              <div class="section-kicker">AI Jobs</div>
+              <h2>Recent Runs</h2>
+              <p>Shows the current backend run list.</p>
+            </div>
+          </div>
+          <div class="history-list" id="ai-runs-list">
+            <div class="empty-state slim">No runs yet.</div>
+          </div>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <script src="/config.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

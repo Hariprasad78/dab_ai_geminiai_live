@@ -327,8 +327,8 @@ class Planner:
             f"Retry count: {retry_count}",
             f"Supported actions: {', '.join(_SUPPORTED_ACTIONS)}",
         ]
-        if ocr_text:
-            parts.append(f"Screen text (OCR): {ocr_text[:500]}")
+        if has_screenshot:
+            parts.append("Use the attached screenshot as the primary visual context.")
         if last_actions:
             parts.append(f"Last actions: {', '.join(str(a) for a in last_actions[-5:])}")
         if master_plan:
@@ -391,6 +391,14 @@ class Planner:
         except Exception as exc:
             logger.error("Vertex AI planning failed: %s, falling back to heuristic", exc)
             msg = str(exc).lower()
+            if (
+                "publisher model" in msg
+                and ("not found" in msg or "does not have access" in msg)
+            ) or ("404" in msg and "model" in msg):
+                # Hard-disable Vertex for this Planner instance to avoid per-step
+                # retries/log spam when model id/region access is invalid.
+                self._vertex_client = None
+                logger.warning("Disabling Vertex planner for this process due to model 404/access error")
             if "429" in msg or "resource exhausted" in msg:
                 cooldown_s = max(1.0, float(self._config.vertex_429_cooldown_seconds))
                 wait_s = max(0.5, float(self._config.vertex_429_wait_seconds))
@@ -653,6 +661,12 @@ class Planner:
         except Exception as exc:
             logger.error("Vertex AI planning failed: %s, falling back to heuristic", exc)
             msg = str(exc).lower()
+            if (
+                "publisher model" in msg
+                and ("not found" in msg or "does not have access" in msg)
+            ) or ("404" in msg and "model" in msg):
+                self._vertex_client = None
+                logger.warning("Disabling Vertex planner for this process due to model 404/access error")
             if "429" in msg or "resource exhausted" in msg:
                 cooldown_s = max(1.0, float(self._config.vertex_429_cooldown_seconds))
                 wait_s = max(0.5, float(self._config.vertex_429_wait_seconds))

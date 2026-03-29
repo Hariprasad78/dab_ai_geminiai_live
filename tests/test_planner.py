@@ -229,7 +229,7 @@ def test_planner_parse_action_with_subplan(planner):
 
 
 def test_planner_build_context(planner):
-    """Test context builder includes all fields."""
+    """Test context builder includes core fields without OCR text."""
     context = planner._build_context(
         goal="Launch Netflix",
         has_screenshot=True,
@@ -247,12 +247,13 @@ def test_planner_build_context(planner):
     assert "Launch Netflix" in context
     assert "launcher" in context
     assert "HOME" in context
-    assert "Home screen" in context
     assert "PRESS_OK" in context
     assert "2" in context
     assert "Has screenshot: True" in context
+    assert "Use the attached screenshot as the primary visual context." in context
     assert "Supported actions:" in context
     assert "Session history:" in context
+    assert "Screen text (OCR):" not in context
 
 
 # ---------------------------------------------------------------------------
@@ -290,15 +291,15 @@ def test_planner_context_includes_screenshot_reference(planner):
     assert "Has screenshot: False" in ctx_without
 
 
-def test_planner_context_truncates_ocr_at_500_chars(planner):
-    """OCR text longer than 500 chars must be truncated."""
+def test_planner_context_ignores_ocr_text(planner):
+    """OCR text should not be injected into Gemini planner context."""
     long_text = "A" * 600
     context = planner._build_context(
         goal="test", has_screenshot=False, ocr_text=long_text,
         current_app=None, current_screen=None, last_actions=[], retry_count=0,
     )
-    assert "A" * 500 in context
-    assert "A" * 501 not in context
+    assert "Screen text (OCR):" not in context
+    assert "A" * 50 not in context
 
 
 def test_planner_context_limits_last_actions_to_5(planner):

@@ -53,13 +53,16 @@ class Validator:
         """Run semantic validation using Vertex AI."""
         if self._vertex_client is None:
             return StepResult(ValidationResult.SKIP, "No Vertex AI client - semantic validation skipped")
+        if not screenshot_b64:
+            return StepResult(ValidationResult.SKIP, "No screenshot available for semantic validation")
         try:
             prompt = (
                 f"Goal: {goal}\n"
-                f"Screen text: {ocr_text or 'N/A'}\n"
+                "Inspect the attached screenshot directly. "
+                "Do not assume OCR or local text extraction is available. "
                 "Has the goal been achieved? Answer PASS or FAIL with a brief reason."
             )
-            response = await self._vertex_client.generate_content(prompt)
+            response = await self._vertex_client.generate_content(prompt, screenshot_b64=screenshot_b64)
             text = response.strip().upper()
             result = ValidationResult.PASS if "PASS" in text else ValidationResult.FAIL
             return StepResult(result, response)

@@ -117,7 +117,9 @@ pytest tests/ -v
 | `DAB_MQTT_PORT` | `1883` | MQTT broker port |
 | `DAB_DEVICE_ID` | `mock-device` | DAB device identifier |
 | `DAB_REQUEST_TIMEOUT` | `10.0` | DAB response timeout (seconds) |
-| `IMAGE_SOURCE` | `auto` | Capture source: `auto`, `hdmi-capture`, or `dab` |
+| `IMAGE_SOURCE` | `auto` | Capture source: `auto`, `hdmi-capture`, `camera-capture`, or `dab` |
+| `ENABLE_HDMI_CAPTURE` | `true` | Enable HDMI/capture-card video source probing and use |
+| `ENABLE_CAMERA_CAPTURE` | `true` | Enable camera/webcam video source probing and use |
 | `HDMI_CAPTURE_DEVICE` | `` | V4L2 path (e.g. `/dev/video2`); auto-detected when empty |
 | `HDMI_CAPTURE_WIDTH` | `1920` | Requested HDMI capture width |
 | `HDMI_CAPTURE_HEIGHT` | `1080` | Requested HDMI capture height |
@@ -141,6 +143,8 @@ pytest tests/ -v
 | `GET` | `/health` | Health check |
 | `GET` | `/config` | Configuration summary (non-sensitive) |
 | `GET` | `/capture/source` | Capture source diagnostics (HDMI availability, active mode) |
+| `GET` | `/capture/devices` | List `/dev/video*` devices with kind/readability diagnostics |
+| `POST` | `/capture/select` | Select capture source and preferred/explicit video device |
 | `GET` | `/audio/source` | HDMI audio diagnostics (ALSA devices, ffmpeg availability) |
 | `POST` | `/run/start` | Start a new automation run |
 | `GET` | `/runs` | List all runs (most-recent first) |
@@ -214,6 +218,61 @@ wire up `aiomqtt` or `paho-mqtt`.  The `format_topic()` helper in
 
 - **No Vertex AI** → simple heuristic: capture screenshot → get state → NEED_BETTER_VIEW → FAILED
 - **With Vertex AI** → sends structured prompt + context to Gemini; parses JSON action response
+
+## Hybrid Planning Additions
+
+The agent now has a local hybrid-planning foundation intended for guided YTS and device-settings work:
+
+- `device_profiles/` stores one JSON capability profile per device.
+- `experience/trajectories.jsonl` stores local step outcomes for retrieval.
+- The orchestrator derives a `hybrid_policy_mode` per run:
+  - `DIRECT_DAB_PREFERRED`
+  - `LOCAL_MEMORY_ASSISTED`
+  - `HYBRID_DIRECT_FIRST`
+  - `UI_NAVIGATION_HEAVY`
+
+The current implementation does not self-train a local model yet. It first builds the safer prerequisite layer:
+
+- persistent device capability memory
+- local trajectory retrieval for similar goals
+- policy hints injected into planner execution state
+
+This gives you the data pipeline needed before distilling a local navigation model.
+
+## Local Training And Detection
+
+The repo now includes a practical local-ML scaffold rather than a fake end-state:
+
+- `vertex_live_dab_agent/hybrid/local_vision.py`
+  - extracts local screenshot features from PNG metadata and OCR text
+  - detects coarse screen labels such as `settings`, `timezone`, `language`, `video_player`, `network`
+- `vertex_live_dab_agent/hybrid/dataset.py`
+  - defines the normalized per-step training example schema
+- `vertex_live_dab_agent/hybrid/local_ranker.py`
+  - loads a lightweight distilled JSON model and ranks likely next actions
+- `scripts/train_local_ranker.py`
+  - trains that lightweight model offline from `trajectories.jsonl`
+
+### Training Flow
+
+1. Run guided or autonomous tests so the orchestrator keeps appending local step outcomes to `experience/trajectories.jsonl`.
+2. Train the local ranker offline:
+
+```bash
+python3 scripts/train_local_ranker.py artifacts/experience/trajectories.jsonl artifacts/models/local_action_ranker.json
+```
+
+3. Restart the service or point `LOCAL_RANKER_MODEL_PATH` at the generated model.
+4. New runs will expose:
+   - `observation_features`
+   - `local_action_suggestions`
+   - `local_model_version`
+
+### Important Limits
+
+- This local ranker is not a deep vision model.
+- It is a safer first stage that learns action priors from your own trajectories.
+- If you later want a true local multimodal model, this scaffold gives you the dataset and interfaces needed to replace the ranker without rewriting the orchestrator.
 
 ### OCR (optional)
 
@@ -418,4 +477,3 @@ Tip: you can also open the UI with query param:
 ```text
 http://<bucket>.storage.googleapis.com/index.html?api=https://abc123.trycloudflare.com
 ```
-

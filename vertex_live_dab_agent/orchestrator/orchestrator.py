@@ -1,6 +1,8 @@
 """Main orchestration loop: observe -> plan -> act -> verify -> repeat."""
 import asyncio
+import json
 import logging
+from pathlib import Path
 from typing import Any, Optional
 
 from vertex_live_dab_agent.artifacts.logger import ArtifactStore
@@ -9,6 +11,15 @@ from vertex_live_dab_agent.capture.validator import Validator
 from vertex_live_dab_agent.config import get_config
 from vertex_live_dab_agent.dab.client import DABClientBase, create_dab_client
 from vertex_live_dab_agent.dab.topics import KEY_MAP
+from vertex_live_dab_agent.hybrid import (
+    DeviceProfileRegistry,
+    ExperienceQuery,
+    HybridPolicyEngine,
+    LocalActionRanker,
+    LocalTrainingExample,
+    TrajectoryMemory,
+    extract_local_visual_features,
+)
 from vertex_live_dab_agent.orchestrator.app_resolver import AppResolver
 from vertex_live_dab_agent.orchestrator.run_state import RunState, RunStatus
 from vertex_live_dab_agent.planner.planner import Planner
@@ -36,6 +47,14 @@ class Orchestrator:
         self._max_steps = max_steps if max_steps is not None else self._config.max_steps_per_run
         self._capture_interval_steps = max(1, int(self._config.planner_capture_interval_steps))
         self._step_delay_seconds = max(0.0, float(self._config.planner_step_delay_seconds))
+        artifacts_root = Path(str(self._config.artifacts_base_dir or "./artifacts"))
+        profiles_dir = Path(str(self._config.device_profiles_dir or "")).expanduser() if str(self._config.device_profiles_dir or "").strip() else artifacts_root / "device_profiles"
+        memory_path = Path(str(self._config.trajectory_memory_path or "")).expanduser() if str(self._config.trajectory_memory_path or "").strip() else artifacts_root / "experience" / "trajectories.jsonl"
+        ranker_model_path = Path(str(self._config.local_ranker_model_path or "")).expanduser() if str(self._config.local_ranker_model_path or "").strip() else artifacts_root / "models" / "local_action_ranker.json"
+        self._device_profiles = DeviceProfileRegistry(profiles_dir)
+        self._trajectory_memory = TrajectoryMemory(memory_path)
+        self._hybrid_policy = HybridPolicyEngine()
+        self._local_ranker = LocalActionRanker(ranker_model_path)
 
     async def run(self, state: RunState) -> RunState:
         """Execute the full run loop, saving artifacts throughout."""
@@ -100,6 +119,7 @@ class Orchestrator:
         state.task_preplan = task_preplan.model_dump()
         state.verification_mode = task_preplan.verification_mode
         await self._bootstrap_capabilities_if_needed(state)
+        self._persist_capability_reference_if_needed(state, store)
 
         should_observe = (
             state.latest_screenshot_b64 is None
@@ -119,12 +139,14 @@ class Orchestrator:
         if should_observe:
             capture_result = await self._capture.capture()
             state.latest_screenshot_b64 = capture_result.image_b64
-            state.latest_ocr_text = capture_result.ocr_text
+            state.latest_visual_summary = capture_result.ocr_text
+            self._refresh_observation_features(state)
             if capture_result.image_b64:
                 store.save_screenshot(capture_result.image_b64, step)
             state.steps_since_observe = 0
             state.last_checkpoint = "observe"
         self._refresh_player_context(state)
+        self._refresh_hybrid_context(state)
 
         planned_from_subplan = False
         nav_phase = ""
@@ -245,6 +267,13 @@ class Orchestrator:
                 "supported_settings": state.supported_settings,
                 "resolved_apps_cache": state.resolved_apps_cache,
                 "strategy_selected": state.strategy_selected,
+                "hybrid_policy_mode": state.hybrid_policy_mode,
+                "hybrid_policy_rationale": state.hybrid_policy_rationale,
+                "device_profile_id": state.device_profile_id,
+                "retrieved_experiences": state.retrieved_experiences[-3:],
+                "observation_features": state.observation_features,
+                "local_action_suggestions": state.local_action_suggestions,
+                "local_model_version": state.local_model_version,
                 "current_app_state": state.current_app_state,
                 "current_app_id": state.current_app_id,
                 "last_verified_foreground_app": state.last_verified_foreground_app,
@@ -276,7 +305,7 @@ class Orchestrator:
             nav_plan = await self._planner.plan_navigation(
                 goal=state.goal,
                 screenshot_b64=state.latest_screenshot_b64,
-                ocr_text=state.latest_ocr_text,
+                ocr_text=state.latest_visual_summary,
                 current_app=state.current_app,
                 current_screen=state.current_screen,
                 last_actions=state.last_actions,
@@ -382,7 +411,8 @@ class Orchestrator:
             if nav_need_screenshot and state.steps_since_observe > 0:
                 capture_result = await self._capture.capture()
                 state.latest_screenshot_b64 = capture_result.image_b64
-                state.latest_ocr_text = capture_result.ocr_text
+                state.latest_visual_summary = capture_result.ocr_text
+                self._refresh_observation_features(state)
                 if capture_result.image_b64:
                     store.save_screenshot(capture_result.image_b64, step)
                 state.steps_since_observe = 0
@@ -482,7 +512,7 @@ class Orchestrator:
                 "goal": state.goal,
                 "current_app": state.current_app,
                 "current_screen": state.current_screen,
-                "ocr_text": state.latest_ocr_text,
+                "visual_summary": state.latest_visual_summary,
                 "last_actions": state.last_actions[-5:],
                 "retry_count": state.retries,
                 "planned_action": planned.action,
@@ -575,7 +605,7 @@ class Orchestrator:
             state.finish(RunStatus.FAILED, planned.reason)
             return
 
-        ocr_before_action = str(state.latest_ocr_text or "")
+        visual_summary_before_action = str(state.latest_visual_summary or "")
 
         # Act
         action_success = await self._execute_action(state, planned)
@@ -586,6 +616,12 @@ class Orchestrator:
             planned.action, planned.params, planned.confidence, planned.reason, validation.value
         )
         store.save_action(state.action_history[-1].model_dump())
+        self._record_trajectory_experience(
+            state=state,
+            planned=planned,
+            result=validation.value,
+            visual_summary_before_action=visual_summary_before_action,
+        )
 
         if (
             str(planned.action).upper() == ActionType.PRESS_OK.value
@@ -593,7 +629,7 @@ class Orchestrator:
         ):
             await self._update_capture(state)
             self._refresh_player_context(state)
-            ok_effect = self._diagnose_press_ok_effect(state, before_ocr=ocr_before_action)
+            ok_effect = self._diagnose_press_ok_effect(state, before_visual_summary=visual_summary_before_action)
             state.last_ok_effect = ok_effect
             state.record_ai_event(
                 {
@@ -715,7 +751,8 @@ class Orchestrator:
         if state.latest_screenshot_b64 is None:
             capture_result = await self._capture.capture()
             state.latest_screenshot_b64 = capture_result.image_b64
-            state.latest_ocr_text = capture_result.ocr_text
+            state.latest_visual_summary = capture_result.ocr_text
+            self._refresh_observation_features(state)
 
         ctx = self._build_stuck_context(state)
         state.last_stuck_context = ctx
@@ -773,8 +810,8 @@ class Orchestrator:
             (e for e in reversed(state.ai_transcript) if e.get("type") == "planner-decision"),
             {},
         )
-        ocr = str(state.latest_ocr_text or "").strip()
-        screenshot_summary = ocr[:220] if ocr else "No OCR text from screenshot"
+        visual_summary = str(state.latest_visual_summary or "").strip()
+        screenshot_summary = visual_summary[:220] if visual_summary else "No visual summary from screenshot"
         # Update grounded screenshot summary on state for Gemini to use
         state.grounded_screenshot_summary = screenshot_summary
         return {
@@ -804,12 +841,60 @@ class Orchestrator:
             "recovery_history": state.recovery_history[-5:],
         }
 
+    def _persist_capability_reference_if_needed(self, state: RunState, store: ArtifactStore) -> None:
+        if state.capability_reference_path:
+            return
+        payload = {
+            "run_id": state.run_id,
+            "goal": state.goal,
+            "device_id": self._config.dab_device_id,
+            "supported_operations": list(state.supported_operations or []),
+            "app_catalog": list(state.app_catalog or []),
+            "supported_keys": list(state.supported_keys or []),
+            "supported_settings": list(state.supported_settings or []),
+            "youtube_app_id": str(getattr(self._config, "youtube_app_id", "youtube") or "youtube"),
+        }
+        try:
+            dest = store.run_dir / "capability_reference.json"
+            dest.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            state.capability_reference = payload
+            state.capability_reference_path = str(dest)
+            state.record_ai_event(
+                {
+                    "type": "capability-reference",
+                    "step": state.step_count,
+                    "path": state.capability_reference_path,
+                    "operations": len(payload.get("supported_operations", [])),
+                    "apps": len(payload.get("app_catalog", [])),
+                    "keys": len(payload.get("supported_keys", [])),
+                }
+            )
+        except Exception as exc:
+            logger.warning("Failed to persist capability reference: %s", exc)
+
     @staticmethod
-    def _has_usable_ocr_text(state: RunState) -> bool:
-        ocr = str(state.latest_ocr_text or "").strip()
-        if not ocr:
+    def _has_usable_visual_summary(state: RunState) -> bool:
+        if state.latest_screenshot_b64:
+            # Text extraction can be unavailable in some environments; a fresh screenshot is still
+            # a usable visual signal for guarded navigation.
+            return True
+        visual_summary = str(state.latest_visual_summary or "").strip()
+        if not visual_summary:
             return False
-        return "no ocr text" not in ocr.lower()
+        return "no visual summary" not in visual_summary.lower()
+
+    @staticmethod
+    def _consecutive_recovery_decisions(state: RunState, decision: str) -> int:
+        target = str(decision or "").strip().upper()
+        if not target:
+            return 0
+        count = 0
+        for item in reversed(state.recovery_history):
+            d = str((item or {}).get("decision", "")).strip().upper()
+            if d != target:
+                break
+            count += 1
+        return count
 
     async def _decide_recovery_from_context(self, state: RunState, ctx: dict) -> tuple[str, str, list[dict]]:
         goal = str(ctx.get("test_goal", "")).lower()
@@ -837,10 +922,40 @@ class Orchestrator:
                         ],
                     )
 
-            if not self._has_usable_ocr_text(state):
+            if not self._has_usable_visual_summary(state):
+                wait_streak = self._consecutive_recovery_decisions(state, "YOUTUBE_WAIT_FOR_VISUAL_STABILITY")
+                if wait_streak >= 4:
+                    return (
+                        "FAIL_WITH_GROUNDED_REASON",
+                        "Visual summary/screenshot signal stayed unavailable across repeated recovery attempts",
+                        [
+                            {
+                                "action": ActionType.FAILED.value,
+                                "params": {"reason": "youtube_visual_signal_missing_for_recovery"},
+                            }
+                        ],
+                    )
+                if wait_streak >= 2:
+                    resolved = await self._app_resolver.resolve_target_app(
+                        goal=state.goal,
+                        planner_output={"target_app_name": "YouTube", "target_app_hint": "YouTube"},
+                        execution_state={"session_id": state.run_id, "device_id": self._config.dab_device_id},
+                    )
+                    if resolved is not None:
+                        return (
+                            "YOUTUBE_RELAUNCH_FOR_VISUAL_RESET",
+                            "Visual summary still missing after repeated waits; relaunching YouTube to reset playback surface",
+                            [
+                                self._app_resolver.build_launch_action(resolved_target=resolved),
+                                {"action": ActionType.WAIT.value, "params": {"seconds": 1.2}},
+                                {"action": ActionType.GET_STATE.value, "params": {"app_id": resolved.app_id}},
+                                {"action": ActionType.CAPTURE_SCREENSHOT.value, "params": {}},
+                            ],
+                        )
+
                 return (
                     "YOUTUBE_WAIT_FOR_VISUAL_STABILITY",
-                    "Playback context is active but OCR is missing; waiting and recapturing before navigation",
+                    "Playback context is active but visual summary is missing; waiting and recapturing before navigation",
                     [
                         {"action": ActionType.WAIT.value, "params": {"seconds": 1.2}},
                         {"action": ActionType.CAPTURE_SCREENSHOT.value, "params": {}},
@@ -982,6 +1097,96 @@ class Orchestrator:
                 logger.warning("Capability bootstrap system/settings/list failed: %s", exc)
 
         state.resolved_apps_cache = self._app_resolver.get_session_resolutions(state.run_id)
+        if state.supported_operations or state.app_catalog or state.supported_settings:
+            profile = self._device_profiles.upsert_from_capabilities(
+                device_id=self._config.dab_device_id,
+                supported_operations=state.supported_operations,
+                supported_keys=state.supported_keys,
+                supported_settings=state.supported_settings,
+                app_catalog=state.app_catalog,
+            )
+            state.device_profile_id = profile.profile_id
+            state.device_profile_path = str(self._device_profiles.profile_path(self._config.dab_device_id))
+
+    def _refresh_hybrid_context(self, state: RunState) -> None:
+        profile = self._device_profiles.load(self._config.dab_device_id)
+        similar = self._trajectory_memory.find_similar(
+            ExperienceQuery(
+                goal=state.goal,
+                device_id=self._config.dab_device_id,
+                current_app=state.current_app or state.current_app_id or "",
+                limit=5,
+            )
+        )
+        recommendation = self._hybrid_policy.recommend(
+            goal=state.goal,
+            device_profile=profile.model_dump() if profile is not None else None,
+            similar_experiences=similar,
+        )
+        state.device_profile_id = recommendation.device_profile_id or state.device_profile_id
+        requested_mode = str(state.hybrid_policy_mode or "").strip()
+        config_mode = str(getattr(self._config, "hybrid_policy_mode", "auto")).strip()
+        if requested_mode and requested_mode.lower() != "auto":
+            state.hybrid_policy_mode = requested_mode
+        elif config_mode and config_mode.lower() != "auto":
+            state.hybrid_policy_mode = config_mode
+        else:
+            state.hybrid_policy_mode = recommendation.mode
+        state.hybrid_policy_rationale = recommendation.rationale
+        state.retrieved_experiences = similar
+        state.local_model_version = self._local_ranker.version
+        ranked_actions = self._local_ranker.rank(
+            goal=state.goal,
+            current_app=state.current_app_id or state.current_app or "",
+            observation_features=state.observation_features,
+            retrieved_experiences=similar,
+            top_k=3,
+        )
+        state.local_action_suggestions = [item.model_dump() for item in ranked_actions]
+
+    def _refresh_observation_features(self, state: RunState) -> None:
+        state.observation_features = extract_local_visual_features(
+            image_b64=state.latest_screenshot_b64,
+            ocr_text=state.latest_visual_summary,
+        )
+
+    def _record_trajectory_experience(
+        self,
+        *,
+        state: RunState,
+        planned: PlannedAction,
+        result: str,
+        visual_summary_before_action: str,
+    ) -> None:
+        example = LocalTrainingExample(
+            run_id=state.run_id,
+            step=state.step_count,
+            goal=state.goal,
+            device_id=self._config.dab_device_id,
+            device_profile_id=state.device_profile_id,
+            hybrid_policy_mode=state.hybrid_policy_mode,
+            current_app=state.current_app_id or state.current_app or "",
+            current_screen=state.current_screen or "",
+            visual_summary_before=visual_summary_before_action,
+            visual_summary_after=str(state.latest_visual_summary or ""),
+            observation_features=dict(state.observation_features or {}),
+            action=str(planned.action),
+            params=planned.params or {},
+            result=str(result),
+            strategy_selected=state.strategy_selected,
+            retrieved_actions=[
+                str(item.get("action", ""))
+                for item in (state.retrieved_experiences or [])
+                if isinstance(item, dict) and str(item.get("action", "")).strip()
+            ],
+            local_ranker_actions=[
+                str(item.get("action", ""))
+                for item in (state.local_action_suggestions or [])
+                if isinstance(item, dict) and str(item.get("action", "")).strip()
+            ],
+            reason=planned.reason,
+        )
+        self._trajectory_memory.append(example.model_dump())
 
     async def _select_execution_strategy(self, state: RunState) -> list[dict]:
         if state.pending_subplan:
@@ -1286,24 +1491,24 @@ class Orchestrator:
 
     @staticmethod
     def _is_probably_video_playback_visible(state: RunState) -> bool:
-        ocr = str(state.latest_ocr_text or "").lower()
-        return any(k in ocr for k in ("pause", "seek", "settings", "stats for nerds", "up next"))
+        visual_summary = str(state.latest_visual_summary or "").lower()
+        return any(k in visual_summary for k in ("pause", "seek", "settings", "stats for nerds", "up next"))
 
     @staticmethod
-    def _ocr_fingerprint(ocr_text: str) -> str:
-        normalized = " ".join(str(ocr_text or "").lower().split())
+    def _visual_summary_fingerprint(visual_summary: str) -> str:
+        normalized = " ".join(str(visual_summary or "").lower().split())
         return normalized[:220]
 
     @staticmethod
-    def _focus_guess_from_ocr(ocr_text: str) -> Optional[str]:
-        ocr = str(ocr_text or "").lower()
-        if "stats for nerds" in ocr:
+    def _focus_guess_from_visual_summary(visual_summary: str) -> Optional[str]:
+        visual = str(visual_summary or "").lower()
+        if "stats for nerds" in visual:
             return "stats for nerds"
-        if "settings" in ocr or "gear" in ocr:
+        if "settings" in visual or "gear" in visual:
             return "settings gear"
-        if "captions" in ocr:
+        if "captions" in visual:
             return "captions"
-        if "quality" in ocr:
+        if "quality" in visual:
             return "quality"
         return None
 
@@ -1320,10 +1525,10 @@ class Orchestrator:
         return mapping.get(self._youtube_phase(state), "START_VIDEO")
 
     def _refresh_player_context(self, state: RunState) -> None:
-        ocr = str(state.latest_ocr_text or "")
+        visual_summary = str(state.latest_visual_summary or "")
         cfg = getattr(self, "_config", None)
         youtube_app_id = str(getattr(cfg, "youtube_app_id", "youtube") or "youtube").lower()
-        state.focus_target_guess = self._focus_guess_from_ocr(ocr)
+        state.focus_target_guess = self._focus_guess_from_visual_summary(visual_summary)
         state.player_controls_visible = self._is_player_controls_visible(state)
         state.is_video_playback_context = self._is_youtube_player_task(state.goal) and (
             self._is_probably_video_playback_visible(state)
@@ -1333,22 +1538,22 @@ class Orchestrator:
         if self._is_youtube_player_task(state.goal):
             state.last_player_phase = self._normalized_youtube_phase(state)
 
-    def _diagnose_press_ok_effect(self, state: RunState, before_ocr: str) -> str:
-        before = str(before_ocr or "").lower()
-        after = str(state.latest_ocr_text or "").lower()
+    def _diagnose_press_ok_effect(self, state: RunState, before_visual_summary: str) -> str:
+        before = str(before_visual_summary or "").lower()
+        after = str(state.latest_visual_summary or "").lower()
         if ("settings" not in before and "gear" not in before) and ("settings" in after or "gear" in after):
             return "CONTROLS_REVEALED"
         if "stats for nerds" not in before and "stats for nerds" in after:
             return "MENU_OPENED_OR_TOGGLE_VISIBLE"
         if ("pause" in before and "play" in after) or ("play" in before and "pause" in after):
             return "TOGGLED_PLAYBACK"
-        if self._ocr_fingerprint(before) == self._ocr_fingerprint(after):
+        if self._visual_summary_fingerprint(before) == self._visual_summary_fingerprint(after):
             return "NO_VISIBLE_CHANGE"
         return "SCREEN_CHANGED"
 
     def _update_no_progress_tracking(self, state: RunState, action: str, action_success: bool) -> None:
         action_u = str(action or "").upper()
-        current_fingerprint = self._ocr_fingerprint(state.latest_ocr_text or "")
+        current_fingerprint = self._visual_summary_fingerprint(state.latest_visual_summary or "")
         phase = self._normalized_youtube_phase(state) if self._is_youtube_player_task(state.goal) else ""
         same_fingerprint = bool(current_fingerprint and state.last_screen_fingerprint == current_fingerprint)
         same_phase = bool(phase and state.last_player_phase == phase)
@@ -1369,15 +1574,15 @@ class Orchestrator:
 
     @staticmethod
     def _is_player_controls_visible(state: RunState) -> bool:
-        ocr = str(state.latest_ocr_text or "").lower()
-        return any(k in ocr for k in ("settings", "gear", "captions", "quality", "playback speed", "cc"))
+        visual_summary = str(state.latest_visual_summary or "").lower()
+        return any(k in visual_summary for k in ("settings", "gear", "captions", "quality", "playback speed", "cc"))
 
     def _youtube_phase(self, state: RunState) -> str:
         cfg = getattr(self, "_config", None)
         youtube_app_id = str(getattr(cfg, "youtube_app_id", "youtube") or "youtube").lower()
         current_app = str(state.current_app_id or state.current_app or "").lower()
         goal = (state.goal or "").lower()
-        ocr = str(state.latest_ocr_text or "").lower()
+        visual_summary = str(state.latest_visual_summary or "").lower()
 
         if current_app != youtube_app_id:
             return "OPEN_TARGET_APP"
@@ -1386,11 +1591,11 @@ class Orchestrator:
         if not self._is_player_controls_visible(state):
             return "REVEAL_PLAYER_CONTROLS"
         if "stats for nerds" in goal:
-            if "stats for nerds" in ocr:
+            if "stats for nerds" in visual_summary:
                 return "COMPLETE"
-            if "settings" not in ocr and "gear" not in ocr:
+            if "settings" not in visual_summary and "gear" not in visual_summary:
                 return "OPEN_PLAYER_SETTINGS"
-            if "stats for nerds" not in ocr:
+            if "stats for nerds" not in visual_summary:
                 return "ENABLE_STATS_FOR_NERDS"
             return "VERIFY_STATS_OVERLAY"
         if "play" in goal and "video" in goal:
@@ -1406,9 +1611,9 @@ class Orchestrator:
         if str(state.current_app_state or "").upper() != "FOREGROUND":
             return False
         goal = (state.goal or "").lower()
-        ocr = str(state.latest_ocr_text or "").lower()
+        visual_summary = str(state.latest_visual_summary or "").lower()
         if "stats for nerds" in goal:
-            return "stats for nerds" in ocr
+            return "stats for nerds" in visual_summary
         if "play" in goal and "video" in goal:
             return self._is_probably_video_playback_visible(state)
         return True
@@ -1416,6 +1621,30 @@ class Orchestrator:
     def _sanitize_planned_action_for_goal(self, state: RunState, planned: PlannedAction) -> PlannedAction:
         action = str(planned.action).upper()
         params = planned.params or {}
+
+        if action == ActionType.NEED_BETTER_VIEW.value:
+            repeat = 0
+            for a in reversed(state.last_actions):
+                if str(a).upper() == ActionType.NEED_BETTER_VIEW.value:
+                    repeat += 1
+                else:
+                    break
+            if repeat >= 2:
+                state.record_ai_event(
+                    {
+                        "type": "anti-flake-guard",
+                        "step": state.step_count,
+                        "reason": "Blocked repeated NEED_BETTER_VIEW loop",
+                        "repeat": repeat,
+                    }
+                )
+                return PlannedAction(
+                    action=ActionType.GET_STATE,
+                    confidence=0.78,
+                    reason="Anti-flake guard: repeated NEED_BETTER_VIEW; forcing grounded state probe",
+                    params={"app_id": state.current_app_id or state.current_app or self._config.youtube_app_id},
+                )
+
         if self._is_youtube_player_task(state.goal):
             self._refresh_player_context(state)
             if state.is_video_playback_context and action in {ActionType.PRESS_OK.value, "PRESS_ENTER"}:
@@ -1468,11 +1697,11 @@ class Orchestrator:
                                 "focus_target_guess": state.focus_target_guess,
                             }
                         )
-                        if not self._has_usable_ocr_text(state):
+                        if not self._has_usable_visual_summary(state):
                             return PlannedAction(
                                 action=ActionType.CAPTURE_SCREENSHOT,
                                 confidence=0.82,
-                                reason="Focus-before-select rule: OCR missing, capture screenshot before navigation",
+                                reason="Focus-before-select rule: visual summary missing, capture screenshot before navigation",
                             )
                         return PlannedAction(
                             action=ActionType.PRESS_RIGHT,
@@ -1703,12 +1932,12 @@ class Orchestrator:
 
     def _targeted_ambiguity_action(self, state: RunState) -> str:
         if self._is_youtube_player_task(state.goal):
-            ocr = str(state.latest_ocr_text or "").lower()
+            visual_summary = str(state.latest_visual_summary or "").lower()
             if not self._is_probably_video_playback_visible(state):
                 return ActionType.NEED_VIDEO_PLAYBACK_CONFIRMED.value
-            if "settings" not in ocr and "gear" not in ocr:
+            if "settings" not in visual_summary and "gear" not in visual_summary:
                 return ActionType.NEED_SETTINGS_GEAR_LOCATION.value
-            if "stats for nerds" not in ocr:
+            if "stats for nerds" not in visual_summary:
                 return ActionType.NEED_PLAYER_MENU_CONFIRMATION.value
             return ActionType.NEED_STATS_FOR_NERDS_TOGGLE_CONFIRMATION.value
         return ActionType.NEED_BETTER_VIEW.value
@@ -1823,7 +2052,7 @@ class Orchestrator:
                 if action == ActionType.CAPTURE_SCREENSHOT:
                     return state.latest_screenshot_b64 is not None
                 if action == ActionType.NEED_BETTER_VIEW:
-                    return self._has_usable_ocr_text(state)
+                    return self._has_usable_visual_summary(state)
                 if action == ActionType.NEED_PLAYER_CONTROLS_VISIBLE:
                     return self._is_player_controls_visible(state)
                 if action == ActionType.NEED_VIDEO_PLAYBACK_CONFIRMED:
@@ -1832,11 +2061,11 @@ class Orchestrator:
                     focus = str(state.focus_target_guess or "").lower()
                     return "settings" in focus or "gear" in focus
                 if action == ActionType.NEED_PLAYER_MENU_CONFIRMATION:
-                    ocr = str(state.latest_ocr_text or "").lower()
-                    return any(k in ocr for k in ("stats for nerds", "quality", "captions", "playback speed"))
+                    visual_summary = str(state.latest_visual_summary or "").lower()
+                    return any(k in visual_summary for k in ("stats for nerds", "quality", "captions", "playback speed"))
                 if action == ActionType.NEED_STATS_FOR_NERDS_TOGGLE_CONFIRMATION:
-                    ocr = str(state.latest_ocr_text or "").lower()
-                    return "stats for nerds" in ocr
+                    visual_summary = str(state.latest_visual_summary or "").lower()
+                    return "stats for nerds" in visual_summary
                 return False
             elif action == ActionType.WAIT:
                 seconds = params.get("seconds", 1)
@@ -1859,4 +2088,5 @@ class Orchestrator:
         """Capture a new screenshot and update state in-place."""
         capture = await self._capture.capture()
         state.latest_screenshot_b64 = capture.image_b64
-        state.latest_ocr_text = capture.ocr_text
+        state.latest_visual_summary = capture.ocr_text
+        self._refresh_observation_features(state)

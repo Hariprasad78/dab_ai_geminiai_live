@@ -1,6 +1,8 @@
 """Tests for screenshot capture helpers."""
 
-from vertex_live_dab_agent.capture.capture import extract_output_image_b64
+import pytest
+
+from vertex_live_dab_agent.capture.capture import ScreenCapture, extract_output_image_b64
 
 
 def test_extract_output_image_b64_supports_image_key():
@@ -16,3 +18,19 @@ def test_extract_output_image_b64_supports_output_image_key_and_data_uri():
 
 def test_extract_output_image_b64_returns_none_on_missing_fields():
     assert extract_output_image_b64({"status": 200}) is None
+
+
+@pytest.mark.asyncio
+async def test_screen_capture_does_not_run_local_ocr(monkeypatch):
+    class FakeDab:
+        async def capture_screenshot(self):
+            raise AssertionError("DAB fallback should not be used in this test")
+
+    capture = ScreenCapture(FakeDab())
+    monkeypatch.setattr(capture, "_capture_from_hdmi", lambda: "image-b64")
+    capture._image_source = "hdmi-capture"
+
+    result = await capture.capture()
+
+    assert result.image_b64 == "image-b64"
+    assert result.ocr_text is None

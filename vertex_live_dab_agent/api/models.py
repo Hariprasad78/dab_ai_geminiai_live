@@ -8,6 +8,8 @@ class StartRunRequest(BaseModel):
     goal: str
     app_id: Optional[str] = None
     content: Optional[str] = None
+    device_profile_id: Optional[str] = None
+    policy_mode: Optional[str] = None
     max_steps: Optional[int] = Field(default=None, gt=0, description="Override max steps for this run")
 
 
@@ -45,6 +47,13 @@ class RunStatusResponse(BaseModel):
     ai_logs_tail: List[Dict[str, Any]] = []
     narration_count: int = 0
     narration_tail: List[Dict[str, Any]] = []
+    device_profile_id: Optional[str] = None
+    hybrid_policy_mode: Optional[str] = None
+    hybrid_policy_rationale: Optional[str] = None
+    retrieved_experiences: List[Dict[str, Any]] = []
+    observation_features: Dict[str, Any] = {}
+    local_action_suggestions: List[Dict[str, Any]] = []
+    local_model_version: Optional[str] = None
 
 
 class ActionRecordItem(BaseModel):
@@ -236,3 +245,19 @@ class CaptureSourceResponse(BaseModel):
     hdmi_available: bool
     hdmi_device: Optional[str] = None
     hdmi_info: Dict[str, float] = Field(default_factory=dict)
+    enable_hdmi_capture: bool = True
+    enable_camera_capture: bool = True
+    selected_video_device: Optional[str] = None
+    preferred_video_kind: str = "auto"
+    effective_preferred_kind: str = "auto"
+    video_devices: List[str] = Field(default_factory=list)
+    video_device_details: List[Dict[str, Any]] = Field(default_factory=list)
+    device_readable: Dict[str, bool] = Field(default_factory=dict)
+    user_in_video_group: Optional[bool] = None
+
+
+class CaptureSelectRequest(BaseModel):
+    source: Optional[str] = None
+    device: Optional[str] = None
+    preferred_kind: Optional[str] = None
+    persist: bool = True

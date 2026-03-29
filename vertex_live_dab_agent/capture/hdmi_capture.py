@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import glob
 import logging
+import os
 import re
 import threading
 from typing import Any, Dict, List, Optional
@@ -18,7 +19,18 @@ class HdmiCaptureError(Exception):
 
 def _import_cv2() -> Any:
     try:
+        # Reduce noisy OpenCV backend warnings in production logs.
+        os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
         import cv2  # type: ignore
+
+        try:
+            # OpenCV logging API differs by build/version.
+            if hasattr(cv2, "utils") and hasattr(cv2.utils, "logging"):
+                cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_ERROR)
+            elif hasattr(cv2, "setLogLevel") and hasattr(cv2, "LOG_LEVEL_ERROR"):
+                cv2.setLogLevel(cv2.LOG_LEVEL_ERROR)
+        except Exception:
+            pass
 
         return cv2
     except Exception as exc:  # pragma: no cover - optional dependency
@@ -82,19 +94,22 @@ class HdmiCaptureSession:
         """Try path/index + backend combinations for better Linux OpenCV compatibility."""
         cap_v4l2 = getattr(cv2, "CAP_V4L2", None)
 
-        index: Optional[int] = None
-        m = re.match(r"^/dev/video(\d+)$", str(self.device).strip())
-        if m:
-            index = int(m.group(1))
-
         candidates: List[tuple[Any, Optional[int]]] = []
-        # Prefer exact device path first.
-        candidates.append((self.device, cap_v4l2))
-        candidates.append((self.device, None))
-        # Some OpenCV builds with V4L2 open by index only.
-        if index is not None:
-            candidates.append((index, cap_v4l2))
-            candidates.append((index, None))
+        # Prefer exact path and avoid path->index retries that create redundant
+        # V4L2 warnings for invalid/non-capture nodes.
+        dev = str(self.device).strip()
+        if re.match(r"^/dev/video\d+$", dev):
+            candidates.append((dev, cap_v4l2))
+            candidates.append((dev, None))
+        else:
+            # Explicit numeric sources are still supported.
+            try:
+                idx = int(dev)
+                candidates.append((idx, cap_v4l2))
+                candidates.append((idx, None))
+            except Exception:
+                candidates.append((dev, cap_v4l2))
+                candidates.append((dev, None))
 
         for source, backend in candidates:
             cap = cv2.VideoCapture(source, backend) if backend is not None else cv2.VideoCapture(source)

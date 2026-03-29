@@ -70,6 +70,10 @@ class RunState(BaseModel):
     supported_keys: List[str] = Field(default_factory=list)
     supported_settings: List[Dict[str, Any]] = Field(default_factory=list)
     resolved_apps_cache: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    capability_reference: Dict[str, Any] = Field(default_factory=dict)
+    capability_reference_path: Optional[str] = None
+    device_profile_id: Optional[str] = None
+    device_profile_path: Optional[str] = None
 
     # ------------------------------------------------------------------ #
     # Strategy and planning
@@ -80,6 +84,12 @@ class RunState(BaseModel):
     verification_mode: Optional[str] = None
     last_expected_screen: Optional[str] = None
     blocked_actions: List[str] = Field(default_factory=list)
+    hybrid_policy_mode: Optional[str] = None
+    hybrid_policy_rationale: Optional[str] = None
+    retrieved_experiences: List[Dict[str, Any]] = Field(default_factory=list)
+    observation_features: Dict[str, Any] = Field(default_factory=dict)
+    local_action_suggestions: List[Dict[str, Any]] = Field(default_factory=list)
+    local_model_version: Optional[str] = None
 
     # ------------------------------------------------------------------ #
     # Progress / recovery tracking
@@ -96,7 +106,7 @@ class RunState(BaseModel):
     # Visual / capture state
     # ------------------------------------------------------------------ #
     latest_screenshot_b64: Optional[str] = None
-    latest_ocr_text: Optional[str] = None
+    latest_visual_summary: Optional[str] = None
     last_screen_fingerprint: Optional[str] = None
 
     # ------------------------------------------------------------------ #
