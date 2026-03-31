@@ -88,6 +88,113 @@ Browse to **http://localhost:8000** — the browser demo loads automatically.
 
 Interactive API docs: **http://localhost:8000/docs**
 
+## Multi-camera FastAPI service
+
+The repo now also includes a production-oriented FastAPI preview service for **2 USB cameras + 1 HDMI capture card** with deterministic startup, background capture threads, reconnect logic, and live device status updates.
+
+### Module layout
+
+```
+vertex_live_dab_agent/multi_camera/
+├── __main__.py
+├── __init__.py
+├── main.py
+├── capture_manager.py
+├── device_registry.py
+├── stream_state.py
+├── logger.py
+└── static/
+  └── index.html
+```
+
+### Key design choices
+
+- Uses **FastAPI + Uvicorn-compatible ASGI**, not Flask
+- Keeps **all camera reads in background threads**, never inside request handlers
+- Gives **each source its own `CaptureManager`** with its own thread and reconnect loop
+- Stores the latest JPEG frame behind thread-safe locks for cheap snapshot access
+- Separates status telemetry from frame delivery: `/ws/status` publishes device health while `/snapshot/{device_id}` serves cached JPEGs only
+- Runs a **startup validation phase before exposing the API** and resolves each configured device from an explicit path or stable Linux USB/by-id locator
+- Uses **open retries plus reconnect/reopen logic** so late HDMI startup or transient empty-frame periods do not wedge the service
+- Marks each source independently as **AVAILABLE**, **DEGRADED**, or **FAILED** so one device does not crash the whole application
+- Returns a placeholder image when a source has no cached frame yet, so the frontend never hangs on an empty preview request
+- Exposes snapshots and status APIs that are easy to replace later with WebRTC signaling/media layers
+
+### Run it
+
+```bash
+pip install -e ".[dev,hdmi]"
+cp .env.example .env
+
+# Example stable device map: cam1, cam2, hdmi
+export MULTI_CAMERA_DEVICES="cam1|camera|by-id:/dev/v4l/by-id/usb-Logitech_C920-video-index0;cam2|camera|by-id:/dev/v4l/by-id/usb-Logitech_C922-video-index0;hdmi|hdmi|usb:elgato"
+
+python -m vertex_live_dab_agent.multi_camera
+```
+
+Open **http://localhost:8090** for the lightweight status UI.
+
+## WebRTC camera preview service
+
+The repo also includes a FastAPI + aiortc WebRTC preview app in [vertex_live_dab_agent/webrtc_camera](vertex_live_dab_agent/webrtc_camera) for low-latency browser video on a single HTTP port.
+
+### Run it on port 8080
+
+```bash
+pip install -e ".[dev,webrtc]"
+cp .env.example .env
+
+# Auto-detects the first two webcams plus the first HDMI/capture device on Linux.
+python -m vertex_live_dab_agent.webrtc_camera
+```
+
+Open **http://localhost:8080**.
+
+### WebRTC notes
+
+- UI, signaling, status API, and status WebSocket all use **one HTTP port**: `8080`
+- Default device mapping now uses Linux auto-discovery: `auto:camera1`, `auto:camera2`, and `auto:hdmi`
+- Explicit locators still work if you want to override discovery with `/dev/videoN`, `by-id:...`, or `usb:...`
+- Compatibility routes are available at `/health`, `/stream/status`, `/capture/source`, and `/capture/devices`
+
+### Multi-camera endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/health` | Overall health plus per-device state, frame availability, and last frame age |
+| `GET` | `/devices` | Device snapshots with state, fps, reconnect count, frame age, locator, and last error |
+| `GET` | `/stream-status` | Aggregate service status with startup report |
+| `WS` | `/ws/status` | Live status updates for frontend/device monitoring and snapshot refresh decisions |
+| `GET` | `/snapshot/{device_id}` | Latest cached JPEG frame for one source, or a placeholder image if no frame is ready yet |
+
+### Multi-camera environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `MULTI_CAMERA_DEVICES` | `cam1|camera|by-id:/dev/v4l/by-id/cam1;cam2|camera|by-id:/dev/v4l/by-id/cam2;hdmi|hdmi|usb:hdmi` | Explicit device locators (`/dev/videoN`, `by-id:...`, or `usb:...`) |
+| `MULTI_CAMERA_HOST` | `0.0.0.0` | Bind host |
+| `MULTI_CAMERA_PORT` | `8090` | Bind port |
+| `MULTI_CAMERA_LOG_LEVEL` | `INFO` | Structured JSON logging level |
+| `MULTI_CAMERA_WIDTH` | `1280` | Requested capture width |
+| `MULTI_CAMERA_HEIGHT` | `720` | Requested capture height |
+| `MULTI_CAMERA_FPS` | `30.0` | Requested capture fps |
+| `MULTI_CAMERA_JPEG_QUALITY` | `85` | Snapshot JPEG quality |
+| `MULTI_CAMERA_FOURCC` | `MJPG` | Preferred V4L2 codec |
+| `MULTI_CAMERA_RECONNECT_SECONDS` | `2.0` | Delay before reconnect attempts |
+| `MULTI_CAMERA_STARTUP_TIMEOUT_SECONDS` | `8.0` | Deterministic startup / first-frame timeout |
+| `MULTI_CAMERA_OPEN_RETRIES` | `4` | Retry attempts when opening a device |
+| `MULTI_CAMERA_OPEN_RETRY_DELAY_SECONDS` | `0.6` | Delay between open retries |
+| `MULTI_CAMERA_STALE_FRAME_SECONDS` | `5.0` | Marks a stream degraded/reconnect when frames stop updating |
+| `MULTI_CAMERA_MONITOR_INTERVAL_SECONDS` | `2.0` | Background monitor cadence |
+
+### Startup and degradation behavior
+
+- The API does not start serving until the registry validates all configured locators and starts all capture threads.
+- Required devices that cannot be resolved or initialized are reported as `FAILED` in `/health` and `/stream-status`.
+- Optional devices can fail without blocking startup; they remain `DEGRADED` or `FAILED` until they recover.
+- A single device failure does not terminate the whole server.
+- A background monitor periodically re-resolves device locators, detects stale or disconnected sources, and forces a safe release/reopen cycle when needed.
+
 ### 5. Run the tests
 
 ```bash

@@ -16,7 +16,7 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
@@ -2415,6 +2415,63 @@ def _frontend_file_response(filename: str, media_type: Optional[str] = None) -> 
         raise HTTPException(status_code=404, detail=f"Frontend asset {filename!r} not found")
     return FileResponse(str(path), media_type=media_type, headers=_frontend_no_cache_headers())
 
+
+def _legacy_status_payload() -> dict:
+    config = get_config()
+    capture_status: dict[str, Any] = {}
+    screen_capture = _screen_capture
+    if screen_capture is not None:
+        try:
+            capture_status = screen_capture.capture_source_status()
+        except Exception as exc:
+            logger.warning("Failed to build websocket capture status snapshot: %s", exc)
+            capture_status = {}
+    raw_devices = capture_status.get("video_device_details") or []
+    devices = []
+    for index, item in enumerate(raw_devices, start=1):
+        device_path = item.get("path") or item.get("device") or item.get("device_path")
+        readable = bool(item.get("readable", item.get("exists", True)))
+        state = "AVAILABLE" if readable else "FAILED"
+        devices.append(
+            {
+                "device_id": item.get("device_id") or item.get("id") or f"device{index}",
+                "kind": item.get("kind") or item.get("label") or "video",
+                "locator": device_path,
+                "required": False,
+                "device_path": device_path,
+                "state": state,
+                "is_open": readable,
+                "first_frame_received": readable,
+                "frame_available": readable,
+                "frames_captured": 0,
+                "dropped_frames": 0,
+                "reconnect_attempts": 0,
+                "fps": 0.0,
+                "startup_duration_ms": None,
+                "last_frame_at": None,
+                "last_frame_age_seconds": None,
+                "last_error": item.get("error"),
+                "last_warning": item.get("warning"),
+                "initialization_complete": True,
+            }
+        )
+
+    available_devices = [item for item in devices if item["state"] == "AVAILABLE"]
+    return {
+        "status": "ok",
+        "service": "vertex_live_dab_agent",
+        "mock_mode": config.dab_mock_mode,
+        "run_count": len(_runs),
+        "active_run_count": len([run for run in _runs.values() if run.status == RunStatus.RUNNING]),
+        "configured_source": capture_status.get("configured_source"),
+        "selected_video_device": capture_status.get("selected_video_device"),
+        "preferred_video_kind": capture_status.get("preferred_video_kind"),
+        "device_count": len(devices),
+        "available_device_count": len(available_devices),
+        "failed_required_count": 0,
+        "devices": devices,
+    }
+
 @app.get("/", include_in_schema=False)
 async def serve_frontend() -> FileResponse:
     """Serve the bundled browser demo."""
@@ -2457,6 +2514,29 @@ async def health() -> HealthResponse:
     """Health check endpoint."""
     config = get_config()
     return HealthResponse(status="ok", mock_mode=config.dab_mock_mode)
+
+
+@app.get("/stream-status")
+async def stream_status() -> dict:
+    """Compatibility status endpoint for preview clients."""
+    return _legacy_status_payload()
+
+
+@app.get("/stream/compat-status")
+async def stream_status_alias() -> dict:
+    """Compatibility alias for preview websocket/status clients."""
+    return _legacy_status_payload()
+
+
+@app.websocket("/ws/status")
+async def ws_status(websocket: WebSocket) -> None:
+    await websocket.accept()
+    try:
+        while True:
+            await websocket.send_json(_legacy_status_payload())
+            await asyncio.sleep(1.0)
+    except WebSocketDisconnect:
+        return
 
 
 @app.get("/config", response_model=ConfigSummaryResponse)

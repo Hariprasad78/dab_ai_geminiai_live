@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ page_title }}</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: Inter, system-ui, sans-serif;
+      background: #08111f;
+      color: #e2e8f0;
+    }
+    body {
+      margin: 0;
+      background: linear-gradient(180deg, #08111f 0%, #0f172a 100%);
+      min-height: 100vh;
+    }
+    main {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 2rem;
+    }
+    .sub {
+      color: #94a3b8;
+      margin-bottom: 20px;
+    }
+    .summary {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 18px;
+    }
+    .panel {
+      background: rgba(15, 23, 42, 0.85);
+      border: 1px solid #1e293b;
+      border-radius: 16px;
+      padding: 16px;
+      box-shadow: 0 12px 40px rgba(2, 6, 23, 0.35);
+    }
+    .summary .panel {
+      min-width: 150px;
+      flex: 1 1 160px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+      gap: 16px;
+    }
+    .device-header {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: flex-start;
+      margin-bottom: 10px;
+    }
+    .device-title {
+      font-size: 1.1rem;
+      font-weight: 700;
+    }
+    .device-meta {
+      font-size: 0.84rem;
+      color: #94a3b8;
+      line-height: 1.4;
+    }
+    .badge {
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .badge.available { background: #14532d; color: #bbf7d0; }
+    .badge.degraded, .badge.starting { background: #78350f; color: #fde68a; }
+    .badge.failed, .badge.stopped { background: #7f1d1d; color: #fecaca; }
+    .video-shell {
+      position: relative;
+      border-radius: 14px;
+      overflow: hidden;
+      border: 1px solid #1e293b;
+      background: #020617;
+      aspect-ratio: 16 / 9;
+      margin-bottom: 12px;
+    }
+    video {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      background: #020617;
+    }
+    .transport {
+      position: absolute;
+      left: 10px;
+      bottom: 10px;
+      background: rgba(15, 23, 42, 0.85);
+      border: 1px solid #334155;
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 0.75rem;
+    }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px 12px;
+      font-size: 0.85rem;
+      color: #cbd5e1;
+    }
+    .stats strong {
+      color: #f8fafc;
+    }
+    .error {
+      margin-top: 8px;
+      color: #fca5a5;
+      min-height: 1.2em;
+      font-size: 0.85rem;
+    }
+  </style>
+</head>
+<body data-status-interval-ms="{{ status_interval_ms }}">
+  <main>
+    <h1>WebRTC Camera Preview</h1>
+    <div class="sub">FastAPI signaling, aiortc browser transport, one capture worker per Linux video device.</div>
+    <section class="summary" id="summary">
+      <div class="panel">Loading service status…</div>
+    </section>
+    <section class="grid" id="devices"></section>
+  </main>
+
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

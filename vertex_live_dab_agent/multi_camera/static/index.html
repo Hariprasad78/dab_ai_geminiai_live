@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Multi Camera Preview</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; padding: 1.25rem; }
+    h1 { margin: 0 0 0.5rem; }
+    .sub { color: #94a3b8; margin-bottom: 1rem; }
+    .summary { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
+    .card { background: #111827; border: 1px solid #334155; border-radius: 14px; padding: 1rem; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1rem; }
+    .status { font-size: 0.85rem; color: #93c5fd; margin-bottom: 0.5rem; }
+    .pill { display: inline-block; padding: 0.2rem 0.55rem; border-radius: 999px; font-size: 0.75rem; font-weight: 700; }
+    .available { background: #14532d; color: #bbf7d0; }
+    .degraded { background: #78350f; color: #fde68a; }
+    .failed, .stopped { background: #7f1d1d; color: #fecaca; }
+    img { width: 100%; background: #020617; border: 1px solid #1e293b; border-radius: 10px; aspect-ratio: 16 / 9; object-fit: contain; }
+    .meta { font-size: 0.82rem; color: #cbd5e1; line-height: 1.5; margin-top: 0.75rem; }
+    .error { color: #fca5a5; }
+  </style>
+</head>
+<body>
+  <h1>Multi Camera Preview</h1>
+  <div class="sub">FastAPI + background capture threads + deterministic startup</div>
+  <div class="summary card" id="summary">Loading service status...</div>
+  <div class="grid" id="devices"></div>
+
+  <script>
+    const summaryEl = document.getElementById('summary');
+    const devicesEl = document.getElementById('devices');
+    let deviceState = new Map();
+    let snapshotKeys = new Map();
+
+    function statusClass(status) {
+      const value = String(status || 'unknown').toLowerCase();
+      if (value === 'available') return 'available';
+      if (value === 'failed') return 'failed';
+      if (value === 'stopped') return 'stopped';
+      return 'degraded';
+    }
+
+    function renderSummary(payload) {
+      summaryEl.innerHTML = `
+        <div><strong>Overall:</strong> ${payload.status}</div>
+        <div><strong>Devices:</strong> ${payload.device_count}</div>
+        <div><strong>Available:</strong> ${payload.available_device_count}</div>
+        <div><strong>Required Available:</strong> ${payload.available_required_count}/${payload.required_device_count}</div>
+      `;
+    }
+
+    function formatAge(value) {
+      if (value === null || value === undefined) return 'n/a';
+      const seconds = Number(value);
+      if (!Number.isFinite(seconds)) return 'n/a';
+      if (seconds < 1) return `${Math.round(seconds * 1000)} ms`;
+      if (seconds < 60) return `${seconds.toFixed(1)} s`;
+      return `${(seconds / 60).toFixed(1)} min`;
+    }
+
+    function snapshotKey(device) {
+      return [
+        device.last_frame_at || 'no-frame',
+        device.last_state_change_at || 'no-state-change',
+        device.frame_available ? 'frame' : 'placeholder',
+      ].join('|');
+    }
+
+    function renderDevices(devices) {
+      deviceState = new Map(devices.map(device => [device.device_id, device]));
+      devicesEl.innerHTML = devices.map(device => `
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;gap:1rem;align-items:center;">
+            <div>
+              <div><strong>${device.device_id}</strong></div>
+              <div class="status">${device.kind} · ${device.device_path} · locator=${device.locator}</div>
+            </div>
+            <span class="pill ${statusClass(device.state)}">${device.state}</span>
+          </div>
+          <img id="img-${device.device_id}" alt="${device.device_id} snapshot" src="/snapshot/${encodeURIComponent(device.device_id)}?ts=${Date.now()}" />
+          <div class="meta">
+            <div>Open: ${device.is_open}</div>
+            <div>First frame: ${device.first_frame_received}</div>
+            <div>Cached frame: ${device.frame_available}</div>
+            <div>FPS: ${Number(device.fps || 0).toFixed(2)}</div>
+            <div>Reconnects: ${device.reconnect_attempts}</div>
+            <div>Last frame: ${device.last_frame_at || 'n/a'}</div>
+            <div>Frame age: ${formatAge(device.last_frame_age_seconds)}</div>
+            <div>Last state change: ${device.last_state_change_at || 'n/a'}</div>
+            <div class="${device.last_error ? 'error' : ''}">Error: ${device.last_error || 'none'}</div>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    async function loadInitial() {
+      const response = await fetch('/stream-status', { cache: 'no-store' });
+      const payload = await response.json();
+      renderSummary(payload);
+      renderDevices(payload.devices || []);
+      refreshSnapshots(payload.devices || []);
+    }
+
+    function refreshSnapshots(devices = Array.from(deviceState.values())) {
+      for (const device of devices) {
+        const deviceId = device.device_id;
+        const image = document.getElementById(`img-${deviceId}`);
+        if (!image) continue;
+        const nextKey = snapshotKey(device);
+        if (snapshotKeys.get(deviceId) === nextKey) continue;
+        snapshotKeys.set(deviceId, nextKey);
+        image.src = `/snapshot/${encodeURIComponent(deviceId)}?ts=${encodeURIComponent(nextKey)}`;
+      }
+    }
+
+    function connectStatusSocket() {
+      const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
+      const socket = new WebSocket(`${protocol}://${location.host}/ws/status`);
+      socket.onmessage = event => {
+        const payload = JSON.parse(event.data);
+        renderSummary(payload);
+        const devices = payload.devices || [];
+        renderDevices(devices);
+        refreshSnapshots(devices);
+      };
+      socket.onclose = () => setTimeout(connectStatusSocket, 1500);
+    }
+
+    loadInitial().catch(error => {
+      summaryEl.textContent = `Failed to load: ${error.message}`;
+    });
+    connectStatusSocket();
+  </script>
+</body>
+</html>

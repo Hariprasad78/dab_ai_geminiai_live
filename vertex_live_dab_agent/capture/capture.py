@@ -75,7 +75,7 @@ class ScreenCapture:
         self._next_dab_capture_ts = 0.0
         self._warned_dab_cooldown = False
         self._warned_no_hdmi = False
-        self._hdmi = hdmi_session or self._init_hdmi_session()
+        self._hdmi = hdmi_session
 
     def _normalize_source(self, source: str) -> str:
         s = (source or "auto").strip().lower()
@@ -184,6 +184,10 @@ class ScreenCapture:
         persist: bool = True,
     ) -> Dict[str, Any]:
         """Set capture source/device preference and re-open capture session."""
+        previous_selected_device = self._selected_video_device
+        previous_source = self._image_source
+        previous_kind = self._preferred_video_kind
+
         if source is not None:
             raw = str(source).strip().lower()
             allowed = {
@@ -219,10 +223,24 @@ class ScreenCapture:
                 raise ValueError("device must be an existing /dev/video* path")
             self._selected_video_device = dev or None
 
+        selection_changed = (
+            previous_selected_device != self._selected_video_device
+            or previous_source != self._image_source
+            or previous_kind != self._preferred_video_kind
+        )
+
         self.close()
         self._next_hdmi_probe_ts = 0.0
         self._warned_no_hdmi = False
         self._hdmi = self._init_hdmi_session()
+
+        if selection_changed:
+            logger.info(
+                "Capture selection changed: source=%s preferred_kind=%s device=%s",
+                self._image_source,
+                self._preferred_video_kind,
+                self._selected_video_device or "auto",
+            )
 
         if persist:
             self._save_capture_preference()
@@ -464,5 +482,6 @@ class ScreenCapture:
     def close(self) -> None:
         """Release optional capture resources."""
         if self._hdmi is not None:
+            logger.info("Closing active HDMI/camera capture session: device=%s", self._hdmi.device)
             self._hdmi.close()
             self._hdmi = None
