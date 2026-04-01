@@ -21,6 +21,9 @@ def _import_cv2() -> Any:
     try:
         # Reduce noisy OpenCV backend warnings in production logs.
         os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
+        # Best-effort reduction of FFmpeg/OpenCV backend verbosity.
+        os.environ.setdefault("OPENCV_FFMPEG_LOGLEVEL", "8")
+        os.environ.setdefault("OPENCV_VIDEOIO_DEBUG", "0")
         import cv2  # type: ignore
 
         try:

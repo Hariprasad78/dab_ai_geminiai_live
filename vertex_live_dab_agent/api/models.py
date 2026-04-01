@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 class StartRunRequest(BaseModel):
     goal: str
     app_id: Optional[str] = None
+    device_id: Optional[str] = None
     content: Optional[str] = None
     device_profile_id: Optional[str] = None
     policy_mode: Optional[str] = None
@@ -160,6 +161,7 @@ class TTSSpeakResponse(BaseModel):
 class ManualActionRequest(BaseModel):
     action: str
     params: Optional[Dict[str, Any]] = None
+    device_id: Optional[str] = None
 
 
 class ManualActionResponse(BaseModel):
@@ -196,6 +198,7 @@ class TaskMacroResponse(BaseModel):
 
 class PlannerDebugRequest(BaseModel):
     goal: str
+    device_id: Optional[str] = None
     ocr_text: Optional[str] = None
     screenshot_b64: Optional[str] = None
     use_live_capture: bool = False

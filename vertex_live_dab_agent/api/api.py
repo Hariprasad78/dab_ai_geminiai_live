@@ -13,6 +13,7 @@ import uuid
 import json
 import sqlite3
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -21,6 +22,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
+from vertex_live_dab_agent.android_timezone import (
+    get_timezone_via_adb,
+    is_adb_device_online,
+    list_timezones_via_adb,
+    resolve_timezone_from_supported,
+    set_timezone_via_adb,
+)
 from vertex_live_dab_agent.api.models import (
     AITranscriptResponse,
     DABTranscriptResponse,
@@ -61,12 +69,18 @@ from vertex_live_dab_agent.capture.hdmi_audio import (
     resolve_audio_input,
 )
 from vertex_live_dab_agent.config import get_config
-from vertex_live_dab_agent.dab.client import DABClientBase, create_dab_client
+from vertex_live_dab_agent.dab.client import DABClientBase, DABError, create_dab_client
 from vertex_live_dab_agent.dab.topics import KEY_MAP
 from vertex_live_dab_agent.orchestrator.orchestrator import Orchestrator
 from vertex_live_dab_agent.orchestrator.run_state import RunState, RunStatus
 from vertex_live_dab_agent.planner.planner import Planner
 from vertex_live_dab_agent.planner.vertex_client import VertexPlannerClient
+from vertex_live_dab_agent.system_ops.routing import (
+    has_android_adb_fallback,
+    operation_supported_by_dab,
+    resolve_execution_method,
+)
+from vertex_live_dab_agent.system_ops.device_detection import get_device_platform_info
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +135,15 @@ _yts_live_visual_cache: Dict[str, Dict[str, Any]] = {}
 _yts_live_db_conn: Optional[sqlite3.Connection] = None
 _yts_live_db_path: Optional[Path] = None
 _yts_live_db_lock = threading.Lock()
+_yts_discover_cache: List[Dict[str, str]] = []
+_yts_discover_cache_at: float = 0.0
+_selected_device_id_override: Optional[str] = None
+_discovered_devices_cache: List[Dict[str, Any]] = []
+_discovered_devices_cache_at: float = 0.0
+_discovery_warning_cache: Optional[str] = None
+_discover_devices_in_flight: Optional[asyncio.Task] = None
+_device_capabilities_cache: Dict[str, Any] = {}
+_device_capabilities_cache_at: float = 0.0
 
 _APP_ID_ALIASES: Dict[str, str] = {
     "com.netflix.ninja": "netflix",
@@ -136,6 +159,332 @@ _APP_ID_ALIASES: Dict[str, str] = {
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _device_context_path() -> Path:
+    base_dir = os.getenv("ARTIFACTS_BASE_DIR")
+    root = Path(base_dir) if base_dir else Path("/home/harry/youtube/ai_tool/artifacts")
+    root.mkdir(parents=True, exist_ok=True)
+    return root / "device_context.json"
+
+
+def _device_capabilities_cache_path() -> Path:
+    base_dir = os.getenv("ARTIFACTS_BASE_DIR")
+    root = Path(base_dir) if base_dir else Path("/home/harry/youtube/ai_tool/artifacts")
+    root.mkdir(parents=True, exist_ok=True)
+    return root / "device_capabilities_cache.json"
+
+
+def _load_device_capabilities_cache() -> Dict[str, Any]:
+    path = _device_capabilities_cache_path()
+    if not path.exists():
+        return {}
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        return loaded if isinstance(loaded, dict) else {}
+    except Exception as exc:
+        logger.warning("Failed to load device capabilities cache from %s: %s", path, exc)
+        return {}
+
+
+def _save_device_capabilities_cache(payload: Dict[str, Any]) -> None:
+    try:
+        path = _device_capabilities_cache_path()
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as exc:
+        logger.warning("Failed to save device capabilities cache: %s", exc)
+
+
+def _is_valid_discovered_device_id(value: Any) -> bool:
+    v = str(value or "").strip()
+    if not v:
+        return False
+    if v.endswith(":") or v.endswith("/"):
+        return False
+    if v.lower() in {"adb", "adb:", "device", "unknown", "none", "null", "n/a", "na"}:
+        return False
+    return True
+
+
+def _load_device_context_state() -> Dict[str, Any]:
+    state = {
+        "selected_device_id": str(get_config().dab_device_id or "").strip(),
+    }
+    path = _device_context_path()
+    if path.exists():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                selected = str(loaded.get("selected_device_id") or "").strip()
+                if _is_valid_discovered_device_id(selected):
+                    state["selected_device_id"] = selected
+        except Exception as exc:
+            logger.warning("Failed to load device context from %s: %s", path, exc)
+    return state
+
+
+def _save_device_context_state(state: Dict[str, Any]) -> None:
+    try:
+        path = _device_context_path()
+        path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as exc:
+        logger.warning("Failed to persist device context: %s", exc)
+
+
+def _resolve_selected_device_id(device_id: Optional[str] = None) -> str:
+    explicit = str(device_id or "").strip()
+    if _is_valid_discovered_device_id(explicit):
+        return explicit
+    if _is_valid_discovered_device_id(_selected_device_id_override):
+        return str(_selected_device_id_override or "").strip()
+    loaded = _load_device_context_state()
+    selected = str(loaded.get("selected_device_id") or "").strip()
+    if _is_valid_discovered_device_id(selected):
+        return selected
+    return str(get_config().dab_device_id or "").strip()
+
+
+async def _apply_selected_device_context(device_id: Optional[str], persist: bool = True) -> Dict[str, Any]:
+    global _selected_device_id_override, _dab_client, _screen_capture
+
+    resolved = _resolve_selected_device_id(device_id)
+    _selected_device_id_override = resolved or None
+
+    config = get_config()
+    if resolved:
+        config.dab_device_id = resolved
+
+    old_dab = _dab_client
+    _dab_client = None
+
+    old_capture = _screen_capture
+    _screen_capture = None
+
+    if old_capture is not None:
+        try:
+            old_capture.close()
+        except Exception:
+            pass
+
+    if old_dab is not None:
+        try:
+            await old_dab.close()
+        except Exception:
+            pass
+
+    state = {"selected_device_id": resolved}
+    if persist:
+        _save_device_context_state(state)
+    return state
+
+
+def _normalize_discovered_devices(payload: Any) -> List[Dict[str, Any]]:
+    devices: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add(device_id: Any, label: Optional[str] = None, raw: Optional[Dict[str, Any]] = None) -> None:
+        did = str(device_id or "").strip()
+        if not _is_valid_discovered_device_id(did) or did in seen:
+            return
+        seen.add(did)
+        devices.append(
+            {
+                "device_id": did,
+                "label": str(label or did).strip() or did,
+                "raw": raw or {"deviceId": did},
+            }
+        )
+
+    if isinstance(payload, dict):
+        candidates = payload.get("devices")
+        if isinstance(candidates, list):
+            for item in candidates:
+                if isinstance(item, dict):
+                    add(item.get("deviceId") or item.get("device_id") or item.get("id"), item.get("name") or item.get("label"), item)
+                else:
+                    add(item)
+        elif _is_valid_discovered_device_id(payload.get("deviceId") or payload.get("device_id") or payload.get("id")):
+            add(payload.get("deviceId") or payload.get("device_id") or payload.get("id"), payload.get("name") or payload.get("label"), payload)
+    elif isinstance(payload, list):
+        for item in payload:
+            if isinstance(item, dict):
+                add(item.get("deviceId") or item.get("device_id") or item.get("id"), item.get("name") or item.get("label"), item)
+            else:
+                add(item)
+
+    if not devices:
+        configured = str(get_config().dab_device_id or "").strip()
+        if _is_valid_discovered_device_id(configured):
+            add(configured, "Configured device", {"deviceId": configured})
+    return devices
+
+
+async def _discover_dab_devices(max_age_seconds: float = 30.0) -> tuple[List[Dict[str, Any]], Optional[str]]:
+    global _discovered_devices_cache, _discovered_devices_cache_at, _discovery_warning_cache, _discover_devices_in_flight
+
+    now = time.monotonic()
+    if _discovered_devices_cache and (now - _discovered_devices_cache_at) <= max(0.0, float(max_age_seconds)):
+        return list(_discovered_devices_cache), _discovery_warning_cache
+
+    if _discover_devices_in_flight is not None and not _discover_devices_in_flight.done():
+        return await _discover_devices_in_flight
+
+    async def _run_discovery() -> tuple[List[Dict[str, Any]], Optional[str]]:
+        global _discovered_devices_cache, _discovered_devices_cache_at, _discovery_warning_cache
+        try:
+            resp = await get_dab_client().discover_devices()
+            if not resp.success:
+                raise HTTPException(status_code=502, detail=resp.data.get("error") or "DAB discovery failed")
+            devices = _normalize_discovered_devices(resp.data)
+            _discovered_devices_cache = list(devices)
+            _discovered_devices_cache_at = time.monotonic()
+            _discovery_warning_cache = None
+            return devices, None
+        except Exception as exc:
+            message = str(getattr(exc, "detail", "") or exc).strip() or "DAB discovery failed"
+            logger.warning("DAB discovery degraded to fallback devices: %s", message)
+            fallback = _normalize_discovered_devices(_discovered_devices_cache)
+            if fallback:
+                _discovered_devices_cache = list(fallback)
+                _discovered_devices_cache_at = time.monotonic()
+            _discovery_warning_cache = message
+            return fallback, message
+
+    _discover_devices_in_flight = asyncio.create_task(_run_discovery())
+    try:
+        return await _discover_devices_in_flight
+    finally:
+        if _discover_devices_in_flight is not None and _discover_devices_in_flight.done():
+            _discover_devices_in_flight = None
+
+
+async def _ensure_selected_device_context(device_id: Optional[str], persist: bool = False) -> str:
+    explicit = str(device_id or "").strip()
+    if explicit:
+        current = _resolve_selected_device_id()
+        if explicit != current:
+            state = await _apply_selected_device_context(explicit, persist=persist)
+            return str(state.get("selected_device_id") or "").strip()
+        if persist:
+            _save_device_context_state({"selected_device_id": explicit})
+        return explicit
+    return _resolve_selected_device_id()
+
+
+async def _collect_selected_device_capabilities(device_id: str) -> Dict[str, Any]:
+    result: Dict[str, Any] = {
+        "device_id": str(device_id or "").strip(),
+        "captured_at": _utc_now_iso(),
+        "operations": [],
+        "keys": [],
+        "settings": [],
+        "settings_schema": {},
+        "counts": {"operations": 0, "keys": 0, "settings": 0},
+        "errors": [],
+    }
+
+    dab = get_dab_client()
+
+    try:
+        ops_resp = await dab.list_operations()
+        ops = (ops_resp.data or {}).get("operations", []) if isinstance(getattr(ops_resp, "data", None), dict) else []
+        if isinstance(ops, list):
+            result["operations"] = [str(item).strip() for item in ops if str(item).strip()]
+        elif not bool(getattr(ops_resp, "success", False)):
+            result["errors"].append(str((ops_resp.data or {}).get("error") or "operations/list failed"))
+    except Exception as exc:
+        result["errors"].append(f"operations/list exception: {exc}")
+
+    if any("input/key/list" in op.lower() for op in result["operations"]):
+        try:
+            keys_resp = await dab.list_keys()
+            keys = (keys_resp.data or {}).get("keys", []) if isinstance(getattr(keys_resp, "data", None), dict) else []
+            if isinstance(keys, list):
+                result["keys"] = [str(item).strip() for item in keys if str(item).strip()]
+            elif not bool(getattr(keys_resp, "success", False)):
+                result["errors"].append(str((keys_resp.data or {}).get("error") or "input/key/list failed"))
+        except Exception as exc:
+            result["errors"].append(f"input/key/list exception: {exc}")
+
+    if any("system/settings/list" in op.lower() for op in result["operations"]):
+        try:
+            settings_resp = await dab.list_settings()
+            settings = (settings_resp.data or {}).get("settings", []) if isinstance(getattr(settings_resp, "data", None), dict) else []
+            if isinstance(settings, list):
+                cleaned = [item for item in settings if isinstance(item, dict)]
+                result["settings"] = cleaned
+                result["settings_schema"] = {
+                    str(item.get("key") or "").strip(): item
+                    for item in cleaned
+                    if str(item.get("key") or "").strip()
+                }
+            if not bool(getattr(settings_resp, "success", False)):
+                result["errors"].append(str((settings_resp.data or {}).get("error") or "system/settings/list failed"))
+            warning = str(((settings_resp.data or {}).get("warning") if isinstance(getattr(settings_resp, "data", None), dict) else "") or "").strip()
+            if warning:
+                result["errors"].append(warning)
+        except Exception as exc:
+            result["errors"].append(f"system/settings/list exception: {exc}")
+
+    result["counts"] = {
+        "operations": len(result.get("operations") or []),
+        "keys": len(result.get("keys") or []),
+        "settings": len(result.get("settings") or []),
+    }
+    return result
+
+
+async def _refresh_discovered_device_capabilities_cache(
+    *,
+    force: bool = False,
+    max_age_seconds: float = 120.0,
+) -> Dict[str, Any]:
+    global _device_capabilities_cache, _device_capabilities_cache_at
+
+    now = time.monotonic()
+    if (not force) and _device_capabilities_cache and (now - _device_capabilities_cache_at) <= max(0.0, float(max_age_seconds)):
+        return dict(_device_capabilities_cache)
+
+    devices, warning = await _discover_dab_devices(max_age_seconds=0.0 if force else 30.0)
+    selected_before = _resolve_selected_device_id()
+
+    by_device: Dict[str, Any] = {}
+    for item in devices:
+        device_id = str(item.get("device_id") or "").strip()
+        if not _is_valid_discovered_device_id(device_id):
+            continue
+        try:
+            await _apply_selected_device_context(device_id, persist=False)
+            by_device[device_id] = await _collect_selected_device_capabilities(device_id)
+        except Exception as exc:
+            by_device[device_id] = {
+                "device_id": device_id,
+                "captured_at": _utc_now_iso(),
+                "operations": [],
+                "keys": [],
+                "settings": [],
+                "settings_schema": {},
+                "counts": {"operations": 0, "keys": 0, "settings": 0},
+                "errors": [str(exc)],
+            }
+
+    if _is_valid_discovered_device_id(selected_before):
+        try:
+            await _apply_selected_device_context(selected_before, persist=False)
+        except Exception:
+            pass
+
+    payload: Dict[str, Any] = {
+        "captured_at": _utc_now_iso(),
+        "warning": warning,
+        "devices": by_device,
+        "device_ids": sorted(by_device.keys()),
+        "cache_path": str(_device_capabilities_cache_path()),
+    }
+    _device_capabilities_cache = payload
+    _device_capabilities_cache_at = time.monotonic()
+    _save_device_capabilities_cache(payload)
+    return dict(payload)
 
 
 def _get_yts_live_db_path() -> Path:
@@ -771,6 +1120,130 @@ def _build_yts_command(request: "YtsCommandRequest") -> List[str]:
     return cmd
 
 
+def _parse_yts_discover_output(stdout_text: str, stderr_text: str = "") -> List[Dict[str, str]]:
+    text = "\n".join([str(stdout_text or ""), str(stderr_text or "")]).strip()
+    entries: List[Dict[str, str]] = []
+    seen: set[str] = set()
+
+    pattern = re.compile(
+        r"^\s*\((?P<short>[A-Za-z0-9]+)\)\s+(?P<label>.*?)\s+\((?P<kind>adb|dab)\s*:\s*(?P<value>[^)]+)\)\s*$",
+        flags=re.IGNORECASE,
+    )
+
+    for raw_line in text.splitlines():
+        line = str(raw_line or "").strip()
+        if not line:
+            continue
+        match = pattern.match(line)
+        if not match:
+            continue
+
+        short_id = str(match.group("short") or "").strip()
+        label = str(match.group("label") or "").strip()
+        kind = str(match.group("kind") or "").strip().lower()
+        value = str(match.group("value") or "").strip()
+        if not short_id:
+            continue
+
+        key = f"{short_id}:{kind}:{value}".lower()
+        if key in seen:
+            continue
+        seen.add(key)
+
+        item: Dict[str, str] = {
+            "short_id": short_id,
+            "label": label,
+        }
+        if kind == "adb":
+            item["adb"] = value
+        elif kind == "dab":
+            item["dab"] = value
+        entries.append(item)
+
+    return entries
+
+
+async def _get_yts_discovered_devices(max_age_seconds: float = 30.0) -> List[Dict[str, str]]:
+    global _yts_discover_cache, _yts_discover_cache_at
+
+    now = time.monotonic()
+    if _yts_discover_cache and (now - _yts_discover_cache_at) <= max(0.0, float(max_age_seconds)):
+        return list(_yts_discover_cache)
+
+    discover_res = await asyncio.to_thread(_run_yts_command, ["yts", "discover", "--list"])
+    if discover_res.get("returncode") != 0:
+        raise HTTPException(status_code=500, detail=f"YTS discover failed: {discover_res.get('stderr')}")
+
+    parsed = _parse_yts_discover_output(
+        str(discover_res.get("stdout") or ""),
+        str(discover_res.get("stderr") or ""),
+    )
+    _yts_discover_cache = list(parsed)
+    _yts_discover_cache_at = time.monotonic()
+    return parsed
+
+
+def _is_ip_port(value: str) -> bool:
+    v = str(value or "").strip()
+    if not v:
+        return False
+    if ":" not in v:
+        return False
+    host, _, port = v.rpartition(":")
+    return bool(host and port.isdigit())
+
+
+async def _resolve_yts_runner_device_id(device_id: Optional[str]) -> str:
+    selected_device_id = await _ensure_selected_device_context(device_id, persist=bool(device_id))
+    candidate = str(selected_device_id or "").strip()
+    if not candidate:
+        raise HTTPException(status_code=400, detail="No selected device available")
+
+    lower = candidate.lower()
+    if lower.startswith("dab:"):
+        return candidate
+
+    if lower.startswith("adb:"):
+        adb_tail = candidate[4:].strip()
+        if _is_ip_port(adb_tail):
+            return f"adb:{adb_tail}"
+
+        discovered = await _get_yts_discovered_devices()
+        for item in discovered:
+            adb_val = str(item.get("adb") or "").strip()
+            if not adb_val:
+                continue
+            if adb_val == adb_tail and _is_ip_port(adb_val):
+                return f"adb:{adb_val}"
+        return candidate
+
+    if _is_ip_port(candidate):
+        return f"adb:{candidate}"
+
+    discovered = await _get_yts_discovered_devices()
+    token = lower
+    for item in discovered:
+        short_id = str(item.get("short_id") or "").strip()
+        adb_val = str(item.get("adb") or "").strip()
+        dab_val = str(item.get("dab") or "").strip()
+        label = str(item.get("label") or "").strip().lower()
+
+        if token and token in {short_id.lower(), adb_val.lower(), f"adb:{adb_val}".lower(), dab_val.lower(), f"dab:{dab_val}".lower()}:
+            if adb_val and _is_ip_port(adb_val):
+                return f"adb:{adb_val}"
+            if dab_val:
+                return f"dab:{dab_val}"
+            if short_id:
+                return short_id
+        if token and label and token in label:
+            if adb_val and _is_ip_port(adb_val):
+                return f"adb:{adb_val}"
+            if short_id:
+                return short_id
+
+    return candidate
+
+
 def _is_interactive_yts_prompt(text: str) -> bool:
     line = _strip_terminal_ansi(str(text or "")).strip().lower()
     if not line:
@@ -924,6 +1397,106 @@ def _normalize_setting_key(setting_key: str) -> str:
         "locale": "language",
     }
     return aliases.get(normalized, str(setting_key or "").strip())
+
+
+def _is_timezone_setting_key(setting_key: str) -> bool:
+    return str(setting_key or "").strip().lower() in {"timezone", "time zone", "time_zone", "time-zone"}
+
+
+def _is_dab_setting_operation_unavailable(resp: Any) -> bool:
+    status = int(getattr(resp, "status", 0) or 0)
+    if status in {404, 405, 501}:
+        return True
+    data = getattr(resp, "data", {}) or {}
+    error_text = ""
+    if isinstance(data, dict):
+        error_text = str(data.get("error") or data.get("message") or "")
+    lowered = error_text.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "not supported",
+            "unsupported",
+            "not implemented",
+            "unavailable",
+            "no shell command implementation",
+            "operation not found",
+        )
+    )
+
+
+async def _infer_android_and_adb_device_id(selected_device_id: str, device_info: Optional[Dict[str, Any]]) -> tuple[bool, Optional[str], str, bool, str, Optional[str]]:
+    info = device_info or {}
+    platform = str(
+        info.get("platform")
+        or info.get("osFamily")
+        or info.get("os")
+        or info.get("deviceType")
+        or ""
+    ).strip()
+    lower_platform = platform.lower()
+    selected = str(selected_device_id or "").strip()
+    selected_lower = selected.lower()
+
+    is_android = any(token in lower_platform for token in ("android", "android-tv", "google-tv")) or selected_lower.startswith("adb:")
+
+    adb_candidates = [
+        info.get("adbDeviceId"),
+        info.get("adb_device_id"),
+        info.get("adbSerial"),
+        info.get("adb_serial"),
+        info.get("adb"),
+        info.get("serial"),
+        selected,
+    ]
+    adb_device_id: Optional[str] = None
+    for candidate in adb_candidates:
+        value = str(candidate or "").strip()
+        if not value:
+            continue
+        if value.lower().startswith("adb:"):
+            tail = value[4:].strip()
+            if tail:
+                adb_device_id = tail
+                break
+            continue
+        if value.upper().startswith("DAB/"):
+            continue
+        adb_device_id = value
+        break
+
+    is_android_tv = any(token in lower_platform for token in ("android-tv", "google-tv", "television", "leanback"))
+    connection_type = "unknown"
+    detection_error: Optional[str] = None
+    if adb_device_id:
+        detected = await get_device_platform_info(adb_device_id)
+        connection_type = str(detected.get("connection_type") or "unknown")
+        detection_error = str(detected.get("error") or "").strip() or None
+        if bool(detected.get("reachable")):
+            is_android = bool(detected.get("is_android"))
+            is_android_tv = bool(detected.get("is_android_tv"))
+            if not platform:
+                platform = "android-tv" if is_android_tv else ("android" if is_android else "unknown")
+
+    return is_android, adb_device_id, platform or "unknown", is_android_tv, connection_type, detection_error
+
+
+def _resolve_api_setting_execution_method(
+    *,
+    supported_operations: List[str],
+    operation: str,
+    setting_key: str,
+    is_android: bool,
+    detection_error: Optional[str] = None,
+) -> tuple[str, str]:
+    decision = resolve_execution_method(
+        is_android=bool(is_android),
+        dab_supported=operation_supported_by_dab(supported_operations or [], operation),
+        adb_fallback_available=has_android_adb_fallback(operation, setting_key),
+    )
+    if decision.method == "unsupported" and detection_error and has_android_adb_fallback(operation, setting_key):
+        return decision.method, f"{decision.reason}; adb detection error: {detection_error}"
+    return decision.method, decision.reason
 
 
 def _extract_yts_setup_instruction(prompt_text: str, log_text: str) -> Optional[str]:
@@ -1809,9 +2382,11 @@ def _to_simple_action(action: str, params: Optional[dict] = None) -> str:
     if action_u == "OPEN_CONTENT":
         return "Trying to open the requested content"
     if action_u == "SET_SETTING":
-        return "Trying to change a system setting"
+        key = str((p or {}).get("key", "")).strip()
+        return f"Trying direct DAB write for {key or 'the setting'}"
     if action_u == "GET_SETTING":
-        return "Checking a system setting value"
+        key = str((p or {}).get("key", "")).strip()
+        return f"Trying direct DAB read for {key or 'the setting'}"
     if action_u == "FAILED":
         return "The test has stopped because recovery did not work"
     return f"Running action {action_u or 'UNKNOWN'}"
@@ -1887,7 +2462,11 @@ def _friendly_timeline(state: RunState) -> List[FriendlyStepItem]:
 
 
 def _build_final_diagnosis(state: RunState) -> FinalDiagnosis:
-    status = state.status.value
+    status_obj = getattr(state, "status", None)
+    status = getattr(status_obj, "value", str(status_obj or "UNKNOWN"))
+    goal_text = str(getattr(state, "goal", "") or "")
+    state_error = getattr(state, "error", None)
+    recent_actions = list(getattr(state, "last_actions", []) or [])
     launch_attempted = any(str(a.action).upper() == "LAUNCH_APP" for a in state.action_history)
     parse_fail_events = [
         e for e in state.ai_transcript
@@ -1899,6 +2478,21 @@ def _build_final_diagnosis(state: RunState) -> FinalDiagnosis:
     ok_guard_events = [e for e in state.ai_transcript if e.get("type") == "commit-guard-blocked"]
     ok_effect_events = [e for e in state.ai_transcript if e.get("type") == "ok-effect-analysis"]
     repeated_ok_actions = sum(1 for a in state.action_history if str(a.action).upper() in {"PRESS_OK", "PRESS_ENTER"})
+    strategy_transitions = [e for e in state.ai_transcript if e.get("type") == "strategy-transition"]
+    direct_unsupported_events = [e for e in state.ai_transcript if e.get("type") == "direct-op-unsupported"]
+    used_ui_fallback = any(str(e.get("to", "")).upper() == "UI_NAVIGATION_FALLBACK" for e in strategy_transitions)
+    settings_goal = any(k in goal_text.lower() for k in ("setting", "timezone", "time zone", "language"))
+    has_direct_setting_success = any(
+        str(a.action).upper() in {"GET_SETTING", "SET_SETTING"} and str(a.result).upper() == "PASS"
+        for a in state.action_history
+    )
+    has_ui_nav_attempt = any(
+        str(a.action).upper() in {"PRESS_UP", "PRESS_DOWN", "PRESS_LEFT", "PRESS_RIGHT", "PRESS_OK", "PRESS_BACK", "PRESS_HOME"}
+        for a in state.action_history
+    )
+    verification_confidence = (
+        "high" if has_direct_setting_success else ("medium" if has_ui_nav_attempt else "low")
+    )
 
     background_seen = False
     if str(state.current_screen or "").upper() == "BACKGROUND":
@@ -1939,15 +2533,67 @@ def _build_final_diagnosis(state: RunState) -> FinalDiagnosis:
             latest_stuck_ctx = latest_ctx
     seen_screen = str(
         latest_stuck_ctx.get("current_screenshot_summary")
-        or state.latest_ocr_text
-        or state.current_app_state
-        or state.current_screen
+        or getattr(state, "latest_ocr_text", None)
+        or getattr(state, "latest_visual_summary", None)
+        or getattr(state, "current_app_state", None)
+        or getattr(state, "current_screen", None)
         or "unknown screen"
     )
 
-    if (
-        "youtube" in (state.goal or "").lower()
-        and "stats for nerds" in (state.goal or "").lower()
+    if settings_goal and used_ui_fallback:
+        latest_unsupported = direct_unsupported_events[-1] if direct_unsupported_events else {}
+        unsupported_op = str(latest_unsupported.get("operation") or "system/settings/get")
+        unsupported_key = str(latest_unsupported.get("setting_key") or "target setting")
+        unsupported_reason = str(latest_unsupported.get("reason") or "backend does not expose this operation")
+
+        if status == "DONE" and has_direct_setting_success:
+            short = "Completed via direct and fallback checks"
+            detailed = (
+                f"Direct DAB access for {unsupported_key} had limitations, so the agent switched to UI navigation and still verified the result."
+            )
+            friendly = (
+                f"Direct DAB read for {unsupported_key} was not fully supported, so the agent switched to UI navigation through Settings and verified the outcome."
+            )
+            summary = "The run finished successfully using UI navigation fallback after direct DAB limits."
+        elif status == "DONE":
+            short = "Completed with limited verification"
+            detailed = (
+                f"Direct DAB operation {unsupported_op} for {unsupported_key} was unavailable. The agent continued through UI navigation, but final value confirmation remained limited."
+            )
+            friendly = (
+                f"Direct DAB read for {unsupported_key} is not supported on this device, so the agent switched to UI navigation through Settings. "
+                "It reached the expected path, but the final value could not be confirmed with high confidence."
+            )
+            summary = "The run completed with fallback, but final verification confidence is limited."
+        else:
+            short = "Direct settings access unsupported"
+            detailed = (
+                f"Direct DAB operation {unsupported_op} for {unsupported_key} failed repeatedly with backend limitation: {unsupported_reason}."
+            )
+            friendly = (
+                f"The device does not expose {unsupported_key} through the current DAB backend. "
+                "The agent switched to UI navigation fallback, but the goal was not fully completed."
+            )
+            summary = "Direct settings API was unsupported, fallback was used, and the run did not fully complete."
+
+        root = "Direct DAB settings operation unsupported on this device/build"
+        technical = unsupported_reason
+        screen_based_reason = f"Latest observed screen/state: {seen_screen}."
+        goal_based_reason = (
+            f"Goal was '{goal_text}'. The agent attempted direct DAB first, then switched to remote-style UI navigation fallback."
+        )
+        recovery_summary = (
+            f"Fallback strategy: UI_NAVIGATION_FALLBACK using input keys with a {int(get_config().session_timeout_seconds)}s timeout ceiling. "
+            f"Verification confidence: {verification_confidence}."
+        )
+        evidence = [
+            f"strategy_transitions={len(strategy_transitions)}",
+            f"direct_unsupported_events={len(direct_unsupported_events)}",
+            f"verification_confidence={verification_confidence}",
+        ]
+    elif (
+        "youtube" in goal_text.lower()
+        and "stats for nerds" in goal_text.lower()
         and status == "TIMEOUT"
         and repeated_ok_actions >= 3
     ):
@@ -1986,7 +2632,7 @@ def _build_final_diagnosis(state: RunState) -> FinalDiagnosis:
         technical = "App state remained BACKGROUND and repeated planner parse failures blocked recovery"
         summary = "App launch was not clearly verified, and repeated planner parsing failures prevented recovery."
         screen_based_reason = f"Latest observed screen/state: {seen_screen}."
-        goal_based_reason = f"Goal was '{state.goal}', but target app was not verified in foreground."
+        goal_based_reason = f"Goal was '{goal_text}', but target app was not verified in foreground."
         recovery_summary = (
             "The tool retried state checks and screenshot-based recovery, but each attempt stayed away from the target screen."
         )
@@ -1996,7 +2642,7 @@ def _build_final_diagnosis(state: RunState) -> FinalDiagnosis:
             f"parse_failures={parse_fail_count}",
             f"stuck_diagnosis_events={len(stuck_events)}",
         ]
-    elif ("youtube" in (state.goal or "").lower() and "stats for nerds" in (state.goal or "").lower()
+    elif ("youtube" in goal_text.lower() and "stats for nerds" in goal_text.lower()
           and (status in {"FAILED", "ERROR", "TIMEOUT"} or parse_fail_count >= 1)):
         short = "Could not reach YouTube player settings"
         detailed = (
@@ -2012,7 +2658,7 @@ def _build_final_diagnosis(state: RunState) -> FinalDiagnosis:
         goal_based_reason = "Goal required enabling Stats for Nerds from YouTube player settings, but target UI was not confirmed."
         recovery_summary = "The tool tried focused YouTube recovery steps (playback/controls/gear checks) but could not confirm the target path."
         evidence = [
-            f"goal={state.goal}",
+            f"goal={goal_text}",
             f"current_app={state.current_app or state.current_app_id}",
             f"stuck_diagnosis_events={len(stuck_events)}",
         ]
@@ -2028,25 +2674,25 @@ def _build_final_diagnosis(state: RunState) -> FinalDiagnosis:
         technical = "Repeated parse_failure / parse_failure_limit_reached events"
         summary = "The planner repeatedly failed to produce valid next actions."
         screen_based_reason = f"Latest observed screen/state: {seen_screen}."
-        goal_based_reason = f"Goal was '{state.goal}', but the planner could not produce a grounded path to it."
+        goal_based_reason = f"Goal was '{goal_text}', but the planner could not produce a grounded path to it."
         recovery_summary = "The tool performed recovery checks after failures, but decisions stayed invalid."
         evidence = [
             f"parse_failures={parse_fail_count}",
-            f"recent_actions={state.last_actions[-5:]}",
+            f"recent_actions={recent_actions[-5:]}",
         ]
     elif status in {"FAILED", "ERROR", "TIMEOUT"}:
         short = "Run stopped before completion"
-        detailed = state.error or "The run could not finish after recovery attempts."
+        detailed = state_error or "The run could not finish after recovery attempts."
         friendly = "The test could not finish successfully, so it was stopped safely."
         root = "Recovery failed"
-        technical = state.error or "Unknown failure"
+        technical = state_error or "Unknown failure"
         summary = "The run stopped after repeated problems."
         screen_based_reason = f"Latest observed screen/state: {seen_screen}."
-        goal_based_reason = f"Goal was '{state.goal}', but the run could not reach the required result."
+        goal_based_reason = f"Goal was '{goal_text}', but the run could not reach the required result."
         recovery_summary = "The tool tried bounded recovery steps and then stopped safely."
         evidence = [
             f"status={status}",
-            f"retries={state.retries}",
+            f"retries={getattr(state, 'retries', 0)}",
         ]
     else:
         short = "Run completed"
@@ -2056,7 +2702,7 @@ def _build_final_diagnosis(state: RunState) -> FinalDiagnosis:
         technical = "No terminal failures"
         summary = "The run finished successfully."
         screen_based_reason = f"Latest observed screen/state: {seen_screen}."
-        goal_based_reason = f"Goal '{state.goal}' was completed."
+        goal_based_reason = f"Goal '{goal_text}' was completed."
         recovery_summary = "No major recovery was needed."
         evidence = ["status=DONE"]
 
@@ -2367,9 +3013,27 @@ async def _stop_livekit_agent() -> None:
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
+    global _selected_device_id_override, _device_capabilities_cache, _device_capabilities_cache_at
+
+    loaded_device = str(_load_device_context_state().get("selected_device_id") or "").strip()
+    if _is_valid_discovered_device_id(loaded_device):
+        _selected_device_id_override = loaded_device
+        get_config().dab_device_id = loaded_device
+
     await asyncio.to_thread(_mark_stale_yts_live_commands)
     await asyncio.to_thread(_refresh_yts_test_catalog, _YTS_TESTLIST_PATH, False, False)
     await asyncio.to_thread(_refresh_yts_test_catalog, _YTS_GUIDED_TESTLIST_PATH, True, False)
+    try:
+        _loaded_cap = _load_device_capabilities_cache()
+        if _loaded_cap:
+            _device_capabilities_cache = _loaded_cap
+            _device_capabilities_cache_at = time.monotonic()
+    except Exception:
+        pass
+    try:
+        await _refresh_discovered_device_capabilities_cache(force=True)
+    except Exception as exc:
+        logger.warning("Startup capability cache warmup failed: %s", exc)
     await _maybe_start_livekit_agent()
     try:
         yield
@@ -2564,6 +3228,138 @@ async def config_summary() -> ConfigSummaryResponse:
     )
 
 
+class DeviceContextSelectRequest(BaseModel):
+    device_id: str
+    persist: bool = True
+
+
+@app.get("/dab/devices", response_model=dict)
+async def dab_devices() -> dict:
+    """Discover DAB devices and return normalized device list."""
+    devices, warning = await _discover_dab_devices()
+    selected_device_id = _resolve_selected_device_id()
+    discovered_ids = {str(item.get("device_id") or "").strip() for item in devices}
+    if devices and selected_device_id not in discovered_ids:
+        selected_device_id = str(devices[0].get("device_id") or "").strip()
+        if selected_device_id:
+            await _apply_selected_device_context(selected_device_id, persist=True)
+    caps = await _refresh_discovered_device_capabilities_cache(force=False)
+    return {
+        "success": True,
+        "devices": devices,
+        "selected_device_id": selected_device_id,
+        "warning": warning,
+        "capabilities_cache_path": str(_device_capabilities_cache_path()),
+        "capabilities_cached_devices": list(caps.get("device_ids") or []),
+    }
+
+
+@app.get("/dab/capabilities/cache", response_model=dict)
+async def dab_capabilities_cache(refresh: bool = False) -> dict:
+    """Return per-device capability cache built from operations/list, key/list and settings/list."""
+    global _device_capabilities_cache, _device_capabilities_cache_at
+    if refresh:
+        payload = await _refresh_discovered_device_capabilities_cache(force=True)
+    else:
+        if not _device_capabilities_cache:
+            loaded = _load_device_capabilities_cache()
+            if loaded:
+                _device_capabilities_cache = loaded
+                _device_capabilities_cache_at = time.monotonic()
+        payload = _device_capabilities_cache or await _refresh_discovered_device_capabilities_cache(force=False)
+    return {
+        "success": True,
+        "cache_path": str(_device_capabilities_cache_path()),
+        "captured_at": payload.get("captured_at"),
+        "warning": payload.get("warning"),
+        "device_ids": payload.get("device_ids") or [],
+        "devices": payload.get("devices") or {},
+    }
+
+
+@app.get("/device/context", response_model=dict)
+async def device_context() -> dict:
+    """Return current selected DAB device context."""
+    devices = list(_discovered_devices_cache)
+    warning: Optional[str] = None
+    if not devices:
+        devices, warning = await _discover_dab_devices()
+    selected_device_id = _resolve_selected_device_id()
+    discovered_ids = {str(item.get("device_id") or "").strip() for item in devices}
+    if devices and selected_device_id not in discovered_ids:
+        selected_device_id = str(devices[0].get("device_id") or "").strip()
+        if selected_device_id:
+            await _apply_selected_device_context(selected_device_id, persist=True)
+    return {
+        "selected_device_id": selected_device_id,
+        "configured_device_id": str(get_config().dab_device_id or "").strip(),
+        "devices": devices,
+        "warning": warning,
+    }
+
+
+@app.post("/device/context/select", response_model=dict)
+async def select_device_context(request: DeviceContextSelectRequest) -> dict:
+    """Set selected DAB device context and persist it."""
+    requested_device_id = str(request.device_id or "").strip()
+    if not _is_valid_discovered_device_id(requested_device_id):
+        raise HTTPException(status_code=400, detail="device_id is required")
+
+    devices, warning = await _discover_dab_devices()
+    discovered_ids = {str(item.get("device_id") or "").strip() for item in devices}
+    if discovered_ids and requested_device_id not in discovered_ids:
+        raise HTTPException(status_code=400, detail=f"Unknown device_id: {requested_device_id}")
+
+    state = await _apply_selected_device_context(requested_device_id, persist=bool(request.persist))
+    return {
+        "selected_device_id": str(state.get("selected_device_id") or "").strip(),
+        "configured_device_id": str(get_config().dab_device_id or "").strip(),
+        "devices": devices,
+        "warning": warning,
+    }
+
+
+@app.get("/dab/device-info", response_model=dict)
+async def dab_device_info(device_id: Optional[str] = None) -> dict:
+    """Return DAB device metadata for selected or requested device."""
+    current_selected_device_id = str(_resolve_selected_device_id() or "").strip()
+    resolved_device_id = str(_resolve_selected_device_id(device_id) or "").strip()
+    if not _is_valid_discovered_device_id(resolved_device_id):
+        raise HTTPException(status_code=400, detail="No selected device available")
+
+    if str(device_id or "").strip() and resolved_device_id != current_selected_device_id:
+        await _apply_selected_device_context(resolved_device_id, persist=True)
+
+    try:
+        resp = await get_dab_client().get_device_info()
+    except DABError as exc:
+        return {
+            "success": False,
+            "device_id": resolved_device_id,
+            "result": {},
+            "error": str(exc),
+        }
+    except Exception as exc:
+        return {
+            "success": False,
+            "device_id": resolved_device_id,
+            "result": {},
+            "error": str(exc),
+        }
+    if not resp.success:
+        return {
+            "success": False,
+            "device_id": resolved_device_id,
+            "result": resp.data,
+            "error": str(resp.data.get("error") or "Failed to load device info"),
+        }
+    return {
+        "success": True,
+        "device_id": resolved_device_id,
+        "result": resp.data,
+    }
+
+
 @app.get("/capture/source", response_model=CaptureSourceResponse)
 async def capture_source() -> CaptureSourceResponse:
     """Return capture source mode and HDMI availability diagnostics."""
@@ -2645,6 +3441,8 @@ async def stream_status() -> dict:
 @app.post("/run/start", response_model=StartRunResponse)
 async def start_run(request: StartRunRequest) -> StartRunResponse:
     """Start a new automation run."""
+    await _ensure_selected_device_context(request.device_id, persist=bool(request.device_id))
+
     active_run_id = _find_active_run_id()
     if active_run_id:
         raise HTTPException(
@@ -2767,7 +3565,7 @@ async def yts_refresh_tests(guided: bool = False) -> List[Dict[str, str]]:
 
 
 class TestRequest(BaseModel):
-    device: str
+    device: Optional[str] = None
     test: str
     filters: Optional[List[str]] = None
     json_output: Optional[str] = None
@@ -2780,6 +3578,7 @@ class YtsCommandRequest(BaseModel):
     output_file: Optional[str] = None
     interactive_ai: bool = False
     record_video: bool = False
+    device_id: Optional[str] = None
 
 
 class YtsInteractiveResponseRequest(BaseModel):
@@ -2793,8 +3592,21 @@ class YtsInteractiveSuggestRequest(BaseModel):
 @app.post("/yts/command/live")
 async def yts_live_command(request: YtsCommandRequest) -> dict:
     """Start a YTS command and capture live stdout/stderr for polling."""
+    selected_device_id = await _ensure_selected_device_context(request.device_id, persist=bool(request.device_id))
+
+    if str(request.command or "").strip().lower() == "test":
+        params = list(request.params or [])
+        raw_test_device = params[0] if params else selected_device_id
+        resolved_test_device = await _resolve_yts_runner_device_id(raw_test_device)
+        if params:
+            params[0] = resolved_test_device
+        else:
+            params = [resolved_test_device]
+        request.params = params
+
     command_id = str(uuid.uuid4())
     state = _new_yts_live_state(command_id, bool(request.interactive_ai))
+    state["device_id"] = selected_device_id
     state["record_video"] = bool(request.record_video)
     state["video_recording_status"] = "pending" if request.record_video else "disabled"
     _yts_live_commands[command_id] = state
@@ -2806,6 +3618,7 @@ async def yts_live_command(request: YtsCommandRequest) -> dict:
     return {
         "command_id": command_id,
         "status": state["status"],
+        "device_id": selected_device_id,
     }
 
 
@@ -2957,6 +3770,16 @@ async def suggest_yts_live_command_response(command_id: str, request: YtsInterac
 @app.post("/yts/command")
 async def yts_generic_command(request: YtsCommandRequest) -> dict:
     """Execute a generic YTS command."""
+    if str(request.command or "").strip().lower() == "test":
+        params = list(request.params or [])
+        raw_test_device = params[0] if params else request.device_id
+        resolved_test_device = await _resolve_yts_runner_device_id(raw_test_device)
+        if params:
+            params[0] = resolved_test_device
+        else:
+            params = [resolved_test_device]
+        request.params = params
+
     cmd = _build_yts_command(request)
 
     res = _run_yts_command(cmd)
@@ -2984,15 +3807,12 @@ async def yts_generic_command(request: YtsCommandRequest) -> dict:
 @app.post("/yts/test")
 async def yts_test(request: TestRequest) -> dict:
     """Execute a YTS test using the official yts CLI."""
-    # Ensure discover has happened
-    discover_res = _run_yts_command(['yts', 'discover', '--list'])
-    if discover_res['returncode'] != 0:
-        raise HTTPException(status_code=500, detail=f"YTS discover failed: {discover_res['stderr']}")
+    resolved_test_device = await _resolve_yts_runner_device_id(request.device)
 
     result_file = Path(request.json_output or '/tmp/yts_test_result.json')
     result_file.unlink(missing_ok=True)
 
-    cmd = ['yts', 'test', request.device, request.test]
+    cmd = ['yts', 'test', resolved_test_device, request.test]
     if request.filters:
         cmd.extend(request.filters)
     if request.args:
@@ -3004,6 +3824,7 @@ async def yts_test(request: TestRequest) -> dict:
 
     output = {
         'command': ' '.join(cmd),
+        'device_id': resolved_test_device,
         'returncode': res['returncode'],
         'stdout': res['stdout'],
         'stderr': res['stderr'],
@@ -3152,12 +3973,35 @@ async def get_run_explain(run_id: str) -> FriendlyRunExplanationResponse:
     state = _runs.get(run_id)
     if not state:
         raise HTTPException(status_code=404, detail=f"Run {run_id!r} not found")
+
+    try:
+        diagnosis = _build_final_diagnosis(state)
+    except Exception as exc:
+        logger.warning("Explain diagnosis fallback for run_id=%s: %s", run_id, exc)
+        diagnosis = FinalDiagnosis(
+            status=getattr(getattr(state, "status", None), "value", str(getattr(state, "status", "UNKNOWN"))),
+            final_summary="Diagnosis fallback: run data is incomplete, but timeline is still available.",
+            root_cause="Insufficient diagnosis data",
+            user_friendly_reason="The run summary is available, but some optional diagnostics were missing.",
+            technical_reason=f"Diagnosis build failed: {exc}",
+            recovery_attempts=0,
+            what_failed_first=None,
+            what_failed_last=None,
+            failure_reason_short="Incomplete run metadata",
+            failure_reason_detailed="Optional fields were unavailable while building diagnosis.",
+            failure_reason_user_friendly="Some advanced diagnostics were unavailable for this run.",
+            screen_based_reason="No stable screen evidence available.",
+            goal_based_reason=f"Goal: {getattr(state, 'goal', '')}",
+            recovery_summary="Use action/AI/DAB transcripts for manual inspection.",
+            evidence_used=["fallback_diagnosis"],
+        )
+
     return FriendlyRunExplanationResponse(
         run_id=state.run_id,
         goal=state.goal,
         status=state.status.value,
         timeline=_friendly_timeline(state),
-        diagnosis=_build_final_diagnosis(state),
+        diagnosis=diagnosis,
     )
 
 
@@ -3230,6 +4074,7 @@ async def stop_run(run_id: str) -> dict:
 async def capture_screenshot() -> dict:
     """Capture a screenshot from the device right now."""
     try:
+        await _ensure_selected_device_context(None, persist=False)
         result = await get_screen_capture().capture()
         return {
             "success": result.image_b64 is not None,
@@ -3351,6 +4196,7 @@ async def stream_audio() -> StreamingResponse:
 async def manual_action(request: ManualActionRequest) -> ManualActionResponse:
     """Execute a manual action directly against the DAB client."""
     try:
+        await _ensure_selected_device_context(request.device_id, persist=bool(request.device_id))
         dab = get_dab_client()
         action = request.action.upper()
         params = request.params or {}
@@ -3411,16 +4257,219 @@ async def manual_action(request: ManualActionRequest) -> ManualActionResponse:
             setting_key = _normalize_setting_key(str(params.get("key") or params.get("setting_key") or ""))
             if not setting_key:
                 raise HTTPException(status_code=400, detail="key is required for GET_SETTING")
-            resp = await dab.get_setting(setting_key)
-            return ManualActionResponse(success=resp.success, action=action, result=resp.data)
+
+            selected_device_id = _resolve_selected_device_id(request.device_id)
+            ops_resp = await dab.list_operations()
+            supported_ops = [str(o) for o in ((ops_resp.data or {}).get("operations", []) if isinstance(getattr(ops_resp, "data", None), dict) else [])]
+
+            device_info_payload: Dict[str, Any] = {}
+            try:
+                info_resp = await dab.get_device_info()
+                if bool(getattr(info_resp, "success", False)) and isinstance(getattr(info_resp, "data", None), dict):
+                    device_info_payload = dict(info_resp.data)
+            except Exception as exc:
+                logger.warning("GET_SETTING device/info probe failed: %s", exc)
+
+            is_android, adb_device_id, platform, is_android_tv, connection_type, detection_error = await _infer_android_and_adb_device_id(
+                selected_device_id,
+                device_info_payload,
+            )
+            method, reason = _resolve_api_setting_execution_method(
+                supported_operations=supported_ops,
+                operation="system/settings/get",
+                setting_key=setting_key,
+                is_android=is_android,
+                detection_error=detection_error,
+            )
+            logger.info(
+                "Manual GET_SETTING routing: key=%s platform=%s is_android=%s is_android_tv=%s connection=%s method=%s reason=%s detection_error=%s",
+                setting_key,
+                platform,
+                is_android,
+                is_android_tv,
+                connection_type,
+                method,
+                reason,
+                detection_error,
+            )
+
+            if method == "dab":
+                resp = await dab.get_setting(setting_key)
+                if resp.success:
+                    return ManualActionResponse(success=True, action=action, result=resp.data)
+                if not _is_dab_setting_operation_unavailable(resp):
+                    return ManualActionResponse(success=False, action=action, result=resp.data)
+                if not is_android:
+                    return ManualActionResponse(success=False, action=action, result=resp.data, error="DAB setting read failed and Android fallback is not allowed")
+                method = "adb"
+
+            if method == "adb":
+                if not is_android:
+                    return ManualActionResponse(success=False, action=action, error="ADB fallback is Android-only")
+                if not adb_device_id:
+                    return ManualActionResponse(success=False, action=action, error="Unable to resolve adb device id for fallback")
+                if not _is_timezone_setting_key(setting_key):
+                    return ManualActionResponse(success=False, action=action, error=f"No Android ADB fallback mapping for setting '{setting_key}'")
+                online, online_detail = await is_adb_device_online(adb_device_id)
+                if not online:
+                    return ManualActionResponse(success=False, action=action, error=f"ADB device unavailable: {online_detail}")
+                fallback_read = await get_timezone_via_adb(adb_device_id)
+                if not bool(fallback_read.get("success")):
+                    return ManualActionResponse(
+                        success=False,
+                        action=action,
+                        result={"path": "ADB_FALLBACK", "fallback": fallback_read},
+                        error=str(fallback_read.get("error") or "ADB timezone read failed"),
+                    )
+                return ManualActionResponse(
+                    success=True,
+                    action=action,
+                    result={
+                        "key": "timezone",
+                        "value": fallback_read.get("timezone"),
+                        "path": "ADB_FALLBACK",
+                    },
+                )
+
+            return ManualActionResponse(success=False, action=action, error=reason)
         elif action == "SET_SETTING":
             setting_key = _normalize_setting_key(str(params.get("key") or params.get("setting_key") or ""))
             if not setting_key:
                 raise HTTPException(status_code=400, detail="key is required for SET_SETTING")
             if "value" not in params:
                 raise HTTPException(status_code=400, detail="value is required for SET_SETTING")
-            resp = await dab.set_setting(setting_key, params.get("value"))
-            return ManualActionResponse(success=resp.success, action=action, result=resp.data)
+            requested_value = params.get("value")
+            selected_device_id = _resolve_selected_device_id(request.device_id)
+            ops_resp = await dab.list_operations()
+            supported_ops = [str(o) for o in ((ops_resp.data or {}).get("operations", []) if isinstance(getattr(ops_resp, "data", None), dict) else [])]
+
+            device_info_payload: Dict[str, Any] = {}
+            try:
+                info_resp = await dab.get_device_info()
+                if bool(getattr(info_resp, "success", False)) and isinstance(getattr(info_resp, "data", None), dict):
+                    device_info_payload = dict(info_resp.data)
+            except Exception as exc:
+                logger.warning("Timezone fallback device/info probe failed: %s", exc)
+
+            is_android, adb_device_id, platform, is_android_tv, connection_type, detection_error = await _infer_android_and_adb_device_id(
+                selected_device_id,
+                device_info_payload,
+            )
+            method, reason = _resolve_api_setting_execution_method(
+                supported_operations=supported_ops,
+                operation="system/settings/set",
+                setting_key=setting_key,
+                is_android=is_android,
+                detection_error=detection_error,
+            )
+            logger.info(
+                "Manual SET_SETTING routing: key=%s selected_device_id=%s platform=%s is_android=%s is_android_tv=%s connection=%s method=%s reason=%s detection_error=%s",
+                setting_key,
+                selected_device_id,
+                platform,
+                is_android,
+                is_android_tv,
+                connection_type,
+                method,
+                reason,
+                detection_error,
+            )
+
+            if method == "dab":
+                resp = await dab.set_setting(setting_key, requested_value)
+                if resp.success:
+                    if _is_timezone_setting_key(setting_key):
+                        logger.info("Timezone setting path used: DAB direct operation succeeded key=%s", setting_key)
+                    return ManualActionResponse(success=True, action=action, result=resp.data)
+                if not _is_dab_setting_operation_unavailable(resp):
+                    return ManualActionResponse(success=False, action=action, result=resp.data)
+                if not is_android:
+                    return ManualActionResponse(success=False, action=action, result=resp.data, error="DAB setting write failed and Android fallback is not allowed")
+                method = "adb"
+
+            if method != "adb":
+                return ManualActionResponse(success=False, action=action, error=reason)
+
+            tz_value = str(requested_value or "").strip()
+            if not tz_value:
+                return ManualActionResponse(success=False, action=action, error="timezone value is required")
+            if not is_android:
+                return ManualActionResponse(success=False, action=action, error="Timezone ADB fallback is Android-only")
+            if not adb_device_id:
+                return ManualActionResponse(success=False, action=action, error="Unable to resolve adb device id for timezone fallback")
+            if not _is_timezone_setting_key(setting_key):
+                return ManualActionResponse(success=False, action=action, error=f"No Android ADB fallback mapping for setting '{setting_key}'")
+
+            online, online_detail = await is_adb_device_online(adb_device_id)
+            if not online:
+                return ManualActionResponse(
+                    success=False,
+                    action=action,
+                    error=f"ADB device unavailable for timezone fallback: {online_detail}",
+                )
+
+            timezone_listing = await list_timezones_via_adb(adb_device_id)
+            timezone_to_apply = tz_value
+            if not bool(timezone_listing.get("success")):
+                logger.warning(
+                    "ADB timezone listing failed but direct set will still be attempted: adb_device_id=%s error=%s",
+                    adb_device_id,
+                    timezone_listing.get("error"),
+                )
+            else:
+                ai_client = get_vertex_text_client()
+                resolved = await resolve_timezone_from_supported(
+                    tz_value,
+                    list(timezone_listing.get("timezones") or []),
+                    ai_client=ai_client,
+                )
+                if not bool(resolved.get("success")):
+                    return ManualActionResponse(
+                        success=False,
+                        action=action,
+                        result={
+                            "path": "ADB_FALLBACK",
+                            "supported_count": len(list(timezone_listing.get("timezones") or [])),
+                        },
+                        error=str(resolved.get("reason") or "Requested timezone is not supported by this device"),
+                    )
+                timezone_to_apply = str(resolved.get("resolved_timezone") or tz_value)
+
+            fallback_result = await set_timezone_via_adb(adb_device_id, timezone_to_apply)
+            verified = bool(fallback_result.get("success"))
+            logger.info(
+                "Timezone fallback verification: adb_device_id=%s requested=%s observed=%s verified=%s",
+                adb_device_id,
+                timezone_to_apply,
+                fallback_result.get("observed_timezone"),
+                verified,
+            )
+            if not verified:
+                return ManualActionResponse(
+                    success=False,
+                    action=action,
+                    result={
+                        "fallback": fallback_result,
+                        "path": "ADB_FALLBACK",
+                    },
+                    error=str(fallback_result.get("error") or "Timezone verification failed").strip() or "Timezone verification failed",
+                )
+
+            return ManualActionResponse(
+                success=True,
+                action=action,
+                result={
+                    "key": "timezone",
+                    "value": timezone_to_apply,
+                    "updated": True,
+                    "path": "ADB_FALLBACK",
+                    "verification": {
+                        "requested": fallback_result.get("requested_timezone") or timezone_to_apply,
+                        "observed": fallback_result.get("observed_timezone"),
+                        "matched": True,
+                    },
+                },
+            )
         else:
             raise HTTPException(status_code=400, detail=f"Unknown action: {action!r}")
     except HTTPException:
@@ -3493,6 +4542,8 @@ async def task_macro(request: TaskMacroRequest) -> TaskMacroResponse:
 @app.post("/planner/debug", response_model=PlannerDebugResponse)
 async def planner_debug(request: PlannerDebugRequest) -> PlannerDebugResponse:
     """Run the planner with the given inputs and return the planned action."""
+    await _ensure_selected_device_context(request.device_id, persist=bool(request.device_id))
+
     screenshot_b64 = request.screenshot_b64
     ocr_text = request.ocr_text
     used_live_capture = False
@@ -3543,7 +4594,7 @@ async def dab_keys() -> dict:
 
 
 class TestRequest(BaseModel):
-    device: str
+    device: Optional[str] = None
     test: str
 
 
@@ -3574,14 +4625,15 @@ async def yts_list():
 @app.post("/yts/test")
 async def yts_test(request: TestRequest) -> dict:
     """Run YTS test command."""
-    cmd = ['python3', 'yts.py', 'test', request.device, request.test]
+    resolved_test_device = await _resolve_yts_runner_device_id(request.device)
+    cmd = ['python3', 'yts.py', 'test', resolved_test_device, request.test]
     result = subprocess.run(
         cmd,
         capture_output=True,
         text=True,
         cwd='/home/harry/youtube/ai_tool'
     )
-    return {'output': result.stdout.strip(), 'error': result.stderr.strip()}
+    return {'output': result.stdout.strip(), 'error': result.stderr.strip(), 'device_id': resolved_test_device}
 
 
 @app.get("/dab/apps", response_model=dict)

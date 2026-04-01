@@ -165,6 +165,22 @@
     .error-msg { color: #f87171; font-size: 0.8rem; margin-top: 0.5rem; }
     .subtitle { font-size: 0.75rem; color: #7dd3fc; letter-spacing: 0.06em; text-transform: uppercase; }
     .header-right { margin-left:auto; display:flex; gap:0.6rem; align-items:center; }
+    .device-toolbar { display:flex; gap:0.45rem; align-items:center; flex-wrap:wrap; }
+    .device-toolbar label { margin:0; font-size:0.72rem; color:#94a3b8; }
+    .device-toolbar select { width:min(300px, 56vw); padding:0.35rem 0.45rem; font-size:0.78rem; }
+    .device-status { font-size:0.72rem; color:#93c5fd; }
+    .device-info-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:0.75rem; margin-bottom:0.9rem; }
+    .device-window { display:grid; grid-template-columns:1fr 1fr; gap:0.8rem; }
+    .device-section { background:#0f172a; border:1px solid #334155; border-radius:0.65rem; padding:0.75rem; }
+    .device-section h3 { font-size:0.84rem; color:#93c5fd; margin-bottom:0.5rem; }
+    .device-kv { display:grid; grid-template-columns: minmax(120px, 0.8fr) 1.2fr; gap:0.35rem 0.55rem; font-size:0.8rem; }
+    .device-kv > div:nth-child(odd) { color:#94a3b8; }
+    .device-kv > div:nth-child(even) { color:#e2e8f0; word-break:break-word; }
+    .device-chip-list { display:flex; flex-wrap:wrap; gap:0.35rem; }
+    .device-chip { display:inline-block; border:1px solid #334155; border-radius:999px; padding:0.2rem 0.5rem; font-size:0.72rem; color:#cbd5e1; }
+    .device-raw details { margin-top:0.6rem; }
+    .device-raw summary { cursor:pointer; color:#93c5fd; font-size:0.78rem; }
+    .device-raw pre { margin-top:0.45rem; max-height:180px; overflow:auto; font-size:0.72rem; color:#93c5fd; }
     .health-dot { width: 10px; height: 10px; border-radius: 50%; background: #ef4444; box-shadow: 0 0 12px rgba(239,68,68,0.6); }
     .health-dot.ok { background: #22c55e; box-shadow: 0 0 14px rgba(34,197,94,0.8); }
     .hero { grid-column: 1 / -1; display:grid; grid-template-columns: 1.2fr 1fr; gap:1rem; }
@@ -250,6 +266,14 @@
   </div>
   <span class="badge mock" id="mode-badge">MOCK</span>
   <div class="header-right">
+    <div class="device-toolbar">
+      <label for="dab-device-select">DAB Device</label>
+      <select id="dab-device-select" onchange="onDabDeviceChanged()">
+        <option value="">Loading devices...</option>
+      </select>
+      <button class="secondary mini-btn" onclick="refreshDabDevices()">Refresh</button>
+      <span class="device-status" id="dab-device-status">Discovering devices...</span>
+    </div>
     <span class="health-dot" id="health-dot"></span>
     <span style="font-size:0.8rem; color:#94a3b8;" id="health-status">Connecting...</span>
   </div>
@@ -270,14 +294,31 @@
     </div>
   </div>
 
+  <div class="card full-width" id="dab-device-card">
+    <div style="display:flex; justify-content:space-between; gap:0.75rem; align-items:flex-start; flex-wrap:wrap; margin-bottom:0.9rem;">
+      <div>
+        <h2>DAB Device Selection</h2>
+        <div class="subtitle">Choose which discovered device all DAB and YTS operations target.</div>
+      </div>
+      <button class="secondary mini-btn" onclick="refreshDabDevices()">↻ Refresh Device Info</button>
+    </div>
+    <div class="device-info-grid">
+      <div class="stat"><div class="stat-label">Selected Device</div><div class="stat-value" id="dab-selected-device">--</div></div>
+      <div class="stat"><div class="stat-label">Discovered Devices</div><div class="stat-value" id="dab-device-count">0</div></div>
+      <div class="stat"><div class="stat-label">Info Status</div><div class="stat-value" id="dab-device-info-status">Waiting</div></div>
+    </div>
+    <div id="dab-device-summary" class="empty-state">Load a discovered device to view its details.</div>
+  </div>
+
   <div class="card quick-nav">
+    <button onclick="scrollToSection('dab-device-card')">Devices</button>
     <button onclick="scrollToSection('new-run-card')">New Run</button>
     <button onclick="scrollToSection('yts-control-center')">🔧 YTS Control</button>
     <button onclick="scrollToSection('remote-card')">Remote + Stream</button>
     <button onclick="scrollToSection('yts-runner-card')">🧪 YTS Runner</button>
     <button onclick="scrollToSection('runs-card')">Runs</button>
     <button onclick="scrollToSection('detail-panel')">Run Detail</button>
-    <button onclick="scrollToSection('planner-debug-card')">Planner Debug</button>
+    <button onclick="scrollToSection('ai-request-response-card')">AI Request/Response</button>
   </div>
 
   <!-- Start Run -->
@@ -570,25 +611,20 @@
     </div>
   </div>
 
-  <!-- Planner Debug -->
-  <div class="card full-width" id="planner-debug-card">
-    <h2>Planner Debug</h2>
+  <!-- AI Request / Response -->
+  <div class="card full-width" id="ai-request-response-card">
+    <h2>AI Request / Response</h2>
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:1rem;">
       <div>
-        <label>Goal</label>
-        <input id="debug-goal" placeholder="e.g. Open settings" />
-        <label style="margin-top:0.5rem;">OCR Text (optional)</label>
-        <textarea id="debug-ocr" placeholder="Text visible on screen..."></textarea>
-        <label style="margin-top:0.5rem;">Current App</label>
-        <input id="debug-app" placeholder="e.g. launcher" />
-        <div class="btn-row">
-          <button onclick="debugPlanner()">🧠 Plan Next Action</button>
+        <label>Gemini Request (full prompt)</label>
+        <div id="ai-request-log" style="background:#0f172a; border:1px solid #334155; border-radius:0.5rem; padding:0.75rem; min-height:180px; max-height:360px; overflow:auto; font-family:monospace; font-size:0.78rem; white-space:pre-wrap; color:#93c5fd;">
+          No Gemini request captured yet.
         </div>
       </div>
       <div>
-        <label>Result</label>
-        <div id="debug-result" style="background:#0f172a; border:1px solid #334155; border-radius:0.5rem; padding:0.75rem; min-height:120px; font-family:monospace; font-size:0.85rem; white-space:pre-wrap; color:#86efac;">
-          Run planner to see result...
+        <label>Gemini Response (raw)</label>
+        <div id="ai-response-log" style="background:#0f172a; border:1px solid #334155; border-radius:0.5rem; padding:0.75rem; min-height:180px; max-height:360px; overflow:auto; font-family:monospace; font-size:0.78rem; white-space:pre-wrap; color:#86efac;">
+          No Gemini response captured yet.
         </div>
       </div>
     </div>
@@ -606,6 +642,7 @@
 <script src="./config.js"></script>
 <script>
   const API_STORAGE_KEY = 'dab_api_base';
+  const DAB_DEVICE_STORAGE_KEY = 'dab_selected_device_id';
   let apiBase = '';
   let selectedRunId = null;
   let pollInterval = null;
@@ -619,6 +656,8 @@
   let ytsCommandPollInterval = null;
   const YTS_COMMAND_STORAGE_KEY = 'dab_yts_live_command_id';
   let ytsCommandHistory = [];
+  let selectedDabDeviceId = '';
+  let discoveredDabDevices = [];
 
   function normalizeApiBase(v) {
     const s = (v || '').trim();
@@ -676,6 +715,7 @@
     if (qsApi !== null) {
       setApiBase(qsApi);
       checkHealth();
+      loadDabDevices();
       loadCaptureSource();
       refreshCaptureDevices();
       loadRuns();
@@ -686,6 +726,7 @@
     const shouldPreferSameOrigin = isLocalOrigin() && !cfgApi;
     setApiBase(shouldPreferSameOrigin ? '' : (storedApi || cfgApi || ''));
     checkHealth();
+    loadDabDevices();
     loadCaptureSource();
     refreshCaptureDevices();
     loadRuns();
@@ -696,6 +737,7 @@
     const v = document.getElementById('api-base-input').value;
     setApiBase(v);
     checkHealth();
+    loadDabDevices();
     loadCaptureSource();
     refreshCaptureDevices();
     loadRuns();
@@ -705,6 +747,7 @@
   function resetApiBase() {
     setApiBase('');
     checkHealth();
+    loadDabDevices();
     loadCaptureSource();
     refreshCaptureDevices();
     loadRuns();
@@ -732,6 +775,277 @@
     return resp.json();
   }
 
+  function getSelectedDabDeviceId() {
+    return (selectedDabDeviceId || '').trim();
+  }
+
+  function getActiveLiveStreamDeviceId() {
+    const select = document.getElementById('live-stream-device-select');
+    const value = select ? String(select.value || '').trim() : '';
+    return value || getSelectedDabDeviceId();
+  }
+
+  function isValidDabDeviceId(deviceId) {
+    const value = String(deviceId || '').trim();
+    if (!value) return false;
+    if (value.endsWith(':') || value.endsWith('/')) return false;
+    if (['adb', 'adb:', 'device', 'unknown', 'n/a', 'na', 'null', 'none'].includes(value.toLowerCase())) return false;
+    if (value.startsWith('adb:') && value.length <= 4) return false;
+    return true;
+  }
+
+  function requireSelectedDabDevice(messageElId = 'manual-result', message = 'Select a DAB device first.') {
+    const deviceId = getSelectedDabDeviceId();
+    if (isValidDabDeviceId(deviceId)) return deviceId;
+    const el = document.getElementById(messageElId);
+    if (el) {
+      el.textContent = `✗ ${message}`;
+      el.style.color = '#f87171';
+    }
+    return '';
+  }
+
+  function setSelectedDabDeviceId(deviceId, persist = true) {
+    const next = isValidDabDeviceId(deviceId) ? String(deviceId || '').trim() : '';
+    selectedDabDeviceId = next;
+    const select = document.getElementById('dab-device-select');
+    if (select && select.value !== next) select.value = next;
+    const liveSelect = document.getElementById('live-stream-device-select');
+    if (liveSelect && liveSelect.value !== next) liveSelect.value = next;
+    const selectedEl = document.getElementById('dab-selected-device');
+    if (selectedEl) selectedEl.textContent = next || '--';
+    const ytsDeviceEl = document.getElementById('yts-arg-test-device');
+    if (ytsDeviceEl && next && ytsDeviceEl.value !== next) ytsDeviceEl.value = next;
+    if (persist) {
+      if (next) localStorage.setItem(DAB_DEVICE_STORAGE_KEY, next);
+      else localStorage.removeItem(DAB_DEVICE_STORAGE_KEY);
+    }
+  }
+
+  async function persistSelectedDeviceContext(deviceId, persist = true) {
+    const value = String(deviceId || '').trim();
+    try {
+      if (value || deviceId === '') {
+        await api('/device/context/select', 'POST', { device_id: value, persist: !!persist });
+      }
+    } catch (_) {
+      // Keep local UI responsive even if persistence fails.
+    }
+  }
+
+  function refreshLiveStreamDeviceOptions(adbDevices = []) {
+    const select = document.getElementById('live-stream-device-select');
+    if (!select) return;
+    const current = getSelectedDabDeviceId();
+    const seen = new Set();
+    const options = [];
+    const pushOption = (value, label) => {
+      const resolved = String(value || '').trim();
+      if (!isValidDabDeviceId(resolved) || seen.has(resolved)) return;
+      seen.add(resolved);
+      options.push({ value: resolved, label: label || resolved });
+    };
+    discoveredDabDevices.forEach(device => {
+      pushOption(device.device_id, device.label || device.name || device.device_id);
+    });
+    (Array.isArray(adbDevices) ? adbDevices : []).forEach(device => {
+      const deviceId = String(device.device_id || '').trim();
+      const serial = String(device.serial || '').trim();
+      const model = String(device.model || device.product || '').trim();
+      const label = [deviceId, serial && serial !== deviceId ? `(${serial})` : '', model].filter(Boolean).join(' ');
+      pushOption(deviceId, label || deviceId);
+    });
+    select.innerHTML = '<option value="">live stream device: top selected</option>';
+    options.forEach(item => {
+      const opt = document.createElement('option');
+      opt.value = item.value;
+      opt.textContent = item.label;
+      select.appendChild(opt);
+    });
+    if (current && seen.has(current)) select.value = current;
+  }
+
+  function updateCaptureBindingSummary(binding = {}, selectedDeviceId = '') {
+    const el = document.getElementById('capture-device-binding-info');
+    if (!el) return;
+    const selected = selectedDeviceId || getSelectedDabDeviceId();
+    if (!selected) {
+      el.textContent = 'Pick a top device to bind camera / HDMI capture and live stream routing.';
+      el.style.color = '#64748b';
+      return;
+    }
+    const parts = [`selected=${selected}`];
+    if (binding.video_device) parts.push(`video=${binding.video_device}`);
+    if (binding.preferred_kind) parts.push(`kind=${binding.preferred_kind}`);
+    if (binding.adb_device_id) parts.push(`adb=${binding.adb_device_id}`);
+    el.textContent = `Device routing · ${parts.join(' · ')}`;
+    el.style.color = Object.keys(binding || {}).length ? '#93c5fd' : '#fcd34d';
+  }
+
+  async function onLiveStreamDeviceChanged() {
+    const deviceId = getActiveLiveStreamDeviceId();
+    setSelectedDabDeviceId(deviceId);
+    await persistSelectedDeviceContext(deviceId, true);
+    await loadDabDeviceInfo(deviceId);
+    await Promise.allSettled([loadCaptureSource(), refreshCaptureDevices(), refreshStreamDiagnostics()]);
+  }
+
+  function getDiscoveredDabDevice(deviceId) {
+    const resolved = String(deviceId || '').trim();
+    return discoveredDabDevices.find(device => String(device.device_id || '').trim() === resolved) || null;
+  }
+
+  function renderDeviceKv(entries) {
+    const filtered = entries.filter(([, value]) => value !== undefined && value !== null && String(value).trim() !== '');
+    if (!filtered.length) return '<div class="empty-state">No details available.</div>';
+    return `<div class="device-kv">${filtered.map(([label, value]) => `<div>${escHtml(label)}</div><div>${escHtml(String(value))}</div>`).join('')}</div>`;
+  }
+
+  function renderDabDeviceSummary(info, discovered = null) {
+    const summaryEl = document.getElementById('dab-device-summary');
+    if (!info || typeof info !== 'object' || !Object.keys(info).length) {
+      summaryEl.innerHTML = '<div class="empty-state">No device details were returned for the selected device.</div>';
+      return;
+    }
+    const merged = { ...(discovered?.raw || {}), ...(discovered || {}), ...info };
+    const overviewFields = [
+      ['Name', merged.name || merged.deviceName],
+      ['Device ID', merged.deviceId || merged.device_id],
+      ['Platform', merged.platform || merged.os],
+      ['Transport', merged.transport || merged.connectionType],
+      ['Model', merged.model || merged.hardware],
+      ['Version', merged.version || merged.softwareVersion || merged.firmwareVersion],
+      ['Serial', merged.serial || merged.serialNumber],
+    ];
+    const networkFields = [
+      ['IP Address', merged.ip || merged.ipAddress],
+      ['Host', merged.host],
+      ['MAC', merged.mac || merged.macAddress],
+      ['Broker', merged.broker],
+      ['Status', merged.statusMessage || merged.status],
+      ['Reachability', merged.reachable],
+    ];
+    const capabilityValues = Array.isArray(merged.capabilities)
+      ? merged.capabilities
+      : Array.isArray(merged.operations)
+        ? merged.operations
+        : Array.isArray(merged.supportedOperations)
+          ? merged.supportedOperations
+          : [];
+    const extras = Object.entries(merged)
+      .filter(([key]) => !['raw', 'capabilities', 'operations', 'supportedOperations'].includes(key))
+      .filter(([key]) => !['name','deviceName','deviceId','device_id','platform','os','transport','connectionType','model','hardware','version','softwareVersion','firmwareVersion','serial','serialNumber','ip','ipAddress','host','mac','macAddress','broker','statusMessage','status','reachable'].includes(key));
+    summaryEl.innerHTML = `
+      <div class="device-window">
+        <div class="device-section">
+          <h3>Overview</h3>
+          ${renderDeviceKv(overviewFields)}
+          <div class="device-raw">
+            <details>
+              <summary>Show raw device payload</summary>
+              <pre>${escHtml(JSON.stringify(merged, null, 2))}</pre>
+            </details>
+          </div>
+        </div>
+        <div class="device-section">
+          <h3>Connection</h3>
+          ${renderDeviceKv(networkFields)}
+          <h3 style="margin-top:0.95rem;">Capabilities</h3>
+          ${capabilityValues.length ? `<div class="device-chip-list">${capabilityValues.map(value => `<span class="device-chip">${escHtml(String(value))}</span>`).join('')}</div>` : '<div class="empty-state">No capabilities advertised.</div>'}
+          <h3 style="margin-top:0.95rem;">Additional Info</h3>
+          ${extras.length ? renderDeviceKv(extras) : '<div class="empty-state">No extra fields provided.</div>'}
+        </div>
+      </div>`;
+  }
+
+  async function loadDabDeviceInfo(deviceId = getSelectedDabDeviceId()) {
+    const infoStatusEl = document.getElementById('dab-device-info-status');
+    const statusEl = document.getElementById('dab-device-status');
+    const resolved = String(deviceId || '').trim();
+    if (!isValidDabDeviceId(resolved)) {
+      infoStatusEl.textContent = 'No device selected';
+      renderDabDeviceSummary(null);
+      statusEl.textContent = resolved ? `Ignoring invalid device id: ${resolved}` : 'No DAB device selected.';
+      return;
+    }
+    infoStatusEl.textContent = 'Loading';
+    statusEl.textContent = `Loading device info for ${resolved}...`;
+    try {
+      const data = await api(`/dab/device-info?device_id=${encodeURIComponent(resolved)}`);
+      const discovered = getDiscoveredDabDevice(resolved);
+      setSelectedDabDeviceId(resolved);
+      infoStatusEl.textContent = data.success ? 'Loaded' : 'Unavailable';
+      statusEl.textContent = `Selected device: ${resolved}`;
+      renderDabDeviceSummary(data.result || {}, discovered);
+    } catch (e) {
+      infoStatusEl.textContent = 'Error';
+      statusEl.textContent = `Unable to fetch device info: ${e.message}`;
+      renderDabDeviceSummary({ error: e.message, deviceId: resolved }, getDiscoveredDabDevice(resolved));
+    }
+  }
+
+  async function loadDabDevices(preferredDeviceId = null) {
+    const select = document.getElementById('dab-device-select');
+    const statusEl = document.getElementById('dab-device-status');
+    const countEl = document.getElementById('dab-device-count');
+    if (!select) return;
+    select.disabled = true;
+    statusEl.textContent = 'Discovering devices...';
+    try {
+      const context = await api('/device/context').catch(() => null);
+      const data = await api('/dab/devices');
+      discoveredDabDevices = (Array.isArray(data.devices) ? data.devices : []).filter(device => isValidDabDeviceId(device.device_id));
+      countEl.textContent = String(discoveredDabDevices.length);
+      select.innerHTML = '';
+      if (!discoveredDabDevices.length) {
+        select.innerHTML = '<option value="">No devices found</option>';
+        setSelectedDabDeviceId('', false);
+        document.getElementById('dab-device-info-status').textContent = 'No devices';
+        statusEl.textContent = 'No DAB devices discovered yet.';
+        renderDabDeviceSummary(null);
+        return;
+      }
+      for (const device of discoveredDabDevices) {
+        const option = document.createElement('option');
+        option.value = device.device_id || '';
+        option.textContent = device.label || device.device_id || '';
+        select.appendChild(option);
+      }
+      const stored = localStorage.getItem(DAB_DEVICE_STORAGE_KEY) || '';
+      const defaultId = preferredDeviceId || context?.selected_device_id || stored || data.selected_device_id || discoveredDabDevices[0]?.device_id || '';
+      const exists = discoveredDabDevices.some(device => device.device_id === defaultId);
+      const resolved = exists ? defaultId : (discoveredDabDevices[0]?.device_id || '');
+      setSelectedDabDeviceId(resolved, Boolean(resolved));
+      await persistSelectedDeviceContext(resolved, Boolean(resolved));
+      refreshLiveStreamDeviceOptions();
+      updateCaptureBindingSummary(context?.binding || {}, resolved);
+      statusEl.textContent = data.fallback_used
+        ? `Discovery timed out; using ${discoveredDabDevices.length} fallback device${discoveredDabDevices.length === 1 ? '' : 's'}.`
+        : `Discovered ${discoveredDabDevices.length} device${discoveredDabDevices.length === 1 ? '' : 's'}.`;
+      await loadDabDeviceInfo(resolved);
+    } catch (e) {
+      countEl.textContent = '0';
+      select.innerHTML = '<option value="">Discovery failed</option>';
+      document.getElementById('dab-device-info-status').textContent = 'Error';
+      statusEl.textContent = `Failed to discover devices: ${e.message}`;
+      renderDabDeviceSummary({ error: e.message });
+    } finally {
+      select.disabled = false;
+    }
+  }
+
+  async function refreshDabDevices() {
+    await loadDabDevices(getSelectedDabDeviceId() || null);
+  }
+
+  async function onDabDeviceChanged() {
+    const select = document.getElementById('dab-device-select');
+    const deviceId = select ? select.value : '';
+    setSelectedDabDeviceId(deviceId);
+    await persistSelectedDeviceContext(deviceId, true);
+    await loadDabDeviceInfo(deviceId);
+    await Promise.allSettled([loadCaptureSource(), refreshStreamDiagnostics()]);
+  }
   async function checkHealth() {
     try {
       const data = await api('/health');
@@ -1324,7 +1638,9 @@
 
     try {
       const body = { goal };
-      if (device) body.device = device;
+      const selectedDeviceId = device || requireSelectedDabDevice('yts-job-output', 'Select a DAB device before submitting a YTS job.');
+      if (!selectedDeviceId) return;
+      body.device_id = selectedDeviceId;
       if (steps) body.max_steps = parseInt(steps, 10);
 
       const data = await api('/yts/job', 'POST', body);
@@ -1519,10 +1835,14 @@
 
   async function refreshAiTranscript(runId) {
     const box = document.getElementById('ai-log');
+    const requestBox = document.getElementById('ai-request-log');
+    const responseBox = document.getElementById('ai-response-log');
     try {
       const t = await api(`/run/${runId}/ai-transcript`);
       if (!t.events || !t.events.length) {
         box.innerHTML = '<div class="empty-state">No AI logs yet.</div>';
+        if (requestBox) requestBox.textContent = 'No Gemini request captured yet.';
+        if (responseBox) responseBox.textContent = 'No Gemini response captured yet.';
         document.getElementById('d-phase').textContent = '-';
         document.getElementById('d-intent').textContent = '-';
         document.getElementById('batch-log').innerHTML = '<div class="empty-state">No batch planned yet.</div>';
@@ -1542,9 +1862,15 @@
           document.getElementById('batch-log').innerHTML = '<div class="empty-state">No batch planned yet.</div>';
         }
       }
+      const latestGeminiRequest = [...t.events].reverse().find(e => e && e.type === 'gemini-request' && typeof e.prompt === 'string');
+      const latestGeminiResponse = [...t.events].reverse().find(e => e && e.type === 'gemini-response' && typeof e.response === 'string');
+      if (requestBox) requestBox.textContent = latestGeminiRequest ? latestGeminiRequest.prompt : 'No Gemini request captured yet.';
+      if (responseBox) responseBox.textContent = latestGeminiResponse ? latestGeminiResponse.response : 'No Gemini response captured yet.';
       box.innerHTML = t.events.map((e, i) => `<div class="log-line">${i + 1}. ${escHtml(JSON.stringify(e))}</div>`).join('');
     } catch (e) {
       box.innerHTML = `<div class="empty-state">Failed to load AI logs: ${escHtml(e.message)}</div>`;
+      if (requestBox) requestBox.textContent = `Failed to load Gemini request: ${e.message}`;
+      if (responseBox) responseBox.textContent = `Failed to load Gemini response: ${e.message}`;
     }
   }
 
@@ -1610,23 +1936,6 @@
     } catch (e) {
       document.getElementById('manual-result').textContent = `✗ ${e.message}`;
       document.getElementById('manual-result').style.color = '#f87171';
-    }
-  }
-
-  async function debugPlanner() {
-    const goal = document.getElementById('debug-goal').value.trim();
-    if (!goal) { document.getElementById('debug-result').textContent = 'Goal is required.'; return; }
-    try {
-      const body = {
-        goal,
-        ocr_text: document.getElementById('debug-ocr').value || null,
-        current_app: document.getElementById('debug-app').value || null,
-      };
-      const data = await api('/planner/debug', 'POST', body);
-      document.getElementById('debug-result').textContent = JSON.stringify(data, null, 2);
-    } catch (e) {
-      document.getElementById('debug-result').textContent = `Error: ${e.message}`;
-      document.getElementById('debug-result').style.color = '#f87171';
     }
   }
 
@@ -2260,6 +2569,12 @@
   async function runYtsCommand(command) {
     const resultContainer = document.getElementById('yts-command-result-container');
 
+    const selectedDeviceId = requireSelectedDabDevice('yts-command-output', 'Select a DAB device before running YTS commands.');
+    if (!selectedDeviceId) {
+      document.getElementById('yts-command-status').innerHTML = '<span style="color:#f87171;">✗ No DAB device selected.</span>';
+      return;
+    }
+
     clearYtsCommandPolling();
     resultContainer.style.display = 'block';
     document.getElementById('yts-command-status').innerHTML = `<span style="color:#38bdf8;">▌ Starting ${command}...</span>`;
@@ -2274,11 +2589,16 @@
       global_options: {},
       output_file: null,
       interactive_ai: false,
+      device_id: selectedDeviceId,
     };
 
     // Special handling for the 'test' command's detailed UI
     if (command === 'test') {
-      const device = document.getElementById('yts-arg-test-device').value.trim();
+      const deviceInput = document.getElementById('yts-arg-test-device');
+      if (deviceInput && !deviceInput.value.trim() && selectedDeviceId) {
+        deviceInput.value = selectedDeviceId;
+      }
+      const device = deviceInput ? deviceInput.value.trim() : '';
       if (!device) {
         document.getElementById('yts-command-status').innerHTML = '<span style="color:#f87171;">✗ Device ID is required.</span>';
         return;
@@ -2867,10 +3187,14 @@
 
   async function refreshAiTranscript(runId) {
     const box = document.getElementById('ai-log');
+    const requestBox = document.getElementById('ai-request-log');
+    const responseBox = document.getElementById('ai-response-log');
     try {
       const t = await api(`/run/${runId}/ai-transcript`);
       if (!t.events || !t.events.length) {
         box.innerHTML = '<div class="empty-state">No AI logs yet.</div>';
+        if (requestBox) requestBox.textContent = 'No Gemini request captured yet.';
+        if (responseBox) responseBox.textContent = 'No Gemini response captured yet.';
         document.getElementById('d-phase').textContent = '-';
         document.getElementById('d-intent').textContent = '-';
         document.getElementById('batch-log').innerHTML = '<div class="empty-state">No batch planned yet.</div>';
@@ -2890,9 +3214,15 @@
           document.getElementById('batch-log').innerHTML = '<div class="empty-state">No batch planned yet.</div>';
         }
       }
+      const latestGeminiRequest = [...t.events].reverse().find(e => e && e.type === 'gemini-request' && typeof e.prompt === 'string');
+      const latestGeminiResponse = [...t.events].reverse().find(e => e && e.type === 'gemini-response' && typeof e.response === 'string');
+      if (requestBox) requestBox.textContent = latestGeminiRequest ? latestGeminiRequest.prompt : 'No Gemini request captured yet.';
+      if (responseBox) responseBox.textContent = latestGeminiResponse ? latestGeminiResponse.response : 'No Gemini response captured yet.';
       box.innerHTML = t.events.map((e, i) => `<div class="log-line">${i + 1}. ${escHtml(JSON.stringify(e))}</div>`).join('');
     } catch (e) {
       box.innerHTML = `<div class="empty-state">Failed to load AI logs: ${escHtml(e.message)}</div>`;
+      if (requestBox) requestBox.textContent = `Failed to load Gemini request: ${e.message}`;
+      if (responseBox) responseBox.textContent = `Failed to load Gemini response: ${e.message}`;
     }
   }
 
@@ -2915,10 +3245,13 @@
     const appId = document.getElementById('app-id-input').value.trim();
     const errEl = document.getElementById('start-error');
     if (!goal) { errEl.textContent = 'Goal is required.'; return; }
+    const deviceId = requireSelectedDabDevice('start-error', 'Select a DAB device before starting a run.');
+    if (!deviceId) return;
     errEl.textContent = '';
     try {
       const body = { goal };
       if (appId) body.app_id = appId;
+      body.device_id = deviceId;
       const data = await api('/run/start', 'POST', body);
       await loadRuns();
       selectRun(data.run_id);
@@ -2935,8 +3268,11 @@
 
   async function sendKey(action) {
     const el = document.getElementById('manual-result');
+    const deviceId = requireSelectedDabDevice('manual-result', 'Select a DAB device before sending remote actions.');
+    if (!deviceId) return;
     try {
-      const data = await api('/action', 'POST', { action });
+      const body = { action, device_id: deviceId };
+      const data = await api('/action', 'POST', body);
       el.textContent = `✓ ${action}: ${JSON.stringify(data.result)}`;
       el.style.color = '#4ade80';
     } catch (e) {
@@ -2946,8 +3282,10 @@
   }
 
   async function captureScreenshot() {
+    const deviceId = requireSelectedDabDevice('manual-result', 'Select a DAB device before capturing a screenshot.');
+    if (!deviceId) return;
     try {
-      const data = await api('/screenshot', 'POST');
+      const data = await api(`/screenshot?device_id=${encodeURIComponent(deviceId)}`, 'POST');
       if (data.image_b64) {
         const src = toImageSrc(data.image_b64);
         document.getElementById('screenshot-container').innerHTML =
@@ -2961,23 +3299,6 @@
     }
   }
 
-  async function debugPlanner() {
-    const goal = document.getElementById('debug-goal').value.trim();
-    if (!goal) { document.getElementById('debug-result').textContent = 'Goal is required.'; return; }
-    try {
-      const body = {
-        goal,
-        ocr_text: document.getElementById('debug-ocr').value || null,
-        current_app: document.getElementById('debug-app').value || null,
-      };
-      const data = await api('/planner/debug', 'POST', body);
-      document.getElementById('debug-result').textContent = JSON.stringify(data, null, 2);
-    } catch (e) {
-      document.getElementById('debug-result').textContent = `Error: ${e.message}`;
-      document.getElementById('debug-result').style.color = '#f87171';
-    }
-  }
-
   function escHtml(s) {
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
@@ -2988,6 +3309,7 @@
     initYtsControlCenter();
     await Promise.allSettled([
       checkHealth(),
+      loadDabDevices(),
       loadRuns(),
       loadCaptureSource(),
       refreshCaptureDevices(),

@@ -313,12 +313,14 @@ async def test_yts_command_supports_multiple_test_ids(client, monkeypatch, tmp_p
     output_file = tmp_path / "yts-result.json"
 
     class FakeCompletedProcess:
-        def __init__(self):
+        def __init__(self, stdout: str = "ok"):
             self.returncode = 0
-            self.stdout = "ok"
+            self.stdout = stdout
             self.stderr = ""
 
     def fake_run(args_list, capture_output, text, cwd, check):
+        if args_list[:3] == ["yts", "discover", "--list"]:
+            return FakeCompletedProcess(stdout="")
         assert args_list[:3] == ["yts", "test", "adb:device-01"]
         assert "ID-001" in args_list
         assert "ID-002" in args_list
@@ -1090,15 +1092,31 @@ def test_plan_task_macro_actions_supports_explicit_language_setting():
 @pytest.mark.asyncio
 async def test_manual_action_set_setting_normalizes_language_alias(client, monkeypatch):
     class FakeResponse:
-        def __init__(self, key, value):
-            self.success = True
-            self.data = {"key": key, "value": value, "updated": True}
+        def __init__(self, success, status, data):
+            self.success = success
+            self.status = status
+            self.data = data
 
     class FakeDAB:
+        async def list_operations(self):
+            return FakeResponse(True, 200, {"operations": ["system/settings/set"]})
+
+        async def get_device_info(self):
+            return FakeResponse(True, 200, {"platform": "android-tv", "adbDeviceId": "emulator-5554"})
+
         async def set_setting(self, key, value):
-            return FakeResponse(key, value)
+            return FakeResponse(True, 200, {"key": key, "value": value, "updated": True})
 
     monkeypatch.setattr(api_mod, "get_dab_client", lambda: FakeDAB())
+    async def _platform_info(_device_id):
+        return {
+            "reachable": True,
+            "is_android": True,
+            "is_android_tv": True,
+            "connection_type": "usb",
+            "error": None,
+        }
+    monkeypatch.setattr(api_mod, "get_device_platform_info", _platform_info)
 
     resp = await client.post(
         "/action",
@@ -1109,6 +1127,108 @@ async def test_manual_action_set_setting_normalizes_language_alias(client, monke
     data = resp.json()
     assert data["result"]["key"] == "language"
     assert data["result"]["value"] == "en-US"
+
+
+@pytest.mark.asyncio
+async def test_manual_action_timezone_uses_android_adb_fallback_when_dab_unavailable(client, monkeypatch):
+    class FakeResponse:
+        def __init__(self, success, status, data):
+            self.success = success
+            self.status = status
+            self.data = data
+
+    class FakeDAB:
+        async def list_operations(self):
+            return FakeResponse(True, 200, {"operations": []})
+
+        async def set_setting(self, key, value):
+            return FakeResponse(False, 501, {"error": "system/settings/set not supported", "key": key, "value": value})
+
+        async def get_device_info(self):
+            return FakeResponse(True, 200, {"platform": "android-tv", "adbDeviceId": "emulator-5554"})
+
+    async def _online(_device_id):
+        return True, "device"
+
+    async def _list_tz(_device_id):
+        return {"success": False, "timezones": [], "error": "tzdata not found"}
+
+    async def _set_tz(_device_id, value):
+        return {
+            "success": True,
+            "requested_timezone": value,
+            "observed_timezone": value,
+            "verified": True,
+        }
+
+    monkeypatch.setattr(api_mod, "get_dab_client", lambda: FakeDAB())
+    async def _platform_info(_device_id):
+        return {
+            "reachable": True,
+            "is_android": True,
+            "is_android_tv": True,
+            "connection_type": "usb",
+            "error": None,
+        }
+    monkeypatch.setattr(api_mod, "get_device_platform_info", _platform_info)
+    monkeypatch.setattr(api_mod, "is_adb_device_online", _online)
+    monkeypatch.setattr(api_mod, "list_timezones_via_adb", _list_tz)
+    monkeypatch.setattr(api_mod, "set_timezone_via_adb", _set_tz)
+
+    resp = await client.post(
+        "/action",
+        json={"action": "SET_SETTING", "params": {"key": "timezone", "value": "America/Los_Angeles"}},
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["success"] is True
+    assert data["result"]["path"] == "ADB_FALLBACK"
+    assert data["result"]["verification"]["matched"] is True
+
+
+@pytest.mark.asyncio
+async def test_manual_action_timezone_does_not_fallback_when_adb_offline(client, monkeypatch):
+    class FakeResponse:
+        def __init__(self, success, status, data):
+            self.success = success
+            self.status = status
+            self.data = data
+
+    class FakeDAB:
+        async def list_operations(self):
+            return FakeResponse(True, 200, {"operations": []})
+
+        async def set_setting(self, key, value):
+            return FakeResponse(False, 501, {"error": "system/settings/set not supported", "key": key, "value": value})
+
+        async def get_device_info(self):
+            return FakeResponse(True, 200, {"platform": "android-tv", "adbDeviceId": "emulator-5554"})
+
+    async def _online(_device_id):
+        return False, "offline"
+
+    monkeypatch.setattr(api_mod, "get_dab_client", lambda: FakeDAB())
+    async def _platform_info(_device_id):
+        return {
+            "reachable": True,
+            "is_android": True,
+            "is_android_tv": True,
+            "connection_type": "usb",
+            "error": None,
+        }
+    monkeypatch.setattr(api_mod, "get_device_platform_info", _platform_info)
+    monkeypatch.setattr(api_mod, "is_adb_device_online", _online)
+
+    resp = await client.post(
+        "/action",
+        json={"action": "SET_SETTING", "params": {"key": "timezone", "value": "UTC"}},
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["success"] is False
+    assert "unavailable" in str(data.get("error", "")).lower() or "offline" in str(data.get("error", "")).lower()
 
 
 @pytest.mark.asyncio
@@ -1713,6 +1833,46 @@ async def test_get_run_explain_reports_repeated_ok_timeout_on_youtube(client):
     data = resp.json()
     assert data["diagnosis"]["root_cause"] == "Repeated commit action in playback context"
     assert "kept pressing ok" in data["diagnosis"]["user_friendly_reason"].lower()
+
+
+@pytest.mark.asyncio
+async def test_get_run_explain_does_not_crash_when_diagnosis_builder_fails(client, monkeypatch):
+    run_id = "r-explain-fallback"
+    state = RunState(run_id=run_id, goal="Open settings")
+    state.start()
+    state.finish(RunStatus.FAILED, "forced")
+    _runs[run_id] = state
+
+    def _boom(_state):
+        raise AttributeError("legacy field missing")
+
+    monkeypatch.setattr(api_mod, "_build_final_diagnosis", _boom)
+
+    resp = await client.get(f"/run/{run_id}/explain")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["run_id"] == run_id
+    assert data["diagnosis"]["root_cause"] == "Insufficient diagnosis data"
+    assert "fallback" in data["diagnosis"]["final_summary"].lower()
+
+
+def test_build_final_diagnosis_accepts_missing_legacy_ocr_field():
+    class LegacyState:
+        def __init__(self):
+            self.status = RunStatus.FAILED
+            self.goal = "Open YouTube"
+            self.action_history = []
+            self.ai_transcript = []
+            self.dab_transcript = []
+            self.current_screen = None
+            self.current_app_state = None
+            self.current_app = None
+            self.current_app_id = None
+            self.latest_visual_summary = None
+
+    diagnosis = api_mod._build_final_diagnosis(LegacyState())
+    assert diagnosis is not None
+    assert diagnosis.status == RunStatus.FAILED.value
 
 
 @pytest.mark.asyncio

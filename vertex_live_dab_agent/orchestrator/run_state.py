@@ -69,9 +69,20 @@ class RunState(BaseModel):
     app_catalog: List[Dict[str, Any]] = Field(default_factory=list)
     supported_keys: List[str] = Field(default_factory=list)
     supported_settings: List[Dict[str, Any]] = Field(default_factory=list)
+    capability_snapshot: Dict[str, Any] = Field(default_factory=dict)
+    capability_preflight_done: bool = False
     resolved_apps_cache: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     capability_reference: Dict[str, Any] = Field(default_factory=dict)
     capability_reference_path: Optional[str] = None
+    device_info: Dict[str, Any] = Field(default_factory=dict)
+    device_platform: Optional[str] = None
+    device_os_family: Optional[str] = None
+    is_android_device: Optional[bool] = None
+    is_android_tv_device: Optional[bool] = None
+    android_adb_device_id: Optional[str] = None
+    device_connection_type: Optional[str] = None
+    device_detection_error: Optional[str] = None
+    device_detection_evidence: Dict[str, Any] = Field(default_factory=dict)
     device_profile_id: Optional[str] = None
     device_profile_path: Optional[str] = None
 
@@ -84,12 +95,17 @@ class RunState(BaseModel):
     verification_mode: Optional[str] = None
     last_expected_screen: Optional[str] = None
     blocked_actions: List[str] = Field(default_factory=list)
+    direct_operation_failures: Dict[str, int] = Field(default_factory=dict)
+    unsupported_direct_operations: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    strategy_transitions: List[Dict[str, Any]] = Field(default_factory=list)
     hybrid_policy_mode: Optional[str] = None
     hybrid_policy_rationale: Optional[str] = None
     retrieved_experiences: List[Dict[str, Any]] = Field(default_factory=list)
     observation_features: Dict[str, Any] = Field(default_factory=dict)
     local_action_suggestions: List[Dict[str, Any]] = Field(default_factory=list)
     local_model_version: Optional[str] = None
+    navigation_memory: List[Dict[str, Any]] = Field(default_factory=list)
+    last_focus_change_detected: Optional[bool] = None
 
     # ------------------------------------------------------------------ #
     # Progress / recovery tracking
@@ -106,6 +122,8 @@ class RunState(BaseModel):
     # Visual / capture state
     # ------------------------------------------------------------------ #
     latest_screenshot_b64: Optional[str] = None
+    # Backward-compatible alias used by older diagnosis code paths.
+    latest_ocr_text: Optional[str] = None
     latest_visual_summary: Optional[str] = None
     last_screen_fingerprint: Optional[str] = None
 

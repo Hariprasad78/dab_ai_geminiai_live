@@ -53,7 +53,7 @@ class Config:
     dab_mqtt_broker: str = field(default_factory=lambda: os.environ.get("DAB_MQTT_BROKER", "localhost"))
     dab_mqtt_port: int = field(default_factory=lambda: int(os.environ.get("DAB_MQTT_PORT", "1883")))
     dab_device_id: str = field(default_factory=lambda: os.environ.get("DAB_DEVICE_ID", "mock-device"))
-    dab_request_timeout: float = field(default_factory=lambda: float(os.environ.get("DAB_REQUEST_TIMEOUT", "10.0")))
+    dab_request_timeout: float = field(default_factory=lambda: float(os.environ.get("DAB_REQUEST_TIMEOUT", "120.0")))
     dab_max_retries: int = field(default_factory=lambda: int(os.environ.get("DAB_MAX_RETRIES", "3")))
     youtube_app_id: str = field(default_factory=lambda: os.environ.get("YOUTUBE_APP_ID", "youtube"))
 
@@ -100,8 +100,11 @@ class Config:
     )
 
     # Session
-    session_timeout_seconds: int = field(default_factory=lambda: int(os.environ.get("SESSION_TIMEOUT_SECONDS", "300")))
+    session_timeout_seconds: int = field(default_factory=lambda: int(os.environ.get("SESSION_TIMEOUT_SECONDS", "120")))
     max_steps_per_run: int = field(default_factory=lambda: int(os.environ.get("MAX_STEPS_PER_RUN", "50")))
+    orchestrator_step_timeout_seconds: float = field(
+        default_factory=lambda: float(os.environ.get("ORCHESTRATOR_STEP_TIMEOUT_SECONDS", "120.0"))
+    )
 
     # Artifacts
     artifacts_base_dir: str = field(default_factory=lambda: os.environ.get("ARTIFACTS_BASE_DIR", "./artifacts"))

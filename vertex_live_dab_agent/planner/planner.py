@@ -96,6 +96,8 @@ class Planner:
         self._last_nav_parse_error: Optional[str] = None
         self._nav_parse_error_count: int = 0
         self._planner_system_prompt = self._load_system_prompt()
+        self.last_vertex_prompt: Optional[str] = None
+        self.last_vertex_response: Optional[str] = None
 
     def _load_system_prompt(self) -> str:
         override_text = str(getattr(self._config, "planner_prompt_override", "") or "").strip()
@@ -169,6 +171,8 @@ class Planner:
         session_id: Optional[str] = None,
         master_plan: Optional[List[str]] = None,
     ) -> NavigationPlan:
+        self.last_vertex_prompt = None
+        self.last_vertex_response = None
         if retry_count >= self._config.max_steps_per_run:
             return NavigationPlan(
                 phase="abort",
@@ -319,10 +323,35 @@ class Planner:
         master_plan: Optional[List[str]] = None,
     ) -> str:
         """Build the context string sent to the planner model."""
+        platform_name = "unknown"
+        os_family = "unknown"
+        app_context = current_app or "unknown"
+        target_operation = "ui_navigation"
+        target_screen = current_screen or "unknown"
+        target_item = "unknown"
+        navigation_memory_summary: Dict[str, Any] = {}
+
+        if isinstance(execution_state, dict):
+            platform_name = str(execution_state.get("platform_name") or platform_name)
+            os_family = str(execution_state.get("os_family") or os_family)
+            app_context = str(execution_state.get("app_context") or app_context)
+            target_operation = str(execution_state.get("target_operation") or target_operation)
+            target_screen = str(execution_state.get("target_screen") or target_screen)
+            target_item = str(execution_state.get("target_item") or target_item)
+            nav_mem = execution_state.get("navigation_memory")
+            if isinstance(nav_mem, dict):
+                navigation_memory_summary = nav_mem
+
         parts = [
             f"Goal: {goal}",
             f"Current app: {current_app or 'unknown'}",
             f"Current screen: {current_screen or 'unknown'}",
+            f"Platform name: {platform_name}",
+            f"OS family: {os_family}",
+            f"App context: {app_context}",
+            f"Target operation: {target_operation}",
+            f"Target screen: {target_screen}",
+            f"Target item: {target_item}",
             f"Has screenshot: {has_screenshot}",
             f"Retry count: {retry_count}",
             f"Supported actions: {', '.join(_SUPPORTED_ACTIONS)}",
@@ -353,6 +382,8 @@ class Planner:
             parts.append(f"Execution state: {json.dumps(compact_state, ensure_ascii=False)[:1200]}")
             if session_history:
                 parts.append(f"Session history: {json.dumps(session_history, ensure_ascii=False)[:1400]}")
+        if navigation_memory_summary:
+            parts.append(f"Navigation memory: {json.dumps(navigation_memory_summary, ensure_ascii=False)[:1800]}")
         return "\n".join(parts)
 
     async def _plan_navigation_with_vertex(
@@ -370,9 +401,20 @@ class Planner:
             prompt = (
                 f"{self._planner_system_prompt}\n\n"
                 "Return JSON object with fields exactly as specified. "
-                "Use action_batch as array of {action, params}.\n\n"
+                "Use action_batch as array of {action, params}.\n"
+                "Navigation policy:\n"
+                "- Operate like a careful remote-control user.\n"
+                "- Use current screenshot + navigation memory + recent actions.\n"
+                "- Prefer directional D-pad moves to approach target before select.\n"
+                "- PRESS_OK/ENTER is special: only when confidence is high and focus is likely on target item.\n"
+                "- If confidence is medium, choose one safe move then re-check.\n"
+                "- If confidence is low, request safer re-check/navigation action (e.g., CAPTURE_SCREENSHOT, GET_STATE, BACK).\n"
+                "- Avoid repeating the same failed move if no visible progress; adapt direction or recovery.\n"
+                "- Short subplans are allowed for visible movement batches, but do not batch PRESS_OK with low confidence.\n"
+                "- Include brief reason grounded in platform/os/app context and prior attempts.\n\n"
                 f"Current situation:\n{context}"
             )
+            self.last_vertex_prompt = prompt
             try:
                 response = await self._vertex_client.generate_content(
                     prompt,
@@ -387,8 +429,10 @@ class Planner:
                     )
                 except TypeError:
                     response = await self._vertex_client.generate_content(prompt)
+            self.last_vertex_response = str(response or "")
             return self._parse_navigation_plan(response)
         except Exception as exc:
+            self.last_vertex_response = f"ERROR: {exc}"
             logger.error("Vertex AI planning failed: %s, falling back to heuristic", exc)
             msg = str(exc).lower()
             if (

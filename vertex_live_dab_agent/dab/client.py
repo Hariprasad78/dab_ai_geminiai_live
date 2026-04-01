@@ -32,13 +32,16 @@ client classes.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import time
 import uuid
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from vertex_live_dab_agent.config import get_config
 from vertex_live_dab_agent.dab.topics import (
+        TOPIC_DEVICE_INFO,
     KEY_MAP,
     TOPIC_APPLICATIONS_EXIT,
     TOPIC_APPLICATIONS_GET_STATE,
@@ -217,6 +220,14 @@ class DABClientBase(ABC):
             payload.update(parameters)
         return DABResponse(False, 501, {"error": "content/open not supported", **payload}, "", "")
 
+    async def discover_devices(self, attempts: int = 1, wait_seconds: float = 1.0) -> DABResponse:
+        """Optional: discover available DAB devices."""
+        return DABResponse(False, 501, {"error": "discover not supported"}, "", "")
+
+    async def get_device_info(self) -> DABResponse:
+        """Optional: return selected device info."""
+        return DABResponse(False, 501, {"error": "device/info not supported"}, "", "")
+
 
 # ---------------------------------------------------------------------------
 # Mock client (default -- no external dependencies)
@@ -322,6 +333,9 @@ class MockDABClient(DABClientBase):
                     "input/key/list",
                     "input/key-press",
                     "input/long-key-press",
+                    "system/settings/list",
+                    "system/settings/get",
+                    "system/settings/set",
                     "output/image",
                     "operations/list",
                 ]
@@ -435,6 +449,47 @@ class MockDABClient(DABClientBase):
             request_id=req_id,
         )
 
+    async def discover_devices(self, attempts: int = 1, wait_seconds: float = 1.0) -> DABResponse:
+        await self._simulate_latency()
+        req_id = str(uuid.uuid4())
+        device_id = str(get_config().dab_device_id or "mock-device").strip() or "mock-device"
+        return DABResponse(
+            success=True,
+            status=200,
+            data={
+                "devices": [
+                    {
+                        "deviceId": device_id,
+                        "name": "Mock Android TV",
+                        "platform": "android-tv",
+                        "transport": "mock",
+                    }
+                ]
+            },
+            topic="dab/discover",
+            request_id=req_id,
+        )
+
+    async def get_device_info(self) -> DABResponse:
+        await self._simulate_latency()
+        req_id = str(uuid.uuid4())
+        device_id = str(get_config().dab_device_id or "mock-device").strip() or "mock-device"
+        return DABResponse(
+            success=True,
+            status=200,
+            data={
+                "deviceId": device_id,
+                "name": "Mock Android TV",
+                "model": "MockDevice",
+                "platform": "android-tv",
+                "version": "mock-1.0",
+                "transport": "mock",
+                "capabilities": ["applications/list", "input/key-press", "output/image", "device/info"],
+            },
+            topic=TOPIC_DEVICE_INFO,
+            request_id=req_id,
+        )
+
     async def _simulate_latency(self) -> None:
         await asyncio.sleep(0.05)
 
@@ -539,8 +594,61 @@ class AdapterDABClient(DABClientBase):
         return await self._send_with_retry(TOPIC_OUTPUT_IMAGE, {})
 
     async def list_settings(self) -> DABResponse:
-        """List direct system settings capabilities."""
-        return await self._send_with_retry(TOPIC_SYSTEM_SETTINGS_LIST, {})
+        """List direct system settings capabilities.
+
+        Some bridge implementations fail the whole endpoint when one probe
+        (commonly CEC via shell command) is unsupported. In that case return a
+        safe partial response instead of propagating a hard failure.
+        """
+        resp = await self._send_with_retry(TOPIC_SYSTEM_SETTINGS_LIST, {})
+        if resp.success:
+            return resp
+
+        error_text = str((resp.data or {}).get("error") or "")
+        lowered = error_text.lower()
+        cec_shell_unsupported = (
+            "no shell command implementation" in lowered
+            or "cec" in lowered
+            or "listsupportedsystemsettings" in lowered
+            or "listsystemsettings" in lowered
+            or "getcecenabled" in lowered
+        )
+        if not cec_shell_unsupported:
+            return resp
+
+        logger.warning(
+            "DAB settings degraded: CEC/shell probe unsupported, returning partial settings"
+        )
+        partial_settings = [
+            {
+                "key": "timezone",
+                "friendlyName": "Time Zone",
+                "writable": True,
+            },
+            {
+                "key": "language",
+                "friendlyName": "Language",
+                "writable": True,
+            },
+            {
+                "key": "cec_enabled",
+                "friendlyName": "CEC",
+                "writable": False,
+                "available": False,
+                "reason": "unsupported shell command",
+            },
+        ]
+        return DABResponse(
+            success=True,
+            status=200,
+            data={
+                "settings": partial_settings,
+                "degraded": True,
+                "warning": error_text or "system/settings/list partially unavailable",
+            },
+            topic=resp.topic,
+            request_id=resp.request_id,
+        )
 
     async def get_setting(self, setting_key: str) -> DABResponse:
         """Get one system setting value."""
@@ -556,6 +664,40 @@ class AdapterDABClient(DABClientBase):
         if isinstance(parameters, dict):
             payload["parameters"] = parameters
         return await self._send_with_retry(TOPIC_CONTENT_OPEN, payload)
+
+    async def discover_devices(self, attempts: int = 1, wait_seconds: float = 1.0) -> DABResponse:
+        """Discover available devices using broadcast discovery semantics.
+
+        Primary path:
+        - publish to `dab/discovery`
+        - set MQTTv5 `ResponseTopic` to a unique reply topic
+        - collect multiple device replies for `wait_seconds` across `attempts`
+        """
+        try:
+            devices = await self._discover_devices_broadcast(attempts=attempts, wait_seconds=wait_seconds)
+            return DABResponse(
+                success=True,
+                status=200,
+                data={"devices": devices},
+                topic="dab/discovery",
+                request_id=str(uuid.uuid4()),
+            )
+        except Exception as exc:
+            logger.warning("DAB broadcast discovery failed, trying compatibility path: %s", exc)
+
+        last_exc: Optional[Exception] = None
+        for topic in ("dab/discovery", "dab/discover"):
+            try:
+                return await self._send_resolved_topic_with_retry(topic, {})
+            except Exception as exc:
+                last_exc = exc
+        if last_exc is not None:
+            raise last_exc
+        return await self._send_resolved_topic_with_retry("dab/discover", {})
+
+    async def get_device_info(self) -> DABResponse:
+        """Fetch device metadata from device/info."""
+        return await self._send_with_retry(TOPIC_DEVICE_INFO, {})
 
     async def close(self) -> None:
         """Close the underlying transport."""
@@ -583,6 +725,16 @@ class AdapterDABClient(DABClientBase):
         from vertex_live_dab_agent.dab.transport import TransportRequest
 
         topic = format_topic(topic_template, self._device_id)
+        return await self._send_resolved_topic_with_retry(topic, payload)
+
+    async def _send_resolved_topic_with_retry(
+        self,
+        topic: str,
+        payload: Dict[str, Any],
+    ) -> DABResponse:
+        """Send using a fully-resolved topic with timeout/retry policy."""
+        from vertex_live_dab_agent.dab.transport import TransportRequest
+
         last_exc: Optional[Exception] = None
 
         for attempt in range(self._max_retries + 1):
@@ -658,6 +810,97 @@ class AdapterDABClient(DABClientBase):
             f"DAB request failed after {self._max_retries + 1} attempt(s) "
             f"(topic={topic}): {last_exc}"
         ) from last_exc
+
+    async def _discover_devices_broadcast(self, attempts: int = 1, wait_seconds: float = 1.0) -> list[Dict[str, Any]]:
+        """Broadcast to dab/discovery and collect responses on unique response topic."""
+        try:
+            import aiomqtt  # type: ignore
+        except Exception as exc:
+            raise DABError("Broadcast discovery requires aiomqtt") from exc
+
+        broker = getattr(self._transport, "_broker", None)
+        port = getattr(self._transport, "_port", None)
+        if not broker or not port:
+            raise DABError("Broadcast discovery requires MQTT transport")
+
+        try:
+            import paho.mqtt.client as paho_mqtt  # type: ignore
+            client = aiomqtt.Client(hostname=broker, port=int(port), protocol=paho_mqtt.MQTTv5)
+        except Exception:
+            client = aiomqtt.Client(hostname=broker, port=int(port))
+
+        response_topic = f"dab/_response/discovery/{uuid.uuid4().hex}"
+        found: Dict[str, Dict[str, Any]] = {}
+        n_attempts = max(1, int(attempts or 1))
+        wait_s = max(0.2, float(wait_seconds or 1.0))
+
+        def _ingest_payload(payload_obj: Any) -> None:
+            if not isinstance(payload_obj, dict):
+                return
+            candidates: list[Any]
+            if isinstance(payload_obj.get("devices"), list):
+                candidates = payload_obj.get("devices")
+            else:
+                candidates = [payload_obj]
+
+            for item in candidates:
+                if not isinstance(item, dict):
+                    continue
+                device_id = str(item.get("deviceId") or item.get("device_id") or item.get("id") or "").strip()
+                if not device_id:
+                    continue
+                if device_id not in found:
+                    found[device_id] = {
+                        "deviceId": device_id,
+                        "name": item.get("name") or item.get("label") or device_id,
+                        "ip": item.get("ip") or item.get("ipAddress"),
+                    }
+                for k, v in item.items():
+                    if k not in found[device_id] or found[device_id][k] in (None, ""):
+                        found[device_id][k] = v
+
+        async with client:
+            await client.subscribe(response_topic)
+            messages_iter = client.messages.__aiter__()
+
+            publish_kwargs: Dict[str, Any] = {"payload": "{}"}
+            try:
+                from paho.mqtt.packettypes import PacketTypes
+                from paho.mqtt.properties import Properties
+
+                props = Properties(PacketTypes.PUBLISH)
+                props.ResponseTopic = response_topic
+                publish_kwargs["properties"] = props
+            except Exception:
+                pass
+
+            for _ in range(n_attempts):
+                await client.publish("dab/discovery", **publish_kwargs)
+                deadline = time.monotonic() + wait_s
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    try:
+                        async with asyncio.timeout(remaining):
+                            message = await messages_iter.__anext__()
+                    except asyncio.TimeoutError:
+                        break
+                    except StopAsyncIteration:
+                        break
+
+                    raw_payload = getattr(message, "payload", b"{}")
+                    if isinstance(raw_payload, (bytes, bytearray)):
+                        payload_text = raw_payload.decode("utf-8", errors="replace")
+                    else:
+                        payload_text = str(raw_payload)
+                    try:
+                        payload_obj = json.loads(payload_text)
+                    except Exception:
+                        continue
+                    _ingest_payload(payload_obj)
+
+        return list(found.values())
 
 
 # ---------------------------------------------------------------------------

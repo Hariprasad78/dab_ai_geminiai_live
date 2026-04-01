@@ -424,6 +424,117 @@ def test_planner_parse_launch_app_without_app_id_returns_failed(planner):
     assert result.action == ActionType.FAILED
 
 
+def test_planner_context_includes_platform_and_target_fields(planner):
+    context = planner._build_context(
+        goal="Open settings and change timezone",
+        has_screenshot=True,
+        ocr_text=None,
+        current_app="settings",
+        current_screen="SYSTEM",
+        last_actions=["PRESS_DOWN"],
+        retry_count=1,
+        execution_state={
+            "platform_name": "Android TV",
+            "os_family": "android-tv",
+            "app_context": "settings",
+            "target_operation": "SETTING_CHANGE",
+            "target_screen": "Date & Time",
+            "target_item": "Time Zone",
+        },
+    )
+    assert "Platform name: Android TV" in context
+    assert "OS family: android-tv" in context
+    assert "App context: settings" in context
+    assert "Target operation: SETTING_CHANGE" in context
+    assert "Target screen: Date & Time" in context
+    assert "Target item: Time Zone" in context
+
+
+def test_planner_context_includes_navigation_memory_summary(planner):
+    context = planner._build_context(
+        goal="Navigate to timezone",
+        has_screenshot=True,
+        ocr_text=None,
+        current_app="settings",
+        current_screen="SYSTEM",
+        last_actions=["PRESS_DOWN", "PRESS_DOWN"],
+        retry_count=2,
+        execution_state={
+            "navigation_memory": {
+                "recent_actions": ["PRESS_DOWN", "PRESS_RIGHT"],
+                "repeated_no_progress_actions": ["PRESS_DOWN"],
+            }
+        },
+    )
+    assert "Navigation memory:" in context
+    assert "PRESS_RIGHT" in context
+    assert "repeated_no_progress_actions" in context
+
+
+@pytest.mark.asyncio
+async def test_planner_vertex_navigation_uses_session_id_for_chat_memory():
+    class FakeVertexClient:
+        def __init__(self):
+            self.calls = []
+
+        async def generate_content(self, prompt, screenshot_b64=None, session_id=None):
+            self.calls.append({"prompt": prompt, "session_id": session_id, "has_screenshot": bool(screenshot_b64)})
+            return (
+                '{"phase":"navigate","intent":"safe move",'
+                '"execution_mode":"UI_NAVIGATION_ONLY","confidence":0.8,'
+                '"starting_assumption":"continue scanning",'
+                '"action_batch":[{"action":"PRESS_DOWN"}],'
+                '"checkpoint_required":true,"validate_before_commit":false,'
+                '"expected_result":"closer to target","need_screenshot":true,"done":false}'
+            )
+
+    fake = FakeVertexClient()
+    planner = Planner(vertex_client=fake)
+
+    await planner.plan_navigation(
+        goal="Go to timezone",
+        screenshot_b64="aW1hZ2U=",
+        current_app="settings",
+        current_screen="system",
+        last_actions=["PRESS_DOWN"],
+        retry_count=1,
+        execution_state={
+            "platform_name": "Android TV",
+            "os_family": "android-tv",
+            "app_context": "settings",
+            "target_operation": "SETTING_CHANGE",
+            "target_screen": "Date & Time",
+            "target_item": "Time Zone",
+            "navigation_memory": {"recent_actions": ["PRESS_DOWN"]},
+        },
+        session_id="run-123",
+    )
+    await planner.plan_navigation(
+        goal="Go to timezone",
+        screenshot_b64="aW1hZ2U=",
+        current_app="settings",
+        current_screen="system",
+        last_actions=["PRESS_DOWN", "PRESS_RIGHT"],
+        retry_count=2,
+        execution_state={
+            "platform_name": "Android TV",
+            "os_family": "android-tv",
+            "app_context": "settings",
+            "target_operation": "SETTING_CHANGE",
+            "target_screen": "Date & Time",
+            "target_item": "Time Zone",
+            "navigation_memory": {"recent_actions": ["PRESS_DOWN", "PRESS_RIGHT"]},
+        },
+        session_id="run-123",
+    )
+
+    assert len(fake.calls) == 2
+    assert fake.calls[0]["session_id"] == "run-123"
+    assert fake.calls[1]["session_id"] == "run-123"
+    assert "Platform name: Android TV" in fake.calls[1]["prompt"]
+    assert "Navigation memory:" in fake.calls[1]["prompt"]
+
+
 def test_planner_parse_launch_app_with_app_id_succeeds(planner):
     """JSON with LAUNCH_APP and valid app_id must parse correctly."""
     response = (

@@ -1,10 +1,19 @@
 """Main orchestration loop: observe -> plan -> act -> verify -> repeat."""
 import asyncio
+import difflib
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any, Optional
 
+from vertex_live_dab_agent.android_timezone import (
+    get_timezone_via_adb,
+    is_adb_device_online,
+    list_timezones_via_adb,
+    resolve_timezone_from_supported,
+    set_timezone_via_adb,
+)
 from vertex_live_dab_agent.artifacts.logger import ArtifactStore
 from vertex_live_dab_agent.capture.capture import ScreenCapture
 from vertex_live_dab_agent.capture.validator import Validator
@@ -24,6 +33,20 @@ from vertex_live_dab_agent.orchestrator.app_resolver import AppResolver
 from vertex_live_dab_agent.orchestrator.run_state import RunState, RunStatus
 from vertex_live_dab_agent.planner.planner import Planner
 from vertex_live_dab_agent.planner.schemas import ActionType, NavigationBatchAction, PlannedAction, TaskPrePlan
+from vertex_live_dab_agent.system_ops.routing import (
+    has_android_adb_fallback,
+    operation_supported_by_dab,
+    resolve_execution_method,
+)
+from vertex_live_dab_agent.system_ops.device_detection import get_device_platform_info
+from vertex_live_dab_agent.system_ops.capabilities import (
+    build_capability_snapshot,
+    has_key,
+    has_operation,
+    has_setting,
+    normalize_setting_key,
+    normalize_setting_value,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +70,8 @@ class Orchestrator:
         self._max_steps = max_steps if max_steps is not None else self._config.max_steps_per_run
         self._capture_interval_steps = max(1, int(self._config.planner_capture_interval_steps))
         self._step_delay_seconds = max(0.0, float(self._config.planner_step_delay_seconds))
+        self._run_timeout_seconds = max(1.0, float(getattr(self._config, "session_timeout_seconds", 120)))
+        self._step_timeout_seconds = max(1.0, float(getattr(self._config, "orchestrator_step_timeout_seconds", 120.0)))
         artifacts_root = Path(str(self._config.artifacts_base_dir or "./artifacts"))
         profiles_dir = Path(str(self._config.device_profiles_dir or "")).expanduser() if str(self._config.device_profiles_dir or "").strip() else artifacts_root / "device_profiles"
         memory_path = Path(str(self._config.trajectory_memory_path or "")).expanduser() if str(self._config.trajectory_memory_path or "").strip() else artifacts_root / "experience" / "trajectories.jsonl"
@@ -83,13 +108,61 @@ class Orchestrator:
             "mock_mode": self._config.dab_mock_mode,
         })
         logger.info("Run started: run_id=%s goal=%r", state.run_id, state.goal)
+        run_started_at = asyncio.get_running_loop().time()
 
         try:
             while state.status == RunStatus.RUNNING:
                 if state.step_count >= self._max_steps:
                     state.finish(RunStatus.TIMEOUT, "Max steps exceeded")
                     break
-                await self._step(state, store)
+                elapsed_s = asyncio.get_running_loop().time() - run_started_at
+                if elapsed_s >= self._run_timeout_seconds:
+                    state.finish(
+                        RunStatus.TIMEOUT,
+                        (
+                            f"Run timed out after {int(self._run_timeout_seconds)} seconds "
+                            "while executing navigation and verification steps."
+                        ),
+                    )
+                    state.record_ai_event(
+                        {
+                            "type": "run-timeout",
+                            "step": state.step_count,
+                            "timeout_seconds": self._run_timeout_seconds,
+                            "reason": "run deadline reached",
+                        }
+                    )
+                    break
+                try:
+                    await asyncio.wait_for(self._step(state, store), timeout=self._step_timeout_seconds)
+                except asyncio.TimeoutError:
+                    state.finish(
+                        RunStatus.TIMEOUT,
+                        (
+                            f"A navigation step timed out after {int(self._step_timeout_seconds)} seconds. "
+                            "The agent stopped safely."
+                        ),
+                    )
+                    state.record_ai_event(
+                        {
+                            "type": "step-timeout",
+                            "step": state.step_count,
+                            "timeout_seconds": self._step_timeout_seconds,
+                            "strategy": state.strategy_selected,
+                        }
+                    )
+                    self._record_narration(
+                        state,
+                        step=state.step_count,
+                        text=(
+                            f"This step timed out after {int(self._step_timeout_seconds)} seconds. "
+                            "Stopping safely."
+                        ),
+                        category="FAILURE",
+                        priority=90,
+                        interruptible=False,
+                    )
+                    break
         except asyncio.CancelledError:
             state.finish(RunStatus.STOPPED, "Run cancelled")
             logger.info("Run cancelled: run_id=%s", state.run_id)
@@ -254,7 +327,16 @@ class Orchestrator:
                     category="STEP_START",
                 )
         else:
+            platform_name = str(state.device_platform or "Unknown Device").strip() or "Unknown Device"
+            os_family = str(state.device_os_family or "unknown").strip() or "unknown"
             exec_state = {
+                "platform_name": platform_name,
+                "os_family": os_family,
+                "app_context": state.current_app_id or state.current_app or "unknown",
+                "target_operation": str((state.task_preplan or {}).get("step_type") or "MENU_NAVIGATION"),
+                "target_screen": str(state.last_expected_screen or state.current_screen or "unknown"),
+                "target_item": str(state.focus_target_guess or "unknown"),
+                "navigation_memory": self._build_navigation_memory_summary(state),
                 "current_app_guess": state.current_app,
                 "current_screen_guess": state.current_screen_guess or state.current_screen,
                 "highlighted_item_guess": state.highlighted_item_guess,
@@ -265,6 +347,7 @@ class Orchestrator:
                 "app_catalog": state.app_catalog,
                 "supported_keys": state.supported_keys,
                 "supported_settings": state.supported_settings,
+                "capability_snapshot": state.capability_snapshot,
                 "resolved_apps_cache": state.resolved_apps_cache,
                 "strategy_selected": state.strategy_selected,
                 "hybrid_policy_mode": state.hybrid_policy_mode,
@@ -315,6 +398,26 @@ class Orchestrator:
                 session_id=state.run_id,
                 master_plan=state.master_plan,
             )
+            vertex_prompt = str(getattr(self._planner, "last_vertex_prompt", "") or "").strip()
+            if vertex_prompt:
+                state.record_ai_event(
+                    {
+                        "type": "gemini-request",
+                        "step": step,
+                        "session_id": state.run_id,
+                        "prompt": vertex_prompt,
+                    }
+                )
+            vertex_response = str(getattr(self._planner, "last_vertex_response", "") or "").strip()
+            if vertex_response:
+                state.record_ai_event(
+                    {
+                        "type": "gemini-response",
+                        "step": step,
+                        "session_id": state.run_id,
+                        "response": vertex_response,
+                    }
+                )
             state.nav_confidence = float(nav_plan.confidence)
             state.current_screen_guess = state.current_screen or state.current_screen_guess
             nav_phase = nav_plan.phase
@@ -456,6 +559,10 @@ class Orchestrator:
                             "reason": f"Batch follow-up after {planned.action}",
                         }
                     )
+
+            # For short directional batches, force a visual re-check checkpoint.
+            if self._requires_batch_recheck(nav_action_batch):
+                nav_checkpoint_required = True
 
             if nav_checkpoint_required:
                 if not state.pending_subplan or state.pending_subplan[-1].get("action") != ActionType.CAPTURE_SCREENSHOT.value:
@@ -623,6 +730,41 @@ class Orchestrator:
             visual_summary_before_action=visual_summary_before_action,
         )
 
+        # Settings goals are single-operation tasks in this workflow.
+        # After a successful GET/SET setting action (DAB or Android ADB fallback),
+        # stop the run instead of repeating the same action until timeout.
+        planned_action_name = str(getattr(planned.action, "value", planned.action) or "").upper()
+        setting_key_name = str((planned.params or {}).get("key") or "").strip().lower()
+        if (
+            action_success
+            and planned_action_name in {ActionType.GET_SETTING.value, ActionType.SET_SETTING.value}
+            and (
+                self._is_settings_goal(state.goal)
+                or self._normalize_step_type((state.task_preplan or {}).get("step_type", "")) == "SETTING_CHANGE"
+                or setting_key_name in {"timezone", "time_zone", "time-zone", "language", "brightness", "contrast", "screensaver"}
+            )
+        ):
+            state.record_ai_event(
+                {
+                    "type": "terminal",
+                    "step": step,
+                    "status": "DONE",
+                    "reason": "settings operation completed successfully",
+                    "action": planned_action_name,
+                    "setting_key": setting_key_name,
+                }
+            )
+            self._record_narration(
+                state,
+                step=step,
+                text="Settings operation completed successfully.",
+                category="SUCCESS",
+                priority=90,
+                interruptible=False,
+            )
+            state.finish(RunStatus.DONE)
+            return
+
         if (
             str(planned.action).upper() == ActionType.PRESS_OK.value
             and self._is_youtube_player_task(state.goal)
@@ -659,6 +801,7 @@ class Orchestrator:
         else:
             state.steps_since_observe += 1
 
+        self._record_navigation_memory(state, planned, action_success)
         self._update_no_progress_tracking(state, str(planned.action), bool(action_success))
 
         # Small pause between steps
@@ -743,6 +886,19 @@ class Orchestrator:
                 return idx
             return None
         return None
+
+    def _requires_batch_recheck(self, batch: list[dict]) -> bool:
+        if len(batch) < 2:
+            return False
+        directional_count = sum(
+            1
+            for step in batch
+            if self._is_directional_action(str((step or {}).get("action", "")))
+        )
+        if directional_count >= 2:
+            return True
+        has_commit = any(str((step or {}).get("action", "")).upper() in {ActionType.PRESS_OK.value, "PRESS_ENTER"} for step in batch)
+        return directional_count >= 1 and has_commit
 
     async def _run_stuck_diagnosis_if_needed(self, state: RunState, step: int) -> list[dict]:
         if not self._is_stuck_navigation(state):
@@ -900,7 +1056,6 @@ class Orchestrator:
         goal = str(ctx.get("test_goal", "")).lower()
         current_app_state = str(ctx.get("current_app_state", "")).upper()
         screenshot_summary = str(ctx.get("current_screenshot_summary", "")).lower()
-        ops = [str(o).lower() for o in (ctx.get("available_operations") or [])]
 
         if self._is_youtube_player_task(goal):
             current_app = str(ctx.get("current_app") or "").lower()
@@ -1013,11 +1168,29 @@ class Orchestrator:
 
         if self._is_settings_goal(goal):
             setting_key = self._infer_setting_key_from_goal(goal, state.supported_settings)
-            if setting_key and any("system/settings/get" in o for o in ops):
+            setting_value = self._infer_setting_value_from_goal(state.goal)
+            if setting_key:
+                desired_operation = "system/settings/set" if setting_value is not None else "system/settings/get"
+                method, reason = self._resolve_setting_execution_method(state, desired_operation, setting_key)
+                if method in {"dab", "adb"}:
+                    action = ActionType.SET_SETTING.value if setting_value is not None else ActionType.GET_SETTING.value
+                    params = {"key": "timezone" if self._is_timezone_setting_key(setting_key) else setting_key}
+                    if setting_value is not None:
+                        params["value"] = setting_value
+                    return (
+                        "USE_DIRECT_DAB_OPERATION",
+                        f"Using {method.upper()} settings operation based on goal and supported capabilities",
+                        [{"action": action, "params": params}],
+                    )
                 return (
-                    "USE_DIRECT_DAB_OPERATION",
-                    "Using direct settings operation based on goal and supported capabilities",
-                    [{"action": ActionType.GET_SETTING.value, "params": {"key": setting_key}}],
+                    "FAIL_WITH_GROUNDED_REASON",
+                    f"Settings operation is unsupported for this device path: {reason}",
+                    [
+                        {
+                            "action": ActionType.FAILED.value,
+                            "params": {"reason": f"unsupported_settings_operation: {reason}"},
+                        }
+                    ],
                 )
 
         if "home" in screenshot_summary or "launcher" in screenshot_summary:
@@ -1047,6 +1220,37 @@ class Orchestrator:
         goal_l = (state.goal or "").lower()
         preplan = state.task_preplan or {}
 
+        if not state.device_info and hasattr(self._dab, "get_device_info"):
+            try:
+                info_resp = await self._dab.get_device_info()
+                payload = info_resp.data if isinstance(getattr(info_resp, "data", None), dict) else {}
+                if payload:
+                    state.device_info = payload
+                    self._refresh_device_type_from_info(state, payload)
+                    await self._refresh_device_type_from_adb(state)
+                    logger.info(
+                        "Device type detection: run_id=%s platform=%s is_android=%s is_android_tv=%s connection=%s adb_device_id=%s detection_error=%s",
+                        state.run_id,
+                        state.device_platform,
+                        state.is_android_device,
+                        state.is_android_tv_device,
+                        state.device_connection_type,
+                        state.android_adb_device_id,
+                        state.device_detection_error,
+                    )
+            except Exception as exc:
+                logger.warning("Capability bootstrap device/info failed: %s", exc)
+
+        if state.is_android_device is None:
+            configured_hint = str(self._config.dab_device_id or "").strip().lower()
+            state.is_android_device = "android" in configured_hint or configured_hint.startswith("adb:")
+        if not state.android_adb_device_id:
+            state.android_adb_device_id = self._infer_adb_device_id_from_value(self._config.dab_device_id)
+        adb_hint = str(state.android_adb_device_id or "")
+        looks_adb_target = ":" in adb_hint or str(adb_hint).lower().startswith("emulator-") or str(self._config.dab_device_id or "").strip().lower().startswith("adb:")
+        if state.android_adb_device_id and (bool(state.is_android_device) or looks_adb_target):
+            await self._refresh_device_type_from_adb(state)
+
         if not state.supported_operations:
             try:
                 resp = await self._dab.list_operations()
@@ -1071,12 +1275,8 @@ class Orchestrator:
             except Exception as exc:
                 logger.warning("Capability bootstrap applications/list failed: %s", exc)
 
-        need_keys = (not state.supported_keys) and (
-            "ui" in goal_l or "navigate" in goal_l or "press" in goal_l or "open" in goal_l
-            or self._is_settings_goal(state.goal)
-            or str(preplan.get("step_type", "")) == "DIRECT_KEY_VALIDATION"
-        )
-        if need_keys:
+        has_key_list_op = any("input/key/list" in str(o).lower() for o in state.supported_operations)
+        if (not state.supported_keys) and has_key_list_op:
             try:
                 resp = await self._dab.list_keys()
                 keys = (resp.data or {}).get("keys", []) if isinstance(resp.data, dict) else []
@@ -1085,19 +1285,55 @@ class Orchestrator:
             except Exception as exc:
                 logger.warning("Capability bootstrap input/key/list failed: %s", exc)
 
-        need_settings = (not state.supported_settings) and self._is_settings_goal(state.goal)
         has_settings_list_op = any("system/settings/list" in str(o).lower() for o in state.supported_operations)
-        if need_settings and has_settings_list_op and hasattr(self._dab, "list_settings"):
+        if (not state.supported_settings) and has_settings_list_op and hasattr(self._dab, "list_settings"):
             try:
                 resp = await self._dab.list_settings()
                 settings = (resp.data or {}).get("settings", []) if isinstance(resp.data, dict) else []
                 if isinstance(settings, list):
                     state.supported_settings = [s for s in settings if isinstance(s, dict)]
+                if not bool(getattr(resp, "success", False)):
+                    self._record_direct_setting_failure(state, "system/settings/list", "*", resp)
+                warning_text = str((resp.data or {}).get("warning") if isinstance(getattr(resp, "data", None), dict) else "")
+                if (
+                    bool((resp.data or {}).get("degraded"))
+                    and "no shell command implementation" in warning_text.lower()
+                ):
+                    state.unsupported_direct_operations[self._direct_op_cache_key("system/settings/get", "*")] = {
+                        "step": state.step_count,
+                        "operation": "system/settings/get",
+                        "setting_key": "*",
+                        "reason": warning_text or "settings/list degraded due unsupported shell command",
+                        "status": int(getattr(resp, "status", 0) or 0),
+                        "failure_count": int(state.direct_operation_failures.get(self._direct_op_cache_key("system/settings/get", "*"), 0)) + 1,
+                    }
+                    state.unsupported_direct_operations[self._direct_op_cache_key("system/settings/set", "*")] = {
+                        "step": state.step_count,
+                        "operation": "system/settings/set",
+                        "setting_key": "*",
+                        "reason": warning_text or "settings/list degraded due unsupported shell command",
+                        "status": int(getattr(resp, "status", 0) or 0),
+                        "failure_count": int(state.direct_operation_failures.get(self._direct_op_cache_key("system/settings/set", "*"), 0)) + 1,
+                    }
             except Exception as exc:
                 logger.warning("Capability bootstrap system/settings/list failed: %s", exc)
 
+        state.capability_snapshot = build_capability_snapshot(
+            supported_operations=state.supported_operations,
+            supported_settings=state.supported_settings,
+            supported_keys=state.supported_keys,
+        )
+        state.capability_preflight_done = True
+        logger.info(
+            "Capability preflight: run_id=%s operations=%d settings=%d keys=%d",
+            state.run_id,
+            len(state.capability_snapshot.get("supported_operations") or []),
+            len(state.capability_snapshot.get("supported_settings") or {}),
+            len(state.capability_snapshot.get("supported_keys") or []),
+        )
+
         state.resolved_apps_cache = self._app_resolver.get_session_resolutions(state.run_id)
-        if state.supported_operations or state.app_catalog or state.supported_settings:
+        if (state.supported_operations or state.app_catalog or state.supported_settings) and hasattr(self, "_device_profiles"):
             profile = self._device_profiles.upsert_from_capabilities(
                 device_id=self._config.dab_device_id,
                 supported_operations=state.supported_operations,
@@ -1234,7 +1470,7 @@ class Orchestrator:
                 return [{"action": ActionType.NEED_STATS_FOR_NERDS_TOGGLE_CONFIRMATION.value, "params": {}}]
             return []
 
-        if state.step_count > 0:
+        if state.step_count > 0 and not self._is_settings_goal(state.goal):
             return []
 
         if step_type == "DIRECT_KEY_VALIDATION" and required_action:
@@ -1250,17 +1486,84 @@ class Orchestrator:
         can_launch = any("applications/launch" in o for o in ops)
         can_launch_with_content = any("applications/launch-with-content" in o for o in ops)
         can_content_open = any("content/open" in o for o in ops)
-        can_get_setting = any("system/settings/get" in o for o in ops)
-        can_set_setting = any("system/settings/set" in o for o in ops)
 
+        snapshot = state.capability_snapshot or build_capability_snapshot(
+            supported_operations=state.supported_operations,
+            supported_settings=state.supported_settings,
+            supported_keys=state.supported_keys,
+        )
         setting_key = self._infer_setting_key_from_goal(state.goal, state.supported_settings)
-        if setting_key and (can_get_setting or can_set_setting):
-            state.strategy_selected = "DIRECT_SETTING_OPERATION"
-            setting_value = self._infer_setting_value_from_goal(state.goal)
-            if setting_value is not None and can_set_setting:
-                return [{"action": ActionType.SET_SETTING.value, "params": {"key": setting_key, "value": setting_value}}]
-            if can_get_setting:
+        setting_value = self._infer_setting_value_from_goal(state.goal) if setting_key else None
+        if setting_key:
+            resolved_key = str(setting_key or "").strip()
+            key_norm = normalize_setting_key(snapshot, resolved_key)
+            if bool(key_norm.get("success")):
+                resolved_key = str(key_norm.get("key") or resolved_key)
+                if bool(key_norm.get("corrected")):
+                    logger.info("Normalized setting key before planning: original=%s normalized=%s", setting_key, resolved_key)
+            elif self._is_timezone_setting_key(resolved_key):
+                resolved_key = "timezone"
+            else:
+                state.strategy_selected = "UNSUPPORTED_SETTING_OPERATION"
+                return [{"action": ActionType.FAILED.value, "params": {"reason": str(key_norm.get("reason") or "unsupported setting key")}}]
+            setting_key = resolved_key
+
+            desired_operation = "system/settings/set" if setting_value is not None else "system/settings/get"
+            method, reason = self._resolve_setting_execution_method(state, desired_operation, setting_key)
+            logger.info(
+                "Settings routing decision: run_id=%s operation=%s key=%s method=%s reason=%s",
+                state.run_id,
+                desired_operation,
+                setting_key,
+                method,
+                reason,
+            )
+
+            if method in {"dab", "adb"}:
+                state.strategy_selected = "DIRECT_SETTING_OPERATION"
+                if setting_value is not None:
+                    resolved_value = setting_value
+                    if method == "dab":
+                        value_norm = normalize_setting_value(snapshot, setting_key, setting_value)
+                        if not bool(value_norm.get("success")):
+                            return [{"action": ActionType.FAILED.value, "params": {"reason": str(value_norm.get("reason") or "invalid setting value")}}]
+                        resolved_value = value_norm.get("value")
+                        if bool(value_norm.get("corrected")):
+                            logger.info(
+                                "Normalized setting value before planning: key=%s original=%s normalized=%s",
+                                setting_key,
+                                setting_value,
+                                resolved_value,
+                            )
+                    return [{"action": ActionType.SET_SETTING.value, "params": {"key": setting_key, "value": resolved_value}}]
                 return [{"action": ActionType.GET_SETTING.value, "params": {"key": setting_key}}]
+
+            state.strategy_selected = "UNSUPPORTED_SETTING_OPERATION"
+            return [
+                {
+                    "action": ActionType.FAILED.value,
+                    "params": {
+                        "reason": (
+                            f"Unsupported settings operation '{desired_operation}' for key '{setting_key}'. "
+                            f"{reason}. UI navigation fallback is disabled for settings operations."
+                        )
+                    },
+                }
+            ]
+
+        if self._is_settings_goal(state.goal):
+            state.strategy_selected = "UNSUPPORTED_SETTING_OPERATION"
+            return [
+                {
+                    "action": ActionType.FAILED.value,
+                    "params": {
+                        "reason": (
+                            "Settings operation requested but no supported setting key was identified. "
+                            "UI navigation fallback is disabled for settings operations."
+                        )
+                    },
+                }
+            ]
 
         target_name = self._infer_target_app_name_from_goal(state.goal, state.app_catalog)
         has_content = bool(str(state.launch_content or "").strip())
@@ -1306,6 +1609,299 @@ class Orchestrator:
 
         state.strategy_selected = "UI_NAVIGATION_ONLY"
         return []
+
+    @staticmethod
+    def _direct_op_cache_key(operation: str, setting_key: Optional[str]) -> str:
+        op = str(operation or "").strip().lower()
+        key = str(setting_key or "*").strip().lower() or "*"
+        return f"{op}:{key}"
+
+    @staticmethod
+    def _extract_resp_error_text(resp: Any) -> str:
+        data = getattr(resp, "data", {}) or {}
+        if isinstance(data, dict):
+            return str(data.get("error") or data.get("message") or "").strip()
+        return ""
+
+    def _is_known_unsupported_direct_op_response(self, resp: Any) -> bool:
+        status = int(getattr(resp, "status", 0) or 0)
+        if status < 500:
+            return False
+        lowered = self._extract_resp_error_text(resp).lower()
+        return any(
+            marker in lowered
+            for marker in (
+                "no shell command implementation",
+                "getcecenabled",
+                "getcurrentsystemsettings",
+                "getsystemsettings",
+                "listsystemsettings",
+                "listsupportedsystemsettings",
+            )
+        )
+
+    @staticmethod
+    def _is_timezone_setting_key(setting_key: Optional[str]) -> bool:
+        key = str(setting_key or "").strip().lower()
+        return key in {"timezone", "time_zone", "time-zone"}
+
+    @staticmethod
+    def _infer_adb_device_id_from_value(raw_device_id: Optional[str]) -> Optional[str]:
+        value = str(raw_device_id or "").strip()
+        if not value:
+            return None
+        lower = value.lower()
+        if lower.startswith("adb:"):
+            tail = value[4:].strip()
+            return tail or None
+        if value.upper().startswith("DAB/"):
+            return None
+        return value
+
+    def _refresh_device_type_from_info(self, state: RunState, info: dict[str, Any]) -> None:
+        platform = str(
+            info.get("platform")
+            or info.get("osFamily")
+            or info.get("os")
+            or info.get("deviceType")
+            or ""
+        ).strip()
+        lower_platform = platform.lower()
+        looks_android = any(token in lower_platform for token in ("android", "android-tv", "tvos-android"))
+        looks_android_tv = any(token in lower_platform for token in ("android-tv", "google-tv", "television", "leanback"))
+        state.device_platform = platform or state.device_platform
+        state.device_os_family = lower_platform or state.device_os_family
+        state.is_android_device = looks_android if platform else state.is_android_device
+        state.is_android_tv_device = looks_android_tv if platform else state.is_android_tv_device
+
+        adb_candidates = [
+            info.get("adbDeviceId"),
+            info.get("adb_device_id"),
+            info.get("adbSerial"),
+            info.get("adb_serial"),
+            info.get("adb"),
+            info.get("serial"),
+            info.get("deviceId"),
+            info.get("device_id"),
+            self._config.dab_device_id,
+        ]
+        for candidate in adb_candidates:
+            resolved = self._infer_adb_device_id_from_value(str(candidate or "").strip())
+            if resolved:
+                state.android_adb_device_id = resolved
+                break
+
+    async def _refresh_device_type_from_adb(self, state: RunState) -> None:
+        adb_device_id = str(state.android_adb_device_id or "").strip()
+        if not adb_device_id:
+            return
+        try:
+            platform_info = await get_device_platform_info(adb_device_id)
+        except Exception as exc:
+            state.device_detection_error = str(exc)
+            logger.warning("ADB device detection failed: device_id=%s error=%s", adb_device_id, exc)
+            return
+
+        state.device_connection_type = str(platform_info.get("connection_type") or state.device_connection_type or "unknown")
+        state.device_detection_error = str(platform_info.get("error") or "").strip() or None
+        evidence = platform_info.get("evidence")
+        if isinstance(evidence, dict):
+            state.device_detection_evidence = dict(evidence)
+
+        if bool(platform_info.get("reachable")):
+            state.is_android_device = bool(platform_info.get("is_android"))
+            state.is_android_tv_device = bool(platform_info.get("is_android_tv"))
+            sdk = str(platform_info.get("sdk") or "").strip()
+            product = str(platform_info.get("product") or "").strip()
+            characteristics = str(platform_info.get("build_characteristics") or "").strip()
+            state.device_info.update(
+                {
+                    "adb_device_id": adb_device_id,
+                    "connection_type": state.device_connection_type,
+                    "adb_detection": {
+                        "sdk": sdk,
+                        "product": product,
+                        "build_characteristics": characteristics,
+                        "tv_features": list(platform_info.get("tv_features") or []),
+                    },
+                }
+            )
+            logger.info(
+                "ADB device classification: run_id=%s device_id=%s connection=%s is_android=%s is_android_tv=%s evidence=%s",
+                state.run_id,
+                adb_device_id,
+                state.device_connection_type,
+                state.is_android_device,
+                state.is_android_tv_device,
+                state.device_detection_evidence,
+            )
+        else:
+            logger.warning(
+                "ADB device classification unreachable: run_id=%s device_id=%s connection=%s error=%s",
+                state.run_id,
+                adb_device_id,
+                state.device_connection_type,
+                state.device_detection_error,
+            )
+
+    def _is_direct_setting_unavailable_for_fallback(self, state: RunState, resp: Any, operation: str, setting_key: Optional[str]) -> bool:
+        if self._is_direct_setting_op_unavailable(state, operation, setting_key):
+            return True
+        if not any("system/settings/set" in str(o).lower() for o in (state.supported_operations or [])):
+            return True
+
+        status = int(getattr(resp, "status", 0) or 0)
+        if status in {404, 405, 501}:
+            return True
+        lowered = self._extract_resp_error_text(resp).lower()
+        unavailable_markers = (
+            "not supported",
+            "unsupported",
+            "not implemented",
+            "unavailable",
+            "no shell command implementation",
+            "operation not found",
+        )
+        return any(marker in lowered for marker in unavailable_markers)
+
+    def _can_attempt_android_timezone_adb_fallback(self, state: RunState) -> bool:
+        is_android = bool(state.is_android_device)
+        adb_device_id = str(state.android_adb_device_id or "").strip()
+        if not is_android:
+            return False
+        return bool(adb_device_id)
+
+    def _resolve_setting_execution_method(self, state: RunState, operation: str, setting_key: Optional[str]) -> tuple[str, str]:
+        snapshot = state.capability_snapshot or build_capability_snapshot(
+            supported_operations=state.supported_operations,
+            supported_settings=state.supported_settings,
+            supported_keys=state.supported_keys,
+        )
+        input_key = str(setting_key or "").strip()
+        normalized_key = input_key
+        key_known_in_snapshot = False
+        if normalized_key:
+            key_norm = normalize_setting_key(snapshot, normalized_key)
+            if bool(key_norm.get("success")):
+                normalized_key = str(key_norm.get("key") or normalized_key)
+                key_known_in_snapshot = has_setting(snapshot, normalized_key)
+            elif self._is_timezone_setting_key(normalized_key):
+                # Allow Android timezone fallback even when system/settings/list is missing/incomplete.
+                normalized_key = "timezone"
+                key_known_in_snapshot = has_setting(snapshot, normalized_key)
+            else:
+                return "unsupported", str(key_norm.get("reason") or "setting key is unsupported")
+
+        dab_supported = operation_supported_by_dab(state.supported_operations or [], operation)
+        if not has_operation(snapshot, operation):
+            dab_supported = False
+        if normalized_key and not key_known_in_snapshot:
+            dab_supported = False
+        if self._is_direct_setting_op_unavailable(state, operation, normalized_key):
+            dab_supported = False
+        adb_fallback_available = has_android_adb_fallback(operation, normalized_key)
+        decision = resolve_execution_method(
+            is_android=bool(state.is_android_device),
+            dab_supported=dab_supported,
+            adb_fallback_available=adb_fallback_available,
+        )
+        if decision.method == "unsupported" and state.device_detection_error and adb_fallback_available and not dab_supported:
+            return decision.method, f"{decision.reason}; adb detection error: {state.device_detection_error}"
+        return decision.method, decision.reason
+
+    def _is_direct_setting_op_unavailable(self, state: RunState, operation: str, setting_key: Optional[str]) -> bool:
+        specific = self._direct_op_cache_key(operation, setting_key)
+        wildcard = self._direct_op_cache_key(operation, "*")
+        return specific in state.unsupported_direct_operations or wildcard in state.unsupported_direct_operations
+
+    def _record_strategy_transition(
+        self,
+        state: RunState,
+        *,
+        new_strategy: str,
+        reason: str,
+        operation: Optional[str] = None,
+        setting_key: Optional[str] = None,
+    ) -> None:
+        previous = str(state.strategy_selected or "UI_NAVIGATION_ONLY")
+        if previous == new_strategy:
+            return
+        transition = {
+            "step": state.step_count,
+            "from": previous,
+            "to": new_strategy,
+            "reason": reason,
+            "operation": operation,
+            "setting_key": setting_key,
+        }
+        state.strategy_transitions.append(transition)
+        if len(state.strategy_transitions) > 100:
+            state.strategy_transitions = state.strategy_transitions[-100:]
+        state.record_ai_event({"type": "strategy-transition", **transition})
+        logger.info(
+            "Strategy transition: run_id=%s step=%d from=%s to=%s op=%s key=%s reason=%s",
+            state.run_id,
+            state.step_count,
+            previous,
+            new_strategy,
+            operation,
+            setting_key,
+            reason,
+        )
+        state.strategy_selected = new_strategy
+
+    def _record_direct_setting_failure(self, state: RunState, operation: str, setting_key: Optional[str], resp: Any) -> None:
+        cache_key = self._direct_op_cache_key(operation, setting_key)
+        count = int(state.direct_operation_failures.get(cache_key, 0)) + 1
+        state.direct_operation_failures[cache_key] = count
+        error_text = self._extract_resp_error_text(resp)
+        known_unsupported = self._is_known_unsupported_direct_op_response(resp)
+
+        if known_unsupported and count >= 1:
+            state.unsupported_direct_operations[cache_key] = {
+                "step": state.step_count,
+                "operation": operation,
+                "setting_key": setting_key,
+                "reason": error_text or "Unsupported direct DAB operation",
+                "status": int(getattr(resp, "status", 0) or 0),
+                "failure_count": count,
+            }
+            state.record_ai_event(
+                {
+                    "type": "direct-op-unsupported",
+                    "step": state.step_count,
+                    "operation": operation,
+                    "setting_key": setting_key,
+                    "status": int(getattr(resp, "status", 0) or 0),
+                    "failure_count": count,
+                    "reason": error_text,
+                }
+            )
+            blocked_id = f"{operation}:{setting_key or '*'}"
+            if blocked_id not in state.blocked_actions:
+                state.blocked_actions.append(blocked_id)
+            self._record_narration(
+                state,
+                step=state.step_count,
+                text=(
+                    "Direct DAB settings access is not supported for this operation. "
+                    "Executor will use Android ADB fallback when available."
+                ),
+                category="RECOVERY",
+                priority=75,
+            )
+
+    def _build_settings_ui_fallback_batch(self, state: RunState) -> list[dict]:
+        keys = {str(k).upper() for k in (state.supported_keys or [])}
+        batch: list[dict] = []
+        if "KEY_HOME" in keys:
+            batch.append({"action": ActionType.PRESS_HOME.value, "params": {}})
+            batch.append({"action": ActionType.WAIT.value, "params": {"seconds": 0.8}})
+        elif "KEY_BACK" in keys:
+            batch.append({"action": ActionType.PRESS_BACK.value, "params": {}})
+            batch.append({"action": ActionType.WAIT.value, "params": {"seconds": 0.6}})
+        batch.append({"action": ActionType.CAPTURE_SCREENSHOT.value, "params": {}})
+        return batch
 
     def _build_task_preplan(self, state: RunState) -> TaskPrePlan:
         g = (state.goal or "").strip()
@@ -1407,10 +2003,10 @@ class Orchestrator:
         elif "time zone" in gl or "timezone" in gl or "change" in gl or "set" in gl:
             step_type = "SETTING_CHANGE"
             target_domain = "SYSTEM_SETTINGS"
-            needs_settings_navigation = True
+            needs_settings_navigation = False
             verification_mode = "STATE_OR_VISUAL"
-            minimal_action_path = ["DIRECT_SETTING_IF_SUPPORTED", "VERIFY_SETTING", "UI_FALLBACK_IF_NEEDED"]
-            reason = "Step appears to require setting modification"
+            minimal_action_path = ["DIRECT_SETTING_IF_SUPPORTED", "VERIFY_SETTING", "ANDROID_ADB_FALLBACK_IF_DIRECT_UNSUPPORTED"]
+            reason = "Step requires direct settings operation without UI navigation"
         elif "confirm" in gl or "verify" in gl or "check" in gl:
             step_type = "VISUAL_CONFIRMATION"
             verification_mode = "VISUAL"
@@ -1572,6 +2168,47 @@ class Orchestrator:
         if phase:
             state.last_player_phase = phase
 
+    def _build_navigation_memory_summary(self, state: RunState) -> dict[str, Any]:
+        recent = list(state.navigation_memory[-8:])
+        recent_actions = [str(item.get("action", "")) for item in recent if isinstance(item, dict)]
+        no_progress_actions = [
+            str(item.get("action", ""))
+            for item in recent
+            if isinstance(item, dict) and bool(item.get("focus_changed")) is False
+        ]
+        return {
+            "recent_steps": recent,
+            "recent_actions": recent_actions,
+            "failed_paths": list(state.failed_paths[-8:]),
+            "blocked_actions": list(state.blocked_actions[-8:]),
+            "repeated_no_progress_actions": no_progress_actions[-5:],
+            "last_known_ui_region": str(state.focus_target_guess or state.current_screen_guess or state.current_screen or "unknown"),
+            "last_focus_change_detected": state.last_focus_change_detected,
+            "strategy_selected": state.strategy_selected,
+        }
+
+    def _record_navigation_memory(self, state: RunState, planned: PlannedAction, action_success: bool) -> None:
+        prev_fp = str(state.last_screen_fingerprint or "")
+        current_fp = self._visual_summary_fingerprint(state.latest_visual_summary or "")
+        focus_changed = bool(current_fp and prev_fp and current_fp != prev_fp)
+        if not prev_fp:
+            focus_changed = action_success
+        state.last_focus_change_detected = focus_changed
+
+        entry = {
+            "step": state.step_count,
+            "action": str(planned.action),
+            "reason": str(planned.reason or ""),
+            "params": dict(planned.params or {}),
+            "success": bool(action_success),
+            "focus_changed": bool(focus_changed),
+            "ui_region": str(state.focus_target_guess or state.current_screen or "unknown"),
+            "screen": str(state.current_screen or state.current_app_state or "unknown"),
+        }
+        state.navigation_memory.append(entry)
+        if len(state.navigation_memory) > 120:
+            state.navigation_memory = state.navigation_memory[-120:]
+
     @staticmethod
     def _is_player_controls_visible(state: RunState) -> bool:
         visual_summary = str(state.latest_visual_summary or "").lower()
@@ -1621,6 +2258,89 @@ class Orchestrator:
     def _sanitize_planned_action_for_goal(self, state: RunState, planned: PlannedAction) -> PlannedAction:
         action = str(planned.action).upper()
         params = planned.params or {}
+
+        if self._is_settings_goal(state.goal):
+            allowed_actions = {
+                ActionType.GET_SETTING.value,
+                ActionType.SET_SETTING.value,
+                ActionType.FAILED.value,
+                ActionType.DONE.value,
+            }
+            if action not in allowed_actions:
+                return PlannedAction(
+                    action=ActionType.FAILED,
+                    confidence=max(0.85, planned.confidence),
+                    reason=(
+                        "UI navigation is disabled for settings-related operations; "
+                        "only direct settings operations are allowed "
+                        "(GET_SETTING/SET_SETTING with DAB or Android ADB fallback)."
+                    ),
+                )
+
+        # Global ENTER/OK safety gate: never commit with weak confidence.
+        if action in {ActionType.PRESS_OK.value, "PRESS_ENTER"} and float(planned.confidence) < 0.72:
+            state.record_ai_event(
+                {
+                    "type": "enter-gate-blocked",
+                    "step": state.step_count,
+                    "confidence": float(planned.confidence),
+                    "reason": "low confidence commit prevented",
+                }
+            )
+            if self._has_usable_visual_summary(state):
+                return PlannedAction(
+                    action=ActionType.PRESS_RIGHT,
+                    confidence=0.72,
+                    reason="ENTER blocked at low confidence; making one safe focus move before re-check",
+                )
+            return PlannedAction(
+                action=ActionType.CAPTURE_SCREENSHOT,
+                confidence=0.74,
+                reason="ENTER blocked at low confidence; capturing screenshot for safer next move",
+            )
+
+        # If the same directional action repeatedly produced no visible change,
+        # adjust strategy instead of repeating blind moves.
+        if action in {ActionType.PRESS_UP.value, ActionType.PRESS_DOWN.value, ActionType.PRESS_LEFT.value, ActionType.PRESS_RIGHT.value}:
+            recent = [item for item in state.navigation_memory[-4:] if isinstance(item, dict)]
+            same_no_progress = [
+                item for item in recent
+                if str(item.get("action", "")).upper() == action and bool(item.get("focus_changed")) is False
+            ]
+            if len(same_no_progress) >= 2:
+                self._record_strategy_transition(
+                    state,
+                    new_strategy="UI_NAVIGATION_FALLBACK",
+                    reason="Repeated no-progress directional moves; adapting navigation strategy",
+                )
+                state.record_ai_event(
+                    {
+                        "type": "navigation-strategy-adjusted",
+                        "step": state.step_count,
+                        "blocked_action": action,
+                        "reason": "same move produced no progress repeatedly",
+                    }
+                )
+                return PlannedAction(
+                    action=ActionType.CAPTURE_SCREENSHOT,
+                    confidence=0.78,
+                    reason="Repeated directional no-progress detected; re-checking UI before next move",
+                )
+
+        if action in {ActionType.GET_SETTING.value, ActionType.SET_SETTING.value}:
+            setting_key = str(params.get("key", "")).strip() or None
+            operation = "system/settings/get" if action == ActionType.GET_SETTING.value else "system/settings/set"
+            method, reason = self._resolve_setting_execution_method(state, operation, setting_key)
+            if method in {"dab", "adb"}:
+                return planned
+            return PlannedAction(
+                action=ActionType.FAILED,
+                confidence=max(0.8, planned.confidence),
+                reason=(
+                    f"Unsupported settings action '{operation}' for '{setting_key or 'unknown'}': {reason}. "
+                    "UI navigation fallback is disabled."
+                ),
+            )
 
         if action == ActionType.NEED_BETTER_VIEW.value:
             repeat = 0
@@ -1808,7 +2528,8 @@ class Orchestrator:
 
     def _infer_setting_key_from_goal(self, goal: str, supported_settings: list[dict]) -> Optional[str]:
         g = (goal or "").lower()
-        candidates = []
+        candidates: list[str] = []
+        aliases: dict[str, str] = {}
         for item in supported_settings or []:
             if not isinstance(item, dict):
                 continue
@@ -1818,10 +2539,33 @@ class Orchestrator:
                 return key
             if key:
                 candidates.append(key)
+                aliases[key.lower()] = key
+            if friendly and key:
+                aliases[friendly] = key
         if "time zone" in g or "timezone" in g:
+            return "timezone"
+        if "language" in g or "locale" in g:
+            return "language"
+        if "brightness" in g:
             for key in candidates:
-                if "time" in key.lower() or "zone" in key.lower():
+                if "bright" in key.lower():
                     return key
+
+        goal_token = " ".join([tok for tok in re.split(r"[^a-z0-9]+", g) if tok])
+        if goal_token and aliases:
+            best = difflib.get_close_matches(goal_token, list(aliases.keys()), n=1, cutoff=0.72)
+            if best:
+                return aliases[best[0]]
+
+            best_key = None
+            best_score = 0.0
+            for alias_text, resolved_key in aliases.items():
+                score = difflib.SequenceMatcher(a=goal_token, b=alias_text).ratio()
+                if score > best_score:
+                    best_score = score
+                    best_key = resolved_key
+            if best_key and best_score >= 0.64:
+                return best_key
         return None
 
     @staticmethod
@@ -1947,6 +2691,15 @@ class Orchestrator:
         action = planned.action
         params = planned.params or {}
 
+        if action in {ActionType.GET_SETTING, ActionType.SET_SETTING}:
+            # Hard preflight for settings operations: consult operations/list and
+            # settings/list before attempting direct or fallback paths.
+            if (not state.capability_preflight_done or not state.supported_operations) and hasattr(self, "_app_resolver"):
+                try:
+                    await self._bootstrap_capabilities_if_needed(state)
+                except Exception as exc:
+                    logger.warning("Settings capability preflight failed before execution: %s", exc)
+
         def _log_req(op: str, payload: dict) -> None:
             state.record_dab_event({
                 "type": "request",
@@ -1968,16 +2721,30 @@ class Orchestrator:
             })
 
         try:
+            snapshot = state.capability_snapshot or build_capability_snapshot(
+                supported_operations=state.supported_operations,
+                supported_settings=state.supported_settings,
+                supported_keys=state.supported_keys,
+            )
             if action in KEY_MAP:
                 key_code = KEY_MAP[action]
+                if not has_operation(snapshot, "input/key-press"):
+                    logger.warning("Blocked key action before DAB: input/key-press unsupported action=%s", action)
+                    return False
                 if state.supported_keys and key_code not in set(state.supported_keys):
                     logger.warning("Skipping unsupported key action=%s key_code=%s", action, key_code)
+                    return False
+                if (snapshot.get("supported_keys") or []) and not has_key(snapshot, key_code):
+                    logger.warning("Blocked key action before DAB: key unsupported key_code=%s", key_code)
                     return False
                 _log_req("input/key-press", {"keyCode": key_code})
                 resp = await self._dab.key_press(key_code)
                 _log_resp("input/key-press", resp)
                 return resp.success
             elif action == ActionType.LAUNCH_APP:
+                if not has_operation(snapshot, "applications/launch"):
+                    logger.warning("Blocked launch before DAB: applications/launch unsupported")
+                    return False
                 app_id = params.get("app_id", "")
                 if not app_id:
                     logger.warning("LAUNCH_APP missing app_id param")
@@ -2009,18 +2776,243 @@ class Orchestrator:
                 setting_key = str(params.get("key", "")).strip()
                 if not setting_key:
                     return False
-                _log_req("system/settings/get", {"key": setting_key})
-                resp = await self._dab.get_setting(setting_key)
-                _log_resp("system/settings/get", resp)
-                return resp.success
+                normalized_key = normalize_setting_key(snapshot, setting_key)
+                if bool(normalized_key.get("success")):
+                    setting_key = str(normalized_key.get("key") or setting_key)
+                elif self._is_timezone_setting_key(setting_key):
+                    setting_key = "timezone"
+                else:
+                    logger.warning("Blocked GET_SETTING before DAB: %s", normalized_key.get("reason"))
+                    return False
+                operation = "system/settings/get"
+                method, reason = self._resolve_setting_execution_method(state, operation, setting_key)
+                logger.info(
+                    "Requested operation=%s key=%s is_android=%s selected_method=%s reason=%s",
+                    operation,
+                    setting_key,
+                    state.is_android_device,
+                    method,
+                    reason,
+                )
+
+                if method == "dab":
+                    if not has_setting(snapshot, setting_key):
+                        logger.warning("Blocked GET_SETTING before DAB: unsupported setting key=%s", setting_key)
+                        return False
+                    _log_req(operation, {"key": setting_key})
+                    resp = await self._dab.get_setting(setting_key)
+                    _log_resp(operation, resp)
+                    if resp.success:
+                        return True
+                    self._record_direct_setting_failure(state, operation, setting_key, resp)
+                    method, reason = self._resolve_setting_execution_method(state, operation, setting_key)
+                    if method != "adb":
+                        return False
+
+                if method != "adb":
+                    logger.warning(
+                        "Unsupported setting read: key=%s reason=%s is_android=%s",
+                        setting_key,
+                        reason,
+                        state.is_android_device,
+                    )
+                    state.record_ai_event(
+                        {
+                            "type": "settings-operation-unsupported",
+                            "step": state.step_count,
+                            "operation": operation,
+                            "setting_key": setting_key,
+                            "reason": reason,
+                        }
+                    )
+                    return False
+
+                adb_device_id = str(state.android_adb_device_id or "").strip()
+                online, online_detail = await is_adb_device_online(adb_device_id)
+                if not online:
+                    logger.warning("ADB read fallback unavailable for %s: %s", adb_device_id, online_detail)
+                    return False
+                if not self._is_timezone_setting_key(setting_key):
+                    logger.warning("No Android ADB fallback mapping for GET_SETTING key=%s", setting_key)
+                    return False
+                fallback_read = await get_timezone_via_adb(adb_device_id)
+                success = bool(fallback_read.get("success"))
+                state.record_dab_event(
+                    {
+                        "type": "response",
+                        "step": state.step_count,
+                        "op": "adb/system/settings/timezone/get",
+                        "success": success,
+                        "status": 200 if success else 500,
+                        "data": fallback_read,
+                    }
+                )
+                return success
             elif action == ActionType.SET_SETTING:
                 setting_key = str(params.get("key", "")).strip()
                 if not setting_key:
                     return False
-                _log_req("system/settings/set", {"key": setting_key, "value": params.get("value")})
-                resp = await self._dab.set_setting(setting_key, params.get("value"))
-                _log_resp("system/settings/set", resp)
-                return resp.success
+                normalized_key = normalize_setting_key(snapshot, setting_key)
+                if bool(normalized_key.get("success")):
+                    setting_key = str(normalized_key.get("key") or setting_key)
+                elif self._is_timezone_setting_key(setting_key):
+                    setting_key = "timezone"
+                else:
+                    logger.warning("Blocked SET_SETTING before DAB: %s", normalized_key.get("reason"))
+                    return False
+
+                requested_value = params.get("value")
+                operation = "system/settings/set"
+                method, reason = self._resolve_setting_execution_method(state, operation, setting_key)
+                logger.info(
+                    "Requested operation=%s key=%s is_android=%s selected_method=%s reason=%s",
+                    operation,
+                    setting_key,
+                    state.is_android_device,
+                    method,
+                    reason,
+                )
+
+                if method == "dab":
+                    if not has_setting(snapshot, setting_key):
+                        logger.warning("Blocked SET_SETTING before DAB: unsupported setting key=%s", setting_key)
+                        return False
+                    value_norm = normalize_setting_value(snapshot, setting_key, requested_value)
+                    if not bool(value_norm.get("success")):
+                        logger.warning("Blocked SET_SETTING before DAB: %s", value_norm.get("reason"))
+                        return False
+                    requested_value = value_norm.get("value")
+                    _log_req(operation, {"key": setting_key, "value": requested_value})
+                    resp = await self._dab.set_setting(setting_key, requested_value)
+                    _log_resp(operation, resp)
+                    if resp.success:
+                        if self._is_timezone_setting_key(setting_key):
+                            logger.info("Timezone setting path used: DAB direct operation succeeded run_id=%s key=%s", state.run_id, setting_key)
+                        return True
+                    self._record_direct_setting_failure(state, operation, setting_key, resp)
+                    method, reason = self._resolve_setting_execution_method(state, operation, setting_key)
+                    if method != "adb":
+                        return False
+
+                if method != "adb":
+                    logger.warning(
+                        "Unsupported setting write: key=%s reason=%s is_android=%s",
+                        setting_key,
+                        reason,
+                        state.is_android_device,
+                    )
+                    state.record_ai_event(
+                        {
+                            "type": "settings-operation-unsupported",
+                            "step": state.step_count,
+                            "operation": operation,
+                            "setting_key": setting_key,
+                            "reason": reason,
+                        }
+                    )
+                    return False
+
+                tz_value = str(requested_value or "").strip()
+                if not tz_value:
+                    logger.warning("Skipping Android timezone fallback: empty timezone value")
+                    return False
+
+                adb_device_id = str(state.android_adb_device_id or "").strip()
+                logger.info(
+                    "Timezone fallback selected: path=ADB reason=%s run_id=%s adb_device_id=%s",
+                    reason,
+                    state.run_id,
+                    adb_device_id,
+                )
+                online, online_detail = await is_adb_device_online(adb_device_id)
+                if not online:
+                    logger.warning(
+                        "Skipping Android timezone fallback: adb device offline/unavailable adb_device_id=%s detail=%s",
+                        adb_device_id,
+                        online_detail,
+                    )
+                    state.record_ai_event(
+                        {
+                            "type": "timezone-adb-fallback-skipped",
+                            "step": state.step_count,
+                            "reason": "adb device offline/unavailable",
+                            "adb_device_id": adb_device_id,
+                            "detail": online_detail,
+                        }
+                    )
+                    return False
+
+                if not self._is_timezone_setting_key(setting_key):
+                    logger.warning("No Android ADB fallback mapping for SET_SETTING key=%s", setting_key)
+                    return False
+
+                timezone_list = await list_timezones_via_adb(adb_device_id)
+                tz_to_apply = tz_value
+                if not bool(timezone_list.get("success")):
+                    logger.warning(
+                        "ADB timezone listing failed but proceeding with direct set: adb_device_id=%s error=%s",
+                        adb_device_id,
+                        timezone_list.get("error"),
+                    )
+                else:
+                    ai_client = getattr(self._planner, "_vertex_client", None)
+                    resolved = await resolve_timezone_from_supported(
+                        tz_value,
+                        list(timezone_list.get("timezones") or []),
+                        ai_client=ai_client,
+                    )
+                    if not bool(resolved.get("success")):
+                        logger.warning(
+                            "Requested timezone could not be mapped to supported IDs: requested=%s reason=%s",
+                            tz_value,
+                            resolved.get("reason"),
+                        )
+                        state.record_ai_event(
+                            {
+                                "type": "timezone-adb-fallback-failed",
+                                "step": state.step_count,
+                                "requested_timezone": tz_value,
+                                "error": str(resolved.get("reason") or "unsupported timezone on device"),
+                            }
+                        )
+                        return False
+                    tz_to_apply = str(resolved.get("resolved_timezone") or tz_value)
+                    logger.info(
+                        "Timezone normalization: requested=%s resolved=%s strategy=%s",
+                        tz_value,
+                        tz_to_apply,
+                        resolved.get("reason"),
+                    )
+
+                fallback_result = await set_timezone_via_adb(adb_device_id, tz_to_apply)
+                verified = bool(fallback_result.get("success"))
+                logger.info(
+                    "ADB timezone fallback verification: adb_device_id=%s requested=%s observed=%s verified=%s",
+                    adb_device_id,
+                    fallback_result.get("requested_timezone") or tz_to_apply,
+                    fallback_result.get("observed_timezone"),
+                    verified,
+                )
+                state.record_dab_event(
+                    {
+                        "type": "response",
+                        "step": state.step_count,
+                        "op": "adb/system/settings/timezone",
+                        "success": verified,
+                        "status": 200 if verified else 500,
+                        "data": fallback_result,
+                    }
+                )
+                state.record_ai_event(
+                    {
+                        "type": "timezone-adb-fallback-success" if verified else "timezone-adb-fallback-failed",
+                        "step": state.step_count,
+                        "requested_timezone": tz_value,
+                        "observed_timezone": fallback_result.get("observed_timezone"),
+                        "error": fallback_result.get("error"),
+                    }
+                )
+                return verified
             elif action == ActionType.GET_STATE:
                 app_id = (
                     state.current_app

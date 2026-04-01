@@ -1,7 +1,7 @@
-"""Tests for the MockDABClient."""
+"""Tests for DAB clients."""
 import pytest
 
-from vertex_live_dab_agent.dab.client import DABResponse, MockDABClient, create_dab_client
+from vertex_live_dab_agent.dab.client import AdapterDABClient, DABResponse, MockDABClient, create_dab_client
 from vertex_live_dab_agent.dab.topics import (
     TOPIC_APPLICATIONS_EXIT,
     KEY_MAP,
@@ -14,6 +14,7 @@ from vertex_live_dab_agent.dab.topics import (
     TOPIC_OPERATIONS_LIST,
     TOPIC_OUTPUT_IMAGE,
 )
+from vertex_live_dab_agent.dab.transport import DABTransportBase, TransportResponse
 
 
 @pytest.fixture
@@ -153,3 +154,30 @@ def test_create_dab_client_mock_mode():
     client = create_dab_client()
     assert isinstance(client, MockDABClient)
     reset_config()
+
+
+class _FakeTransport(DABTransportBase):
+    async def send(self, request):
+        return TransportResponse(
+            topic=request.topic,
+            payload={"error": "Error: No shell command implementation"},
+            request_id=request.request_id,
+            status=500,
+        )
+
+    async def close(self) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_adapter_list_settings_degrades_when_cec_shell_unsupported():
+    client = AdapterDABClient(transport=_FakeTransport(), device_id="adb:10.0.0.1:5555", timeout=0.1, max_retries=0)
+    resp = await client.list_settings()
+    assert resp.success is True
+    assert resp.status == 200
+    assert resp.data.get("degraded") is True
+    settings = resp.data.get("settings") or []
+    keys = {str(item.get("key")) for item in settings if isinstance(item, dict)}
+    assert "timezone" in keys
+    assert "language" in keys
+    assert "cec_enabled" in keys

@@ -31,6 +31,10 @@ Strategy must come from: current goal, current screen, discovered DAB capabiliti
 ## Rules
 0. First choose an execution strategy mode before choosing low-level actions.
 0.1 Always use discovered capabilities from context: operations/list, applications/list, input/key/list, system/settings/list.
+0.1.1 Treat capability snapshot as source of truth. Never propose an action whose operation/key/setting is unsupported in the snapshot.
+0.1.2 For settings, validate key and value against system/settings/list schema before proposing GET_SETTING/SET_SETTING.
+0.1.3 For keys, validate against input/key/list before proposing key actions.
+0.1.4 If mapping/normalization is ambiguous, return FAIL_WITH_GROUNDED_REASON with explicit validation reason.
 0.2 Understand the exact requested step before strategy selection: parse starting context, required action, expected outcome, and verification mode.
 1. Think in navigation phases with explicit subgoals, not single keypresses.
 2. Always use session history (recent AI decisions, recent tool responses, recent actions) to choose the next step.
@@ -70,6 +74,7 @@ Strategy must come from: current goal, current screen, discovered DAB capabiliti
 29. Set user_explanation to a simple, friendly sentence describing what is being done and why.
 30. Set evidence_used to list the key evidence items from context (e.g. ["OCR shows Home screen", "app_catalog has Netflix"]).
 31. Set subgoal to the current active subgoal (e.g. "launch target app", "reach settings screen", "verify success").
+32. Never retry known unsupported direct operations in a loop; once unsupported, choose a different valid path or fail clearly.
 
 ## Return fields
 - phase
