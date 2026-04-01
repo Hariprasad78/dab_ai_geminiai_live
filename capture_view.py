@@ -7,9 +7,9 @@ card directly on the host machine screen.
 Usage examples::
 
     python capture_view.py --list
-    python capture_view.py --device /dev/video2
-    python capture_view.py --device /dev/video2 --width 1280 --height 720 --fps 60
-    python capture_view.py --device /dev/video2 --fourcc YUYV
+    python capture_view.py --device /dev/adt4_cam
+    python capture_view.py --device /dev/adt4_cam --width 1280 --height 720 --fps 60
+    python capture_view.py --device /dev/adt4_cam --fourcc YUYV
 
 Press **q** or **ESC** in the preview window to quit.
 """
@@ -29,10 +29,11 @@ except ImportError as exc:
     )
 
 from vertex_live_dab_agent.capture.hdmi_capture import HdmiCaptureSession, list_hdmi_devices
+from vertex_live_dab_agent.capture.camera_devices import get_camera_path
 
 
 def _cmd_list(args: argparse.Namespace) -> int:
-    print("Probing /dev/video* devices (this may take a few seconds)...")
+    print("Probing video devices (this may take a few seconds)...")
     devices = list_hdmi_devices(
         fourcc=args.fourcc,
         width=args.width,
@@ -41,11 +42,11 @@ def _cmd_list(args: argparse.Namespace) -> int:
     )
     if not devices:
         print(
-            "No working /dev/video* capture devices found.\n"
+            "No working capture devices found.\n"
             "Check that:\n"
             "  - The HDMI capture card is plugged in.\n"
             "  - The HDMI source is powered ON and outputting a signal.\n"
-            "  - Your user has read/write access to /dev/video* (add to 'video' group)."
+            "  - Your user has read/write access to camera nodes (add to 'video' group)."
         )
         return 1
 
@@ -58,6 +59,12 @@ def _cmd_list(args: argparse.Namespace) -> int:
 def _cmd_view(args: argparse.Namespace) -> int:
     device = args.device
     if device is None:
+        configured = get_camera_path("adt4")
+        if configured:
+            device = configured
+            print(f"No --device specified; using configured ADT-4 camera: {device}")
+
+    if device is None:
         print("No --device specified; auto-detecting...")
         found = list_hdmi_devices(
             fourcc=args.fourcc,
@@ -67,7 +74,7 @@ def _cmd_view(args: argparse.Namespace) -> int:
         )
         if not found:
             print(
-                "Auto-detect failed: no working /dev/video* devices found.\n"
+                "Auto-detect failed: no working capture devices found.\n"
                 "Try: python capture_view.py --list"
             )
             return 1
@@ -133,12 +140,12 @@ def main() -> int:
     ap.add_argument(
         "--list",
         action="store_true",
-        help="List /dev/video* devices that are delivering frames and exit.",
+        help="List video devices that are delivering frames and exit.",
     )
     ap.add_argument(
         "--device",
         default=None,
-        help="V4L2 device path (e.g. /dev/video2). Auto-detected when omitted.",
+        help="V4L2 device path (e.g. /dev/adt4_cam). Auto-detected when omitted.",
     )
     ap.add_argument("--width", type=int, default=1920, help="Requested capture width  (default 1920).")
     ap.add_argument("--height", type=int, default=1080, help="Requested capture height (default 1080).")

@@ -97,7 +97,50 @@
     .log-line .PASS { color: #4ade80; }
     .log-line .FAIL { color: #f87171; }
     #screenshot-img { max-width: 100%; border-radius: 0.5rem; border: 1px solid #334155; }
-    #hdmi-stream-img { max-width: 100%; border-radius: 0.5rem; border: 1px solid #334155; display: block; }
+    #hdmi-stream-img { max-width: 100%; border-radius: 0.5rem; border: 1px solid #334155; display: block; width: 100%; transition: opacity 220ms ease, filter 220ms ease; }
+    #hdmi-stream-container {
+      position: relative;
+      min-height: 210px;
+      border-radius: 0.6rem;
+      overflow: hidden;
+      background: #050f1f;
+      border: 1px solid #1e293b;
+      transition: box-shadow 220ms ease, border-color 220ms ease;
+    }
+    #hdmi-stream-container.switching {
+      border-color: #2563eb;
+      box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.18) inset;
+    }
+    #hdmi-stream-container.switching #hdmi-stream-img {
+      opacity: 0.34;
+      filter: blur(1px);
+    }
+    #hdmi-stream-container.stopping #hdmi-stream-img {
+      opacity: 0;
+    }
+    .stream-overlay {
+      position: absolute;
+      inset: auto 0 0 0;
+      padding: 0.45rem 0.6rem;
+      background: linear-gradient(180deg, rgba(5,11,24,0), rgba(5,11,24,0.82) 55%, rgba(5,11,24,0.96));
+      color: #93c5fd;
+      font-size: 0.78rem;
+      opacity: 0;
+      transform: translateY(4px);
+      transition: opacity 180ms ease, transform 180ms ease;
+      pointer-events: none;
+    }
+    #hdmi-stream-container.switching .stream-overlay {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    .capture-switch-status {
+      margin-top: 0.45rem;
+      font-size: 0.78rem;
+      min-height: 1rem;
+      color: #93c5fd;
+      transition: opacity 180ms ease;
+    }
     #audio-stream-player { width: 100%; margin-top: 0.6rem; }
     .remote-layout { display: grid; grid-template-columns: 1.1fr 1fr; gap: 1rem; align-items: start; }
     .remote-panel { background: #0f172a; border: 1px solid #334155; border-radius: 0.6rem; padding: 0.8rem; }
@@ -304,9 +347,10 @@
           <select id="capture-device-select">
             <option value="">device: auto</option>
           </select>
-          <button class="secondary" onclick="refreshCaptureDevices()">↻ Devices</button>
-          <button onclick="applyCaptureSelection()">Apply</button>
+          <button class="secondary" id="capture-refresh-btn" onclick="refreshCaptureDevices()">↻ Devices</button>
+          <button id="capture-apply-btn" onclick="applyCaptureSelection()">Apply</button>
         </div>
+        <div id="capture-switch-status" class="capture-switch-status"></div>
         <div class="btn-row" style="margin-top:0; margin-bottom:0.75rem;">
           <button class="secondary" id="stream-toggle-btn" onclick="toggleHdmiStream()">▶ Start Stream</button>
           <button class="secondary" id="audio-toggle-btn" onclick="toggleAudioStream()">🔊 Start Audio</button>
@@ -567,6 +611,8 @@
   let pollInterval = null;
   let hdmiStreamRunning = false;
   let hdmiAudioRunning = false;
+  let captureSelectionBusy = false;
+  let hdmiStreamTransitionToken = 0;
   let lastNarrationIdx = -1;
   let currentNarrationAudio = null;
   let currentYtsCommandId = null;
@@ -785,10 +831,13 @@
   }
 
   async function applyCaptureSelection() {
+    if (captureSelectionBusy) return;
     const modeSel = document.getElementById('capture-mode-select');
     const kindSel = document.getElementById('capture-kind-select');
     const devSel = document.getElementById('capture-device-select');
     const resultEl = document.getElementById('manual-result');
+    const wasStreaming = hdmiStreamRunning;
+    const prevApplyLabel = setCaptureSelectionBusy(true, wasStreaming ? 'Switching camera…' : 'Applying capture settings…');
     try {
       await api('/capture/select', 'POST', {
         source: modeSel ? modeSel.value : 'auto',
@@ -798,40 +847,128 @@
       });
       await loadCaptureSource();
       await refreshCaptureDevices();
+      if (wasStreaming) {
+        startHdmiStream({ smooth: true, overlayText: 'Camera switched' });
+      }
       if (resultEl) {
         resultEl.textContent = '✓ Capture selection updated';
         resultEl.style.color = '#4ade80';
       }
+      setCaptureSwitchStatus(wasStreaming ? '✓ Camera changed smoothly (live stream kept running)' : '✓ Capture source updated');
     } catch (e) {
       if (resultEl) {
         resultEl.textContent = `✗ ${e.message}`;
         resultEl.style.color = '#f87171';
       }
+      setCaptureSwitchStatus(`✗ ${e.message}`, true);
+      clearHdmiStreamOverlay();
+      const streamBox = document.getElementById('hdmi-stream-container');
+      if (streamBox) streamBox.classList.remove('switching');
+    } finally {
+      setCaptureSelectionBusy(false, '', prevApplyLabel);
     }
   }
 
   function toggleHdmiStream() {
+    if (captureSelectionBusy) return;
     if (hdmiStreamRunning) stopHdmiStream();
     else startHdmiStream();
   }
 
-  function startHdmiStream() {
+  function startHdmiStream(options = {}) {
+    const { smooth = false, overlayText = 'Switching camera…' } = options;
     const url = `${apiBase}/stream/hdmi?ts=${Date.now()}`;
-    document.getElementById('hdmi-stream-container').innerHTML =
-      `<img id="hdmi-stream-img" src="${url}" alt="HDMI stream" />`;
+    const container = document.getElementById('hdmi-stream-container');
+    if (!container) return;
+    let img = document.getElementById('hdmi-stream-img');
+    if (!img) {
+      container.innerHTML = '<img id="hdmi-stream-img" alt="HDMI stream" /><div id="hdmi-stream-overlay" class="stream-overlay"></div>';
+      img = document.getElementById('hdmi-stream-img');
+    }
+    const token = ++hdmiStreamTransitionToken;
+    if (smooth) {
+      container.classList.add('switching');
+      setHdmiStreamOverlay(overlayText);
+    } else {
+      container.classList.remove('switching');
+      clearHdmiStreamOverlay();
+    }
+    img.onload = () => {
+      if (token !== hdmiStreamTransitionToken) return;
+      container.classList.remove('switching');
+      window.setTimeout(() => {
+        if (token === hdmiStreamTransitionToken) clearHdmiStreamOverlay();
+      }, 450);
+    };
+    img.onerror = () => {
+      if (token !== hdmiStreamTransitionToken) return;
+      container.classList.remove('switching');
+      setHdmiStreamOverlay('Camera switch failed. Try again.');
+    };
+    img.src = url;
     document.getElementById('stream-toggle-btn').textContent = '■ Stop Stream';
     document.getElementById('stream-toggle-btn').className = 'danger';
     hdmiStreamRunning = true;
   }
 
   function stopHdmiStream() {
+    const container = document.getElementById('hdmi-stream-container');
+    if (!container) return;
     const img = document.getElementById('hdmi-stream-img');
-    if (img) img.src = '';
-    document.getElementById('hdmi-stream-container').innerHTML =
-      '<div class="empty-state">HDMI stream is stopped.</div>';
+    hdmiStreamTransitionToken += 1;
+    if (img) {
+      container.classList.add('stopping');
+      window.setTimeout(() => {
+        const currentImg = document.getElementById('hdmi-stream-img');
+        if (currentImg) currentImg.src = '';
+        container.classList.remove('stopping');
+        container.classList.remove('switching');
+        clearHdmiStreamOverlay();
+        container.innerHTML = '<div class="empty-state">HDMI stream is stopped.</div>';
+      }, 180);
+    } else {
+      container.innerHTML = '<div class="empty-state">HDMI stream is stopped.</div>';
+    }
     document.getElementById('stream-toggle-btn').textContent = '▶ Start Stream';
     document.getElementById('stream-toggle-btn').className = 'secondary';
     hdmiStreamRunning = false;
+  }
+
+  function setCaptureSwitchStatus(message, isError = false) {
+    const el = document.getElementById('capture-switch-status');
+    if (!el) return;
+    el.textContent = message || '';
+    el.style.color = isError ? '#fca5a5' : '#93c5fd';
+  }
+
+  function setCaptureSelectionBusy(isBusy, statusText = '', restoreApplyLabel = null) {
+    captureSelectionBusy = !!isBusy;
+    const modeSel = document.getElementById('capture-mode-select');
+    const kindSel = document.getElementById('capture-kind-select');
+    const devSel = document.getElementById('capture-device-select');
+    const applyBtn = document.getElementById('capture-apply-btn');
+    const refreshBtn = document.getElementById('capture-refresh-btn');
+    const streamBtn = document.getElementById('stream-toggle-btn');
+
+    const previousLabel = applyBtn ? applyBtn.textContent : 'Apply';
+    [modeSel, kindSel, devSel, applyBtn, refreshBtn, streamBtn].forEach(el => {
+      if (el) el.disabled = !!isBusy;
+    });
+    if (applyBtn) {
+      applyBtn.textContent = isBusy ? 'Applying…' : (restoreApplyLabel || 'Apply');
+    }
+    if (statusText) setCaptureSwitchStatus(statusText, false);
+    return previousLabel;
+  }
+
+  function setHdmiStreamOverlay(text) {
+    const overlay = document.getElementById('hdmi-stream-overlay');
+    if (!overlay) return;
+    overlay.textContent = text || '';
+  }
+
+  function clearHdmiStreamOverlay() {
+    setHdmiStreamOverlay('');
   }
 
   async function toggleAudioStream() {

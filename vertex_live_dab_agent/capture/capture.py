@@ -11,6 +11,11 @@ from typing import Any, Dict, Optional
 
 from vertex_live_dab_agent.config import get_config
 from vertex_live_dab_agent.dab.client import DABClientBase
+from vertex_live_dab_agent.capture.camera_devices import (
+    camera_label,
+    get_camera_path,
+    validate_camera_devices,
+)
 from vertex_live_dab_agent.capture.hdmi_capture import HdmiCaptureSession
 
 logger = logging.getLogger(__name__)
@@ -62,6 +67,7 @@ class ScreenCapture:
 
     def __init__(self, dab_client: DABClientBase, hdmi_session: Optional[HdmiCaptureSession] = None) -> None:
         self._config = get_config()
+        validate_camera_devices()
         self._dab = dab_client
         self._image_source = self._normalize_source(self._config.image_source)
         self._selected_video_device = (self._config.hdmi_capture_device or "").strip() or None
@@ -126,7 +132,14 @@ class ScreenCapture:
             logger.warning("Failed to persist capture preference: %s", exc)
 
     def _video_device_name(self, device: str) -> str:
-        m = re.match(r"^/dev/video(\d+)$", str(device).strip())
+        dev = str(device).strip()
+        if not dev:
+            return ""
+        try:
+            resolved = os.path.realpath(dev)
+        except Exception:
+            resolved = dev
+        m = re.match(r"^/dev/video(\d+)$", resolved)
         if not m:
             return ""
         sys_name = f"/sys/class/video4linux/video{m.group(1)}/name"
@@ -146,7 +159,15 @@ class ScreenCapture:
 
     def _list_video_device_details(self) -> list[dict]:
         details: list[dict] = []
-        for dev in sorted(glob.glob("/dev/video*")):
+        known = set(sorted(glob.glob("/dev/video*")))
+        for key in ("adt4", "sonytv", "kirkwood"):
+            path = get_camera_path(key)
+            if path:
+                known.add(path)
+
+        for dev in sorted(known):
+            if not os.path.exists(dev):
+                continue
             name = self._video_device_name(dev)
             details.append(
                 {
@@ -219,8 +240,8 @@ class ScreenCapture:
 
         if device is not None:
             dev = str(device or "").strip()
-            if dev and (not dev.startswith("/dev/video") or not os.path.exists(dev)):
-                raise ValueError("device must be an existing /dev/video* path")
+            if dev and (not dev.startswith("/dev/") or not os.path.exists(dev)):
+                raise ValueError("device must be an existing /dev/* path")
             self._selected_video_device = dev or None
 
         selection_changed = (
@@ -270,6 +291,18 @@ class ScreenCapture:
         if configured:
             candidates.append(configured)
 
+        if kind_pref in {"auto", "hdmi"}:
+            adt4_path = get_camera_path("adt4")
+            if adt4_path:
+                candidates.append(adt4_path)
+        if kind_pref in {"auto", "camera"}:
+            sony_path = get_camera_path("sonytv")
+            kirkwood_path = get_camera_path("kirkwood")
+            if sony_path:
+                candidates.append(sony_path)
+            if kirkwood_path:
+                candidates.append(kirkwood_path)
+
         device_details = self._list_video_device_details()
         if self._image_source == "hdmi-capture":
             device_details = [d for d in device_details if str(d.get("kind")) != "camera"]
@@ -285,8 +318,6 @@ class ScreenCapture:
             preferred = [d["device"] for d in device_details if d.get("kind") == kind_pref]
             others = [d for d in devs if d not in preferred]
             devs = preferred + others
-        preferred = ["/dev/video0", "/dev/video1"]
-        candidates.extend([d for d in preferred if d in devs and d not in candidates])
         candidates.extend([d for d in devs if d not in candidates])
 
         candidate_errors = []
@@ -306,6 +337,14 @@ class ScreenCapture:
                 fps=self._config.hdmi_capture_fps,
                 fourcc=self._config.hdmi_capture_fourcc,
             )
+
+            if device == get_camera_path("adt4"):
+                logger.info("[INFO] Opening %s camera from %s", camera_label("adt4"), device)
+            elif device == get_camera_path("sonytv"):
+                logger.info("[INFO] Opening %s camera from %s", camera_label("sonytv"), device)
+            elif device == get_camera_path("kirkwood"):
+                logger.info("[INFO] Opening %s camera from %s", camera_label("kirkwood"), device)
+
             if not session.open():
                 if session.last_error:
                     candidate_errors.append(f"{device}: {session.last_error}")
