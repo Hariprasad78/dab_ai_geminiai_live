@@ -227,6 +227,7 @@ class Planner:
                 current_app=current_app,
                 launch_content=launch_content,
                 session_id=session_id,
+                execution_state=execution_state,
             )
 
         return self._plan_navigation_heuristic(
@@ -386,6 +387,117 @@ class Planner:
             parts.append(f"Navigation memory: {json.dumps(navigation_memory_summary, ensure_ascii=False)[:1800]}")
         return "\n".join(parts)
 
+    def _compose_vertex_prompt(
+        self,
+        *,
+        goal: str,
+        context: str,
+        current_app: Optional[str],
+        last_actions: List[str],
+        retry_count: int,
+        execution_state: Optional[Dict[str, Any]],
+    ) -> str:
+        """Build an adaptive model prompt from live state and capabilities."""
+        state = execution_state or {}
+        target_op = str(state.get("target_operation") or "").strip()
+        current_subgoal = str(state.get("current_subgoal") or "").strip()
+        target_screen = str(state.get("target_screen") or "").strip()
+        is_settings_goal = self._is_settings_task(goal) or "SETTING" in target_op.upper()
+
+        dynamic_rules: List[str] = [
+            "Choose one execution_mode first, then low-level actions.",
+            "Use capability snapshot as source of truth and avoid unsupported operations.",
+            "Never mix blind directional moves with commit actions in one uncertain batch.",
+            "If confidence is low or destination is ambiguous, request a checkpoint action first.",
+            "Use recent action history to avoid repeated no-progress loops.",
+        ]
+        if is_settings_goal:
+            dynamic_rules.extend(
+                [
+                    "This is a settings task; prefer direct GET_SETTING/SET_SETTING if supported.",
+                    "Avoid unrelated app detours during settings tasks.",
+                ]
+            )
+        if retry_count >= 1:
+            dynamic_rules.append("Prioritize shortest safe recovery path based on recent failures.")
+        if current_app:
+            dynamic_rules.append(
+                f"Current app hint is {current_app}; continue in-app only if it aligns with the active subgoal."
+            )
+
+        capability_lines: List[str] = []
+        supported_ops = state.get("supported_operations")
+        if isinstance(supported_ops, list) and supported_ops:
+            capability_lines.append(f"supported_operations: {', '.join(str(o) for o in supported_ops[:80])}")
+        supported_keys = state.get("supported_keys")
+        if isinstance(supported_keys, list) and supported_keys:
+            capability_lines.append(f"supported_keys: {', '.join(str(k) for k in supported_keys[:80])}")
+        supported_settings = state.get("supported_settings")
+        if isinstance(supported_settings, list) and supported_settings:
+            capability_lines.append(f"supported_settings: {', '.join(str(s) for s in supported_settings[:80])}")
+        app_catalog = state.get("app_catalog")
+        if isinstance(app_catalog, list) and app_catalog:
+            app_names = [str((a or {}).get("name") or (a or {}).get("app_name") or "").strip() for a in app_catalog[:40]]
+            app_names = [name for name in app_names if name]
+            if app_names:
+                capability_lines.append(f"app_catalog_names: {', '.join(app_names)}")
+        capability_snapshot = state.get("capability_snapshot")
+        if isinstance(capability_snapshot, dict) and capability_snapshot:
+            capability_lines.append(
+                f"capability_snapshot: {json.dumps(capability_snapshot, ensure_ascii=False)[:1200]}"
+            )
+
+        output_fields = [
+            "phase", "intent", "subgoal", "execution_mode", "strategy", "target_app_name",
+            "target_app_domain", "target_app_hint", "launch_parameters", "confidence",
+            "starting_assumption", "action_batch", "checkpoint_required", "validate_before_commit",
+            "expected_result", "fallback_if_failed", "need_screenshot", "done", "evidence_used",
+            "user_explanation",
+        ]
+
+        sections = [
+            self._planner_system_prompt.strip(),
+            "",
+            "Goal decomposition:",
+            f"- overall_goal: {goal}",
+            f"- active_subgoal: {current_subgoal or 'infer from screen evidence and goal'}",
+            f"- target_screen: {target_screen or 'unknown'}",
+            "- success_condition: pick one grounded, safe next step",
+            "- forbidden_detours: unsupported operations, ambiguous commit actions, repeated no-progress loops",
+            "",
+            "Allowed execution modes:",
+            "- DIRECT_DAB_OPERATION",
+            "- DIRECT_SETTING_OPERATION",
+            "- DIRECT_APP_LAUNCH",
+            "- DIRECT_APP_LAUNCH_WITH_PARAMS",
+            "- DIRECT_CONTENT_OPEN",
+            "- CONTINUE_IN_CURRENT_APP",
+            "- GO_HOME_AND_RECOVER",
+            "- GO_HOME_THEN_LAUNCH",
+            "- UI_NAVIGATION_ONLY",
+            "- RELAUNCH_TARGET_APP",
+            "- RECOVERY_RELAUNCH",
+            "- FAIL_WITH_GROUNDED_REASON",
+            "",
+            "Dynamic rules:",
+            *[f"- {rule}" for rule in dynamic_rules],
+            "",
+            "Capability evidence:",
+            *([f"- {line}" for line in capability_lines] if capability_lines else ["- capability details unavailable; be conservative"]),
+            "",
+            "Output contract:",
+            "- Return a single JSON object only (no markdown).",
+            f"- Use fields exactly: {', '.join(output_fields)}.",
+            "- action_batch must be array of {\"action\": string, \"params\": object}.",
+            "- fallback_if_failed must be null or {\"action\": string, \"params\": object}.",
+            "",
+            "Current situation:",
+            context,
+        ]
+        if last_actions:
+            sections.append(f"Recent actions: {', '.join(str(a) for a in last_actions[-8:])}")
+        return "\n".join(sections)
+
     async def _plan_navigation_with_vertex(
         self,
         context: str,
@@ -396,23 +508,16 @@ class Planner:
         current_app: Optional[str] = None,
         launch_content: Optional[str] = None,
         session_id: Optional[str] = None,
+        execution_state: Optional[Dict[str, Any]] = None,
     ) -> NavigationPlan:
         try:
-            prompt = (
-                f"{self._planner_system_prompt}\n\n"
-                "Return JSON object with fields exactly as specified. "
-                "Use action_batch as array of {action, params}.\n"
-                "Navigation policy:\n"
-                "- Operate like a careful remote-control user.\n"
-                "- Use current screenshot + navigation memory + recent actions.\n"
-                "- Prefer directional D-pad moves to approach target before select.\n"
-                "- PRESS_OK/ENTER is special: only when confidence is high and focus is likely on target item.\n"
-                "- If confidence is medium, choose one safe move then re-check.\n"
-                "- If confidence is low, request safer re-check/navigation action (e.g., CAPTURE_SCREENSHOT, GET_STATE, BACK).\n"
-                "- Avoid repeating the same failed move if no visible progress; adapt direction or recovery.\n"
-                "- Short subplans are allowed for visible movement batches, but do not batch PRESS_OK with low confidence.\n"
-                "- Include brief reason grounded in platform/os/app context and prior attempts.\n\n"
-                f"Current situation:\n{context}"
+            prompt = self._compose_vertex_prompt(
+                goal=goal,
+                context=context,
+                current_app=current_app,
+                last_actions=last_actions,
+                retry_count=retry_count,
+                execution_state=execution_state,
             )
             self.last_vertex_prompt = prompt
             try:
