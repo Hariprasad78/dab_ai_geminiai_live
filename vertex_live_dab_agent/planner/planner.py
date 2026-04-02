@@ -67,6 +67,7 @@ _APP_NAME_HINTS: Dict[str, str] = {
 # ---------------------------------------------------------------------------
 _DEFAULT_PLANNER_SYSTEM_PROMPT = """You are a TV UI navigation planner.
 Always use current execution state and session history to choose the next grounded step.
+For uncertain UI navigation, request a UI checkpoint capture before any commit/select action.
 Return exactly one JSON object that matches the NavigationPlan schema.
 Never return markdown.
 """

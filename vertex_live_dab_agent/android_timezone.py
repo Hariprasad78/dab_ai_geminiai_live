@@ -6,9 +6,19 @@ import asyncio
 import difflib
 import logging
 import re
+from zoneinfo import available_timezones
 from typing import Any, Dict, List, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+_COMMON_TZ_ALIASES = {
+    "asia/calcutta": "Asia/Kolkata",
+    "asia/kolkata": "Asia/Kolkata",
+    "america/losangles": "America/Los_Angeles",
+    "america/los_angeles": "America/Los_Angeles",
+    "america/los angeles": "America/Los_Angeles",
+}
 
 
 def _normalize_adb_device_id(device_id: str) -> str:
@@ -16,6 +26,34 @@ def _normalize_adb_device_id(device_id: str) -> str:
     if value.lower().startswith("adb:"):
         value = value[4:].strip()
     return value
+
+
+def _canonicalize_timezone_input(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return raw
+
+    lowered = raw.lower()
+    if lowered in _COMMON_TZ_ALIASES:
+        return _COMMON_TZ_ALIASES[lowered]
+
+    # Try direct match against known IANA zones, case-insensitive.
+    all_tz = available_timezones()
+    by_lower = {tz.lower(): tz for tz in all_tz}
+    if lowered in by_lower:
+        return by_lower[lowered]
+
+    # Normalize separators and fuzzy match.
+    candidate = lowered.replace(" ", "_")
+    candidate = re.sub(r"_+", "_", candidate)
+    if candidate in by_lower:
+        return by_lower[candidate]
+
+    best = difflib.get_close_matches(candidate, list(by_lower.keys()), n=1, cutoff=0.88)
+    if best:
+        return by_lower[best[0]]
+
+    return raw
 
 
 async def _run_adb(device_id: str, args: List[str], timeout_seconds: float = 15.0) -> Tuple[int, str, str]:
@@ -75,6 +113,18 @@ async def get_timezone_via_adb(device_id: str) -> Dict[str, Any]:
     return {"success": False, "timezone": value or None, "error": err}
 
 
+async def get_persist_timezone_via_adb(device_id: str) -> Dict[str, Any]:
+    """Get active persisted timezone via `adb shell getprop persist.sys.timezone`."""
+    rc, stdout, stderr = await _run_adb(device_id, ["shell", "getprop", "persist.sys.timezone"])
+    value = str(stdout or "").strip()
+    if rc == 0 and value:
+        logger.info("ADB persist timezone get succeeded device_id=%s timezone=%s", device_id, value)
+        return {"success": True, "timezone": value}
+    err = stderr or stdout or f"rc={rc}"
+    logger.warning("ADB persist timezone get failed device_id=%s error=%s", device_id, err)
+    return {"success": False, "timezone": value or None, "error": err}
+
+
 async def list_timezones_via_adb(device_id: str) -> Dict[str, Any]:
     """List available timezone IDs from Android tzdata.
 
@@ -117,7 +167,7 @@ async def set_timezone_via_adb(device_id: str, timezone_id: str) -> Dict[str, An
     Verification command:
     - adb -s <device_id> shell settings get global time_zone
     """
-    tz = str(timezone_id or "").strip()
+    tz = _canonicalize_timezone_input(timezone_id)
     if not tz:
         return {"success": False, "error": "timezone value is required", "requested_timezone": timezone_id}
 
@@ -136,27 +186,37 @@ async def set_timezone_via_adb(device_id: str, timezone_id: str) -> Dict[str, An
         }
 
     readback = await get_timezone_via_adb(device_id)
+    persist_readback = await get_persist_timezone_via_adb(device_id)
     observed = str(readback.get("timezone") or "").strip()
-    matched = bool(readback.get("success")) and observed == tz
+    observed_persist = str(persist_readback.get("timezone") or "").strip()
+    matched_settings = bool(readback.get("success")) and observed.lower() == tz.lower()
+    matched_persist = bool(persist_readback.get("success")) and observed_persist.lower() == tz.lower()
+    matched = matched_settings and matched_persist
     logger.info(
-        "ADB timezone verification device_id=%s requested=%s observed=%s matched=%s",
+        "ADB timezone verification device_id=%s requested=%s observed=%s persist_observed=%s matched=%s",
         device_id,
         tz,
         observed,
+        observed_persist,
         matched,
     )
     if not matched:
+        mismatch_detail = (
+            f"settings={observed or 'unknown'} persist={observed_persist or 'unknown'}"
+        )
         return {
             "success": False,
             "requested_timezone": tz,
             "observed_timezone": observed or None,
-            "error": str(readback.get("error") or "timezone verification mismatch").strip() or "timezone verification mismatch",
+            "observed_persist_timezone": observed_persist or None,
+            "error": str(readback.get("error") or persist_readback.get("error") or f"timezone verification mismatch ({mismatch_detail})").strip() or "timezone verification mismatch",
         }
 
     return {
         "success": True,
         "requested_timezone": tz,
         "observed_timezone": observed,
+        "observed_persist_timezone": observed_persist,
         "verified": True,
     }
 
@@ -224,4 +284,75 @@ async def resolve_timezone_from_supported(
         "success": False,
         "resolved_timezone": None,
         "reason": f"could not map requested timezone '{requested}' to a supported timezone ID",
+    }
+
+
+def _normalize_setting_key_for_adb(setting_key: str) -> str:
+    key = str(setting_key or "").strip().lower()
+    key = re.sub(r"[\s\-]+", "_", key)
+    return key
+
+
+async def get_setting_via_adb(device_id: str, setting_key: str) -> Dict[str, Any]:
+    """Read Android setting using adb shell settings get <namespace> <key>."""
+    key = _normalize_setting_key_for_adb(setting_key)
+    if not key:
+        return {"success": False, "error": "setting key is required", "key": setting_key}
+
+    namespaces = ["global", "system", "secure"]
+    last_error = ""
+    for namespace in namespaces:
+        rc, stdout, stderr = await _run_adb(device_id, ["shell", "settings", "get", namespace, key])
+        value = str(stdout or "").strip()
+        if rc == 0 and value and value.lower() != "null":
+            return {
+                "success": True,
+                "key": key,
+                "namespace": namespace,
+                "value": value,
+            }
+        last_error = stderr or stdout or f"rc={rc}"
+
+    return {
+        "success": False,
+        "key": key,
+        "error": last_error or "setting not found via adb",
+    }
+
+
+async def set_setting_via_adb(device_id: str, setting_key: str, value: Any) -> Dict[str, Any]:
+    """Write Android setting using adb shell settings put <namespace> <key> <value> and verify."""
+    key = _normalize_setting_key_for_adb(setting_key)
+    v = str(value if value is not None else "").strip()
+    if not key:
+        return {"success": False, "error": "setting key is required", "key": setting_key}
+    if not v:
+        return {"success": False, "error": "setting value is required", "key": key}
+
+    namespaces = ["global", "system", "secure"]
+    last_error = ""
+    for namespace in namespaces:
+        rc, stdout, stderr = await _run_adb(device_id, ["shell", "settings", "put", namespace, key, v])
+        if rc != 0:
+            last_error = stderr or stdout or f"rc={rc}"
+            continue
+
+        readback = await get_setting_via_adb(device_id, key)
+        observed = str(readback.get("value") or "").strip()
+        if bool(readback.get("success")) and observed == v:
+            return {
+                "success": True,
+                "key": key,
+                "namespace": namespace,
+                "requested_value": v,
+                "observed_value": observed,
+                "verified": True,
+            }
+        last_error = str(readback.get("error") or "verification mismatch").strip() or "verification mismatch"
+
+    return {
+        "success": False,
+        "key": key,
+        "requested_value": v,
+        "error": last_error or "adb setting write failed",
     }

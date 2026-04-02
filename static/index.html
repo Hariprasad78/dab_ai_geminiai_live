@@ -168,6 +168,10 @@
     .device-toolbar { display:flex; gap:0.45rem; align-items:center; flex-wrap:wrap; }
     .device-toolbar label { margin:0; font-size:0.72rem; color:#94a3b8; }
     .device-toolbar select { width:min(300px, 56vw); padding:0.35rem 0.45rem; font-size:0.78rem; }
+    .model-toolbar { display:flex; gap:0.45rem; align-items:center; flex-wrap:wrap; }
+    .model-toolbar label { margin:0; font-size:0.72rem; color:#94a3b8; }
+    .model-toolbar select { width:min(290px, 52vw); padding:0.35rem 0.45rem; font-size:0.78rem; }
+    .model-status { font-size:0.72rem; color:#93c5fd; max-width:360px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .device-status { font-size:0.72rem; color:#93c5fd; }
     .device-info-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:0.75rem; margin-bottom:0.9rem; }
     .device-window { display:grid; grid-template-columns:1fr 1fr; gap:0.8rem; }
@@ -181,6 +185,44 @@
     .device-raw details { margin-top:0.6rem; }
     .device-raw summary { cursor:pointer; color:#93c5fd; font-size:0.78rem; }
     .device-raw pre { margin-top:0.45rem; max-height:180px; overflow:auto; font-size:0.72rem; color:#93c5fd; }
+    .settings-toolbar { display:grid; grid-template-columns: minmax(220px, 1fr) auto; gap:0.6rem; align-items:end; margin-bottom:0.75rem; }
+    .settings-meta { display:flex; flex-wrap:wrap; gap:0.6rem; font-size:0.76rem; color:#94a3b8; margin-bottom:0.65rem; }
+    .settings-table-wrap { border:1px solid #334155; border-radius:0.65rem; background:#0b1325; overflow:hidden; }
+    .settings-table-scroll { max-height:440px; overflow:auto; }
+    .settings-table { width:100%; border-collapse:collapse; table-layout:fixed; font-size:0.78rem; }
+    .settings-table thead th { position:sticky; top:0; z-index:2; background:#12203a; color:#bfdbfe; text-align:left; padding:0.55rem; border-bottom:1px solid #334155; }
+    .settings-table tbody td { padding:0.5rem 0.55rem; border-bottom:1px solid #1e293b; vertical-align:top; color:#e2e8f0; word-break:break-word; }
+    .settings-table tbody tr:nth-child(2n) { background:rgba(15, 23, 42, 0.55); }
+    .settings-col-key { width:22%; }
+    .settings-col-value { width:26%; }
+    .settings-col-name { width:22%; }
+    .settings-col-state { width:14%; }
+    .settings-col-error { width:16%; }
+    .settings-status-ok { color:#86efac; }
+    .settings-status-fail { color:#fca5a5; }
+    .sysstate-meta { display:flex; flex-wrap:wrap; gap:0.6rem; font-size:0.76rem; color:#94a3b8; margin-bottom:0.65rem; }
+    .sysstate-grid { display:grid; grid-template-columns: 1fr 1fr; gap:0.75rem; }
+    .sysstate-panel { background:#0f172a; border:1px solid #334155; border-radius:0.65rem; overflow:hidden; }
+    .sysstate-panel h3 { font-size:0.82rem; color:#93c5fd; padding:0.55rem 0.7rem; border-bottom:1px solid #24374d; background:#0d1a31; }
+    .sysstate-panel .body { padding:0.7rem; }
+    .sysstate-static-block { min-height:220px; max-height:260px; overflow:auto; border:1px solid #334155; border-radius:0.5rem; background:#0b1325; padding:0.55rem; }
+    .sysstate-op-actions { border:1px solid #334155; border-radius:0.5rem; background:#0b1325; padding:0.55rem; margin-bottom:0.55rem; max-height:320px; overflow:auto; display:grid; grid-template-columns:1fr; gap:0.5rem; }
+    .sysstate-op-card { border:1px solid #334155; border-radius:0.45rem; background:#0f172a; padding:0.5rem; }
+    .sysstate-op-head { display:flex; justify-content:space-between; gap:0.45rem; align-items:center; margin-bottom:0.4rem; }
+    .sysstate-op-name { color:#93c5fd; font-size:0.74rem; word-break:break-word; }
+    .sysstate-op-body { display:grid; grid-template-columns:1fr auto; gap:0.45rem; align-items:end; }
+    .sysstate-op-fields { display:grid; grid-template-columns:repeat(auto-fit, minmax(120px, 1fr)); gap:0.4rem; }
+    .sysstate-op-fields input, .sysstate-op-fields select { padding:0.4rem 0.45rem; font-size:0.74rem; }
+    .sysstate-op-card button { padding:0.4rem 0.65rem; font-size:0.74rem; }
+    .sysstate-op-note { color:#94a3b8; font-size:0.72rem; }
+    .sysstate-op-result { margin-top:0.45rem; font-size:0.74rem; min-height:1rem; color:#94a3b8; }
+    .sysstate-chip-list { display:flex; flex-wrap:wrap; gap:0.35rem; }
+    .sysstate-chip { display:inline-block; border:1px solid #334155; border-radius:999px; padding:0.2rem 0.5rem; font-size:0.72rem; color:#cbd5e1; background:#0f172a; }
+    .sysstate-empty { color:#64748b; font-size:0.78rem; }
+    .sysstate-table { width:100%; border-collapse:collapse; table-layout:fixed; font-size:0.76rem; }
+    .sysstate-table th { text-align:left; color:#93c5fd; border-bottom:1px solid #334155; padding:0.38rem; position:sticky; top:0; background:#0d1a31; }
+    .sysstate-table td { color:#e2e8f0; border-bottom:1px solid #1e293b; padding:0.36rem; vertical-align:top; word-break:break-word; }
+    .sysstate-roll { max-height:84px; overflow:auto; white-space:pre-wrap; word-break:break-word; border:1px solid #334155; border-radius:0.35rem; padding:0.25rem; background:#0f172a; }
     .health-dot { width: 10px; height: 10px; border-radius: 50%; background: #ef4444; box-shadow: 0 0 12px rgba(239,68,68,0.6); }
     .health-dot.ok { background: #22c55e; box-shadow: 0 0 14px rgba(34,197,94,0.8); }
     .hero { grid-column: 1 / -1; display:grid; grid-template-columns: 1.2fr 1fr; gap:1rem; }
@@ -254,6 +296,7 @@
       main { grid-template-columns: 1fr; }
       .yts-runner-grid { grid-template-columns: 1fr; }
       .yts-runner-layout { grid-template-columns: 1fr; }
+      .sysstate-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -266,6 +309,14 @@
   </div>
   <span class="badge mock" id="mode-badge">MOCK</span>
   <div class="header-right">
+    <div class="model-toolbar">
+      <label for="ai-model-select">AI Model</label>
+      <select id="ai-model-select">
+        <option value="">Loading models...</option>
+      </select>
+      <button class="secondary mini-btn" onclick="applyAiModel()">Apply</button>
+      <span class="model-status" id="ai-model-status">Loading active model...</span>
+    </div>
     <div class="device-toolbar">
       <label for="dab-device-select">DAB Device</label>
       <select id="dab-device-select" onchange="onDabDeviceChanged()">
@@ -310,8 +361,97 @@
     <div id="dab-device-summary" class="empty-state">Load a discovered device to view its details.</div>
   </div>
 
+  <div class="card full-width" id="dab-system-state-card">
+    <div style="display:flex; justify-content:space-between; gap:0.75rem; align-items:flex-start; flex-wrap:wrap; margin-bottom:0.9rem;">
+      <div>
+        <h2>Device System Status (Stored JSON)</h2>
+        <div class="subtitle">Capability truth from list operations + live settings/get values.</div>
+      </div>
+      <button class="secondary mini-btn" onclick="refreshDabDeviceSystemState()">↻ Refresh System Status</button>
+    </div>
+    <div class="sysstate-meta">
+      <span id="dab-system-state-status">Waiting for device selection...</span>
+      <span id="dab-system-state-updated">Last updated: --</span>
+      <span id="dab-system-state-file">JSON file: --</span>
+    </div>
+    <div class="sysstate-grid">
+      <div class="sysstate-panel">
+        <h3>DAB Operations Grid</h3>
+        <div class="body">
+          <div id="dab-system-operations-grid" class="sysstate-static-block">
+            <table class="sysstate-table">
+              <thead><tr><th>Operation</th><th>Supported</th><th>Metadata</th><th>Related</th><th>Action</th></tr></thead>
+              <tbody id="dab-ops-grid-body"><tr><td colspan="5" class="sysstate-empty">No operations data.</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div class="sysstate-panel">
+        <h3>Request Execution Panel</h3>
+        <div class="body">
+          <label for="dab-request-operation">Operation</label>
+          <select id="dab-request-operation" onchange="onDabRequestOperationChanged()"></select>
+          <div class="sysstate-op-fields" style="margin-top:0.55rem;">
+            <select id="dab-request-app-id" onchange="syncRequestPayloadFromControls()"></select>
+            <input id="dab-request-content-id" placeholder="content_id (for launch)" oninput="syncRequestPayloadFromControls()" />
+            <input id="dab-request-parameters" placeholder='parameters (JSON array)' oninput="syncRequestPayloadFromControls()" />
+            <select id="dab-request-setting-key" onchange="syncRequestPayloadFromControls()"></select>
+            <select id="dab-request-setting-option" onchange="syncRequestPayloadFromControls()"></select>
+            <input id="dab-request-setting-value" placeholder="setting value" oninput="syncRequestPayloadFromControls()" />
+            <select id="dab-request-key-code" onchange="syncRequestPayloadFromControls()"></select>
+          </div>
+          <label for="dab-request-payload" style="margin-top:0.55rem;">Payload (JSON)</label>
+          <textarea id="dab-request-payload" style="min-height:120px;" placeholder='{"key":"timezone","value":"UTC"}'></textarea>
+          <div class="btn-row" style="margin-top:0.55rem;">
+            <button onclick="executeDabRequestFromPanel()">Execute</button>
+          </div>
+          <div id="dab-system-operation-result" class="sysstate-op-result"></div>
+          <div id="dab-request-response" class="sysstate-roll" style="margin-top:0.45rem; max-height:140px;">No response yet.</div>
+        </div>
+      </div>
+      <div class="sysstate-panel">
+        <h3>Current Settings Status (Live)</h3>
+        <div class="body">
+          <div id="dab-current-settings-meta" class="sysstate-op-note">Waiting for refresh...</div>
+          <div id="dab-system-settings-get" class="sysstate-static-block"></div>
+        </div>
+      </div>
+      <div class="sysstate-panel">
+        <h3>Settings Metadata (system/settings/list)</h3>
+        <div class="body">
+          <div id="dab-system-settings-list" class="sysstate-static-block"></div>
+        </div>
+      </div>
+      <div class="sysstate-panel">
+        <h3>Applications Metadata (applications/list)</h3>
+        <div class="body">
+          <div id="dab-system-applications" class="sysstate-static-block"></div>
+        </div>
+      </div>
+      <div class="sysstate-panel">
+        <h3>Voice Systems (voice/list)</h3>
+        <div class="body">
+          <div id="dab-system-voices" class="sysstate-static-block"></div>
+        </div>
+      </div>
+      <div class="sysstate-panel">
+        <h3>Input Keys (input/key/list)</h3>
+        <div class="body">
+          <div id="dab-system-keys" class="sysstate-static-block"></div>
+        </div>
+      </div>
+      <div class="sysstate-panel" style="grid-column:1 / -1;">
+        <h3>Raw Stored JSON (Debug)</h3>
+        <div class="body">
+          <div id="dab-system-raw-json" class="sysstate-roll" style="max-height:260px;">No snapshot loaded.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="card quick-nav">
     <button onclick="scrollToSection('dab-device-card')">Devices</button>
+    <button onclick="scrollToSection('dab-system-state-card')">System Status</button>
     <button onclick="scrollToSection('new-run-card')">New Run</button>
     <button onclick="scrollToSection('yts-control-center')">🔧 YTS Control</button>
     <button onclick="scrollToSection('remote-card')">Remote + Stream</button>
@@ -319,19 +459,6 @@
     <button onclick="scrollToSection('runs-card')">Runs</button>
     <button onclick="scrollToSection('detail-panel')">Run Detail</button>
     <button onclick="scrollToSection('ai-request-response-card')">AI Request/Response</button>
-  </div>
-
-  <!-- Start Run -->
-  <div class="card" id="new-run-card">
-    <h2>New Run</h2>
-    <label>Goal</label>
-    <textarea id="goal-input" placeholder="e.g. Launch Netflix and verify home screen loads"></textarea>
-    <label style="margin-top:0.75rem;">App ID (optional, YouTube only)</label>
-    <input id="app-id-input" placeholder="youtube" />
-    <div class="btn-row">
-      <button onclick="startRun()">▶ Start Run</button>
-    </div>
-    <div class="error-msg" id="start-error"></div>
   </div>
 
   <!-- YTS Control Center -->
@@ -507,6 +634,7 @@
 
   <div class="card full-width" id="yts-runner-card">
     <h2>YTS Runner & Job History</h2>
+    <label style="margin-bottom:0.75rem;"><input type="checkbox" id="yts-runner-ui-nav-toggle" style="width:auto; margin-right:0.45rem;" /> Allow UI navigation fallback</label>
     <div class="yts-runner-layout">
       <div class="yts-runner-panel">
         <h3>Live Job Console</h3>
@@ -629,6 +757,28 @@
       </div>
     </div>
   </div>
+
+  <!-- Start Run -->
+  <div class="card" id="new-run-card">
+    <h2>New Run</h2>
+    <label>Goal</label>
+    <textarea id="goal-input" placeholder="e.g. Launch Netflix and verify home screen loads"></textarea>
+    <label style="margin-top:0.75rem;">App ID (optional, YouTube only)</label>
+    <input id="app-id-input" placeholder="youtube" />
+    <label style="margin-top:0.75rem;"><input type="checkbox" id="run-ui-nav-toggle" style="width:auto; margin-right:0.45rem;" /> Allow UI navigation fallback</label>
+    <div class="btn-row">
+      <button onclick="startRun()">▶ Start Run</button>
+    </div>
+    <div class="error-msg" id="start-error"></div>
+  </div>
+
+  <!-- Task Trace (Full Bottom) -->
+  <div class="card full-width" id="task-trace-card">
+    <h2>Task Trace Log (Detailed)</h2>
+    <div id="task-trace-log" style="background:#0f172a; border:1px solid #334155; border-radius:0.5rem; padding:0.75rem; min-height:220px; max-height:420px; overflow:auto; font-family:monospace; font-size:0.78rem; white-space:pre-wrap; color:#cbd5e1;">
+      Select a run to view full task trace.
+    </div>
+  </div>
 </main>
 
 <div id="status-bar">
@@ -658,6 +808,13 @@
   let ytsCommandHistory = [];
   let selectedDabDeviceId = '';
   let discoveredDabDevices = [];
+  let dabDeviceSettingsSnapshot = [];
+  let dabDeviceSettingsMeta = { capturedAt: '', failedReads: 0, warning: '', degraded: false };
+  let dabDeviceSystemStateSnapshot = null;
+  let dabOperationsGridRows = [];
+  let dabOperationCards = [];
+  let settingsValueRefreshTimer = null;
+  let settingsValueRefreshDebounceTimer = null;
 
   function normalizeApiBase(v) {
     const s = (v || '').trim();
@@ -720,6 +877,7 @@
       refreshCaptureDevices();
       loadRuns();
       loadTestCatalog();
+      loadAiModels();
       return;
     }
     const storedApi = (localStorage.getItem(API_STORAGE_KEY) || '').trim();
@@ -731,6 +889,7 @@
     refreshCaptureDevices();
     loadRuns();
     loadTestCatalog();
+    loadAiModels();
   }
 
   function saveApiBase() {
@@ -742,6 +901,7 @@
     refreshCaptureDevices();
     loadRuns();
     loadTestCatalog();
+    loadAiModels();
   }
 
   function resetApiBase() {
@@ -752,6 +912,59 @@
     refreshCaptureDevices();
     loadRuns();
     loadTestCatalog();
+    loadAiModels();
+  }
+
+  async function loadAiModels() {
+    const select = document.getElementById('ai-model-select');
+    const statusEl = document.getElementById('ai-model-status');
+    if (!select || !statusEl) return;
+    try {
+      const data = await api('/config/runtime-model');
+      const models = Array.isArray(data.available_models) ? data.available_models : [];
+      select.innerHTML = '';
+      for (const model of models) {
+        const opt = document.createElement('option');
+        opt.value = model;
+        opt.textContent = model;
+        select.appendChild(opt);
+      }
+
+      const active = String(data.active_vertex_planner_model || '').trim();
+      if (active && !models.includes(active)) {
+        const opt = document.createElement('option');
+        opt.value = active;
+        opt.textContent = active;
+        select.appendChild(opt);
+      }
+      if (active) select.value = active;
+
+      statusEl.textContent = `Active: ${active || '-'}`;
+      statusEl.style.color = '#93c5fd';
+    } catch (e) {
+      statusEl.textContent = `AI model unavailable: ${e.message}`;
+      statusEl.style.color = '#f87171';
+    }
+  }
+
+  async function applyAiModel() {
+    const select = document.getElementById('ai-model-select');
+    const statusEl = document.getElementById('ai-model-status');
+    if (!select || !statusEl) return;
+    const model = String(select.value || '').trim();
+    if (!model) {
+      statusEl.textContent = 'Pick a model first.';
+      statusEl.style.color = '#f87171';
+      return;
+    }
+    try {
+      const data = await api('/config/runtime-model', 'POST', { model });
+      statusEl.textContent = `Active: ${String(data.active_vertex_planner_model || model)}`;
+      statusEl.style.color = '#4ade80';
+    } catch (e) {
+      statusEl.textContent = `Model update failed: ${e.message}`;
+      statusEl.style.color = '#f87171';
+    }
   }
 
   function toImageSrc(imageValue) {
@@ -772,7 +985,900 @@
       const err = await resp.json().catch(() => ({ detail: resp.statusText }));
       throw new Error(err.detail || resp.statusText);
     }
-    return resp.json();
+    const data = await resp.json();
+    if (path === '/action' && method === 'POST' && body && String(body.action || '').toUpperCase() === 'SET_SETTING') {
+      refreshCurrentSettingsStatus(true, true);
+    }
+    if (path === '/actions/batch' && method === 'POST' && body && Array.isArray(body.actions)) {
+      const hasSet = body.actions.some(item => String((item && item.action) || '').toUpperCase() === 'SET_SETTING');
+      if (hasSet) {
+        refreshCurrentSettingsStatus(true, true);
+      }
+    }
+    return data;
+  }
+
+  function scheduleSettingsValueRefresh(delayMs = 250) {
+    if (settingsValueRefreshDebounceTimer) {
+      clearTimeout(settingsValueRefreshDebounceTimer);
+      settingsValueRefreshDebounceTimer = null;
+    }
+    settingsValueRefreshDebounceTimer = setTimeout(() => {
+      settingsValueRefreshDebounceTimer = null;
+      refreshCurrentSettingsStatus(true, true);
+    }, Math.max(0, Number(delayMs) || 0));
+  }
+
+  function renderSysstateEmpty(text = 'No data') {
+    return `<div class="sysstate-empty">${escHtml(String(text || 'No data'))}</div>`;
+  }
+
+  function renderSysstateChipList(items, emptyText = 'No data') {
+    const arr = Array.isArray(items) ? items.filter(v => String(v ?? '').trim()) : [];
+    if (!arr.length) return renderSysstateEmpty(emptyText);
+    return `<div class="sysstate-chip-list">${arr.map(item => `<span class="sysstate-chip">${escHtml(String(item))}</span>`).join('')}</div>`;
+  }
+
+  function _renderOpSelectOptions(items, labelBuilder, valueBuilder, emptyText = 'No data') {
+    const arr = Array.isArray(items) ? items : [];
+    if (!arr.length) return `<option value="">${escHtml(emptyText)}</option>`;
+    return arr.map((item, idx) => {
+      const label = String(labelBuilder(item, idx) || '');
+      const value = String(valueBuilder(item, idx) || '');
+      return `<option value="${escHtml(value)}">${escHtml(label)}</option>`;
+    }).join('');
+  }
+
+  function _opIncludes(op, segments) {
+    const lower = String(op || '').trim().toLowerCase();
+    if (!lower) return false;
+    return segments.some(seg => lower.includes(String(seg || '').toLowerCase()));
+  }
+
+  function isValidSettingKeyForUi(key) {
+    const k = String(key || '').trim();
+    if (!k) return false;
+    const lower = k.toLowerCase();
+    const blocked = new Set([
+      'requestid', 'request_id', 'status', 'error', 'success', 'message',
+      'topic', 'timestamp', 'captured_at', 'deviceid', 'device_id', 'values', 'settings'
+    ]);
+    return !blocked.has(lower);
+  }
+
+  function renderOperationActionCards(ops, apps, keys, settingsList) {
+    const operations = Array.from(new Set((Array.isArray(ops) ? ops : []).map(v => String(v || '').trim()).filter(Boolean)));
+    dabOperationCards = operations;
+    if (!operations.length) return renderSysstateEmpty('No operations available.');
+
+    const appOptions = _renderOpSelectOptions(
+      apps,
+      item => String(item?.name || item?.title || item?.appId || item?.id || '-'),
+      item => String(item?.appId || item?.id || ''),
+      'No apps'
+    );
+    const keyOptions = _renderOpSelectOptions(keys, item => String(item || ''), item => String(item || ''), 'No keys');
+    const settingOptions = _renderOpSelectOptions(
+      settingsList,
+      item => String(item?.key || '-'),
+      item => String(item?.key || ''),
+      'No settings'
+    );
+
+    return operations.map((op, idx) => {
+      const opName = escHtml(op);
+      if (_opIncludes(op, ['operations/list'])) {
+        return `<div class="sysstate-op-card">
+          <div class="sysstate-op-head"><div class="sysstate-op-name">${opName}</div><span class="sysstate-chip">supported</span></div>
+          <div class="sysstate-op-body"><div class="sysstate-op-note">Refresh supported operations snapshot.</div><button class="secondary" onclick="runSystemOperationCard(${idx})">Run</button></div>
+        </div>`;
+      }
+      if (_opIncludes(op, ['applications/list'])) {
+        return `<div class="sysstate-op-card">
+          <div class="sysstate-op-head"><div class="sysstate-op-name">${opName}</div><span class="sysstate-chip">supported</span></div>
+          <div class="sysstate-op-body"><div class="sysstate-op-note">Refresh installed applications list.</div><button class="secondary" onclick="runSystemOperationCard(${idx})">Run</button></div>
+        </div>`;
+      }
+      if (_opIncludes(op, ['voice/list'])) {
+        return `<div class="sysstate-op-card">
+          <div class="sysstate-op-head"><div class="sysstate-op-name">${opName}</div><span class="sysstate-chip">supported</span></div>
+          <div class="sysstate-op-body"><div class="sysstate-op-note">Refresh supported voices list.</div><button class="secondary" onclick="runSystemOperationCard(${idx})">Run</button></div>
+        </div>`;
+      }
+      if (_opIncludes(op, ['input/key/list'])) {
+        return `<div class="sysstate-op-card">
+          <div class="sysstate-op-head"><div class="sysstate-op-name">${opName}</div><span class="sysstate-chip">supported</span></div>
+          <div class="sysstate-op-body"><div class="sysstate-op-note">Refresh available key codes list.</div><button class="secondary" onclick="runSystemOperationCard(${idx})">Run</button></div>
+        </div>`;
+      }
+      if (_opIncludes(op, ['system/settings/list'])) {
+        return `<div class="sysstate-op-card">
+          <div class="sysstate-op-head"><div class="sysstate-op-name">${opName}</div><span class="sysstate-chip">supported</span></div>
+          <div class="sysstate-op-body"><div class="sysstate-op-note">Refresh settings metadata list.</div><button class="secondary" onclick="runSystemOperationCard(${idx})">Run</button></div>
+        </div>`;
+      }
+      if (_opIncludes(op, ['application/launch', 'applications/launch'])) {
+        return `<div class="sysstate-op-card">
+          <div class="sysstate-op-head"><div class="sysstate-op-name">${opName}</div><span class="sysstate-chip">supported</span></div>
+          <div class="sysstate-op-body">
+            <div class="sysstate-op-fields">
+              <select id="sys-op-app-${idx}">${appOptions}</select>
+              <input id="sys-op-content-${idx}" placeholder="content (optional)" />
+            </div>
+            <button onclick="runSystemOperationCard(${idx})">Launch</button>
+          </div>
+        </div>`;
+      }
+      if (_opIncludes(op, ['application/exit', 'applications/exit'])) {
+        return `<div class="sysstate-op-card">
+          <div class="sysstate-op-head"><div class="sysstate-op-name">${opName}</div><span class="sysstate-chip">supported</span></div>
+          <div class="sysstate-op-body">
+            <div class="sysstate-op-fields"><select id="sys-op-app-${idx}">${appOptions}</select></div>
+            <button onclick="runSystemOperationCard(${idx})">Exit</button>
+          </div>
+        </div>`;
+      }
+      if (_opIncludes(op, ['input/key/press'])) {
+        return `<div class="sysstate-op-card">
+          <div class="sysstate-op-head"><div class="sysstate-op-name">${opName}</div><span class="sysstate-chip">supported</span></div>
+          <div class="sysstate-op-body">
+            <div class="sysstate-op-fields"><select id="sys-op-key-${idx}">${keyOptions}</select></div>
+            <button onclick="runSystemOperationCard(${idx})">Press Key</button>
+          </div>
+        </div>`;
+      }
+      if (_opIncludes(op, ['system/settings/get'])) {
+        return `<div class="sysstate-op-card">
+          <div class="sysstate-op-head"><div class="sysstate-op-name">${opName}</div><span class="sysstate-chip">supported</span></div>
+          <div class="sysstate-op-body">
+            <div class="sysstate-op-fields"><select id="sys-op-setting-${idx}">${settingOptions}</select></div>
+            <button onclick="runSystemOperationCard(${idx})">Get</button>
+          </div>
+        </div>`;
+      }
+      if (_opIncludes(op, ['system/settings/set'])) {
+        return `<div class="sysstate-op-card">
+          <div class="sysstate-op-head"><div class="sysstate-op-name">${opName}</div><span class="sysstate-chip">supported</span></div>
+          <div class="sysstate-op-body">
+            <div class="sysstate-op-fields">
+              <select id="sys-op-setting-${idx}">${settingOptions}</select>
+              <input id="sys-op-value-${idx}" placeholder="value" />
+            </div>
+            <button onclick="runSystemOperationCard(${idx})">Set</button>
+          </div>
+        </div>`;
+      }
+      return `<div class="sysstate-op-card">
+        <div class="sysstate-op-head"><div class="sysstate-op-name">${opName}</div><span class="sysstate-chip">read-only</span></div>
+        <div class="sysstate-op-note">No UI executor yet for this operation.</div>
+      </div>`;
+    }).join('');
+  }
+
+  async function runSystemOperationCard(idx) {
+    const resultEl = document.getElementById('dab-system-operation-result');
+    const index = Number(idx);
+    const op = String((dabOperationCards || [])[index] || '').trim();
+    if (!op) return;
+
+    const deviceId = requireSelectedDabDevice('dab-system-operation-result', 'Select a DAB device first.');
+    if (!deviceId) return;
+
+    let action = '';
+    let params = {};
+    if (_opIncludes(op, ['operations/list'])) action = 'OPERATIONS_LIST';
+    else if (_opIncludes(op, ['applications/list'])) action = 'APPLICATIONS_LIST';
+    else if (_opIncludes(op, ['voice/list'])) action = 'VOICE_LIST';
+    else if (_opIncludes(op, ['input/key/list'])) action = 'KEY_LIST';
+    else if (_opIncludes(op, ['system/settings/list'])) action = 'SETTINGS_LIST';
+    else if (_opIncludes(op, ['application/launch', 'applications/launch'])) {
+      action = 'LAUNCH_APP';
+      const appId = String(document.getElementById(`sys-op-app-${index}`)?.value || '').trim();
+      const content = String(document.getElementById(`sys-op-content-${index}`)?.value || '').trim();
+      if (!appId) {
+        if (resultEl) {
+          resultEl.textContent = '✗ app_id is required for launch.';
+          resultEl.style.color = '#f87171';
+        }
+        return;
+      }
+      params = { app_id: appId };
+      if (content) params.content = content;
+    } else if (_opIncludes(op, ['application/exit', 'applications/exit'])) {
+      action = 'EXIT_APP';
+      const appId = String(document.getElementById(`sys-op-app-${index}`)?.value || '').trim();
+      if (appId) params = { app_id: appId };
+    } else if (_opIncludes(op, ['input/key/press'])) {
+      action = 'KEY_PRESS_CODE';
+      const keyCode = String(document.getElementById(`sys-op-key-${index}`)?.value || '').trim();
+      if (!keyCode) {
+        if (resultEl) {
+          resultEl.textContent = '✗ key_code is required for key press.';
+          resultEl.style.color = '#f87171';
+        }
+        return;
+      }
+      params = { key_code: keyCode };
+    } else if (_opIncludes(op, ['system/settings/get'])) {
+      action = 'GET_SETTING';
+      const key = String(document.getElementById(`sys-op-setting-${index}`)?.value || '').trim();
+      if (!key) {
+        if (resultEl) {
+          resultEl.textContent = '✗ setting key is required for get.';
+          resultEl.style.color = '#f87171';
+        }
+        return;
+      }
+      params = { key };
+    } else if (_opIncludes(op, ['system/settings/set'])) {
+      action = 'SET_SETTING';
+      const key = String(document.getElementById(`sys-op-setting-${index}`)?.value || '').trim();
+      const value = String(document.getElementById(`sys-op-value-${index}`)?.value || '').trim();
+      if (!key || !value) {
+        if (resultEl) {
+          resultEl.textContent = '✗ key and value are required for set.';
+          resultEl.style.color = '#f87171';
+        }
+        return;
+      }
+      params = { key, value };
+    } else {
+      if (resultEl) {
+        resultEl.textContent = '✗ Operation execution UI is not available for this operation yet.';
+        resultEl.style.color = '#f87171';
+      }
+      return;
+    }
+
+    if (resultEl) {
+      resultEl.textContent = `Running ${action}...`;
+      resultEl.style.color = '#93c5fd';
+    }
+
+    try {
+      const data = await api('/action', 'POST', { action, params, device_id: deviceId });
+      const ok = !!data.success;
+      if (resultEl) {
+        resultEl.textContent = ok
+          ? `✓ ${action} completed`
+          : `✗ ${action} failed: ${String(data.error || 'unknown error')}`;
+        resultEl.style.color = ok ? '#4ade80' : '#f87171';
+      }
+      await loadDabDeviceSystemState(deviceId, true, false);
+      if (action === 'SET_SETTING' || action === 'GET_SETTING') {
+        scheduleSettingsValueRefresh(150);
+      }
+    } catch (e) {
+      if (resultEl) {
+        resultEl.textContent = `✗ ${e.message}`;
+        resultEl.style.color = '#f87171';
+      }
+    }
+  }
+
+  function renderSettingsListBlock(items) {
+    const arr = Array.isArray(items) ? items : [];
+    if (!arr.length) return renderSysstateEmpty('No settings metadata available.');
+    return `<table class="sysstate-table">
+      <thead><tr><th>Key</th><th>Name</th><th>Writable</th><th>Allowed / Range</th></tr></thead>
+      <tbody>
+        ${arr.map(item => {
+          const key = escHtml(String(item?.key || '-'));
+          const name = escHtml(String(item?.friendlyName || item?.name || '-'));
+          const writable = escHtml(String(item?.writable ?? '-'));
+          const allowed = Array.isArray(item?.allowedValues) && item.allowedValues.length
+            ? item.allowedValues.join(', ')
+            : ((item?.min !== undefined || item?.max !== undefined) ? `${item.min ?? '-'} .. ${item.max ?? '-'}` : '-');
+          return `<tr>
+            <td>${key}</td>
+            <td>${name}</td>
+            <td>${writable}</td>
+            <td><div class="sysstate-roll">${escHtml(String(allowed))}</div></td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>`;
+  }
+
+  function renderSettingsValuesBlock(items) {
+    const arr = Array.isArray(items) ? items : [];
+    if (!arr.length) return renderSysstateEmpty('No setting values available.');
+    return `<table class="sysstate-table">
+      <thead><tr><th>Key</th><th>Current Value</th><th>Status</th><th>Error</th></tr></thead>
+      <tbody>
+        ${arr.map(item => {
+          const key = escHtml(String(item?.key || '-'));
+          const value = escHtml(fullDisplayValue(item?.current_value));
+          const ok = !!item?.read_success;
+          const statusText = ok ? `OK (${item?.read_status || 200})` : `FAILED (${item?.read_status || 0})`;
+          const error = escHtml(String(item?.read_error || '-'));
+          return `<tr>
+            <td>${key}</td>
+            <td><div class="sysstate-roll">${value}</div></td>
+            <td>${escHtml(statusText)}</td>
+            <td><div class="sysstate-roll">${error}</div></td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>`;
+  }
+
+  function renderApplicationsBlock(items) {
+    const arr = Array.isArray(items) ? items : [];
+    if (!arr.length) return renderSysstateEmpty('No applications available.');
+    return `<table class="sysstate-table">
+      <thead><tr><th>App ID</th><th>Name</th><th>Version</th><th>State</th></tr></thead>
+      <tbody>
+        ${arr.map(app => `<tr>
+          <td>${escHtml(String(app?.appId || app?.id || '-'))}</td>
+          <td>${escHtml(String(app?.name || app?.title || '-'))}</td>
+          <td>${escHtml(String(app?.version || '-'))}</td>
+          <td>${escHtml(String(app?.state || '-'))}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>`;
+  }
+
+  function compactDisplayValue(value, maxLen = 90) {
+    if (value === null || value === undefined) return 'null';
+    if (Array.isArray(value)) {
+      const preview = value.slice(0, 4).map(v => String(v)).join(', ');
+      const base = `[${value.length}] ${preview}`;
+      return base.length > maxLen ? `${base.slice(0, maxLen - 1)}…` : (value.length > 4 ? `${base}…` : base);
+    }
+    if (typeof value === 'object') {
+      const raw = JSON.stringify(value);
+      if (!raw) return '{}';
+      return raw.length > maxLen ? `${raw.slice(0, maxLen - 1)}…` : raw;
+    }
+    const text = String(value);
+    return text.length > maxLen ? `${text.slice(0, maxLen - 1)}…` : text;
+  }
+
+  function fullDisplayValue(value) {
+    if (value === null || value === undefined) return 'null';
+    if (typeof value === 'object') {
+      try { return JSON.stringify(value, null, 2); } catch (_) { return String(value); }
+    }
+    return String(value);
+  }
+
+  function renderDabOperationsGrid(rows) {
+    const body = document.getElementById('dab-ops-grid-body');
+    if (!body) return;
+    const arr = Array.isArray(rows) ? rows : [];
+    if (!arr.length) {
+      body.innerHTML = '<tr><td colspan="5" class="sysstate-empty">No operations data.</td></tr>';
+      return;
+    }
+    body.innerHTML = arr.map((row, idx) => {
+      const op = escHtml(String(row.operation || '-'));
+      const supported = !!row.supported;
+      const supportLabel = supported ? 'Enabled' : 'Disabled';
+      const supportClass = supported ? 'settings-status-ok' : 'settings-status-fail';
+      const source = escHtml(String(row.metadata_source || '-'));
+      const related = `${escHtml(String(row.related_source || '-'))} (${Number(row.related_count || 0)})`;
+      const actionLabel = supported ? 'Use' : 'N/A';
+      return `<tr>
+        <td>${op}</td>
+        <td class="${supportClass}">${escHtml(supportLabel)}</td>
+        <td>${source}</td>
+        <td>${related}</td>
+        <td>${supported ? `<button class="secondary mini-btn" onclick="useOperationInRequestPanel(${idx})">${actionLabel}</button>` : '<span class="sysstate-empty">-</span>'}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  function renderSystemRequestOperationOptions(rows) {
+    const select = document.getElementById('dab-request-operation');
+    if (!select) return;
+    const arr = Array.isArray(rows) ? rows : [];
+    if (!arr.length) {
+      select.innerHTML = '<option value="">No operations</option>';
+      return;
+    }
+    select.innerHTML = arr.map((row, idx) => {
+      const op = String(row.operation || '').trim();
+      const disabled = !row.supported;
+      return `<option value="${escHtml(op)}" data-idx="${idx}" ${disabled ? 'disabled' : ''}>${escHtml(op)}${disabled ? ' (unsupported)' : ''}</option>`;
+    }).join('');
+    const firstSupported = arr.find(r => !!r.supported);
+    if (firstSupported) select.value = String(firstSupported.operation || '');
+    onDabRequestOperationChanged();
+  }
+
+  function useOperationInRequestPanel(idx) {
+    const select = document.getElementById('dab-request-operation');
+    const row = (dabOperationsGridRows || [])[Number(idx)] || null;
+    if (!select || !row) return;
+    select.value = String(row.operation || '');
+    onDabRequestOperationChanged();
+  }
+
+  function onDabRequestOperationChanged() {
+    const select = document.getElementById('dab-request-operation');
+    if (!select) return;
+    const op = String(select.value || '').trim().toLowerCase();
+    const appIdEl = document.getElementById('dab-request-app-id');
+    const contentIdEl = document.getElementById('dab-request-content-id');
+    const parametersEl = document.getElementById('dab-request-parameters');
+    const settingKeyEl = document.getElementById('dab-request-setting-key');
+    const settingOptionEl = document.getElementById('dab-request-setting-option');
+    const settingValueEl = document.getElementById('dab-request-setting-value');
+    const keyCodeEl = document.getElementById('dab-request-key-code');
+
+    const isLaunch = op === 'application/launch' || op === 'applications/launch' || op === 'applications/launch-with-content';
+    const isExit = op === 'application/exit' || op === 'applications/exit';
+    const isGetState = op === 'applications/get-state' || op === 'application/get-state';
+    const isGet = op === 'system/settings/get';
+    const isSet = op === 'system/settings/set';
+    const isKeyPress = op === 'input/key/press' || op === 'input/key-press';
+    const isLongKeyPress = op === 'input/long-key-press' || op === 'input/long-key/press';
+
+    if (appIdEl) appIdEl.style.display = (isLaunch || isExit || isGetState) ? '' : 'none';
+    if (contentIdEl) contentIdEl.style.display = (op === 'applications/launch-with-content') ? '' : 'none';
+    if (parametersEl) parametersEl.style.display = (op === 'applications/launch' || op === 'application/launch') ? '' : 'none';
+    if (settingKeyEl) settingKeyEl.style.display = (isGet || isSet) ? '' : 'none';
+    if (settingOptionEl) settingOptionEl.style.display = isSet ? '' : 'none';
+    if (settingValueEl) settingValueEl.style.display = isSet ? '' : 'none';
+    if (keyCodeEl) keyCodeEl.style.display = (isKeyPress || isLongKeyPress) ? '' : 'none';
+
+    syncRequestPayloadFromControls();
+  }
+
+  function refreshDabRequestMetadataControls() {
+    const appIdEl = document.getElementById('dab-request-app-id');
+    const settingKeyEl = document.getElementById('dab-request-setting-key');
+    const settingOptionEl = document.getElementById('dab-request-setting-option');
+    const keyCodeEl = document.getElementById('dab-request-key-code');
+    const data = dabDeviceSystemStateSnapshot || {};
+    const apps = Array.isArray(data.installed_applications) ? data.installed_applications : (Array.isArray(data?.applications_list?.list) ? data.applications_list.list : []);
+    const settingsRaw = Array.isArray(data.supported_settings) ? data.supported_settings : (Array.isArray(data?.settings_list?.list) ? data.settings_list.list : []);
+    const settings = settingsRaw.filter(item => isValidSettingKeyForUi(item?.key));
+    const keys = Array.isArray(data.supported_keys) ? data.supported_keys : (Array.isArray(data?.keys?.list) ? data.keys.list : []);
+
+    if (appIdEl) {
+      appIdEl.innerHTML = '<option value="">Select appId</option>' + apps.map(app => {
+        const appId = String(app?.appId || app?.id || '').trim();
+        const label = String(app?.name || app?.title || appId || '-').trim();
+        return `<option value="${escHtml(appId)}">${escHtml(label)}${appId ? ` (${escHtml(appId)})` : ''}</option>`;
+      }).join('');
+    }
+    if (settingKeyEl) {
+      settingKeyEl.innerHTML = '<option value="">Select setting key</option>' + settings.map(item => {
+        const key = String(item?.key || '').trim();
+        return `<option value="${escHtml(key)}">${escHtml(key)}</option>`;
+      }).join('');
+    }
+    if (settingOptionEl) {
+      settingOptionEl.innerHTML = '<option value="">Select allowed option (if available)</option>';
+    }
+    if (keyCodeEl) {
+      keyCodeEl.innerHTML = '<option value="">Select keyCode</option>' + keys.map(key => {
+        const code = String(key || '').trim();
+        return `<option value="${escHtml(code)}">${escHtml(code)}</option>`;
+      }).join('');
+    }
+  }
+
+  function syncRequestPayloadFromControls() {
+    const opEl = document.getElementById('dab-request-operation');
+    const payloadEl = document.getElementById('dab-request-payload');
+    if (!opEl || !payloadEl) return;
+    const op = String(opEl.value || '').trim().toLowerCase();
+    const appId = String(document.getElementById('dab-request-app-id')?.value || '').trim();
+    const contentId = String(document.getElementById('dab-request-content-id')?.value || '').trim();
+    const parametersRaw = String(document.getElementById('dab-request-parameters')?.value || '').trim();
+    const settingKey = String(document.getElementById('dab-request-setting-key')?.value || '').trim();
+    const settingOption = String(document.getElementById('dab-request-setting-option')?.value || '').trim();
+    const settingValueInput = String(document.getElementById('dab-request-setting-value')?.value || '').trim();
+    const settingValue = settingOption || settingValueInput;
+    const keyCode = String(document.getElementById('dab-request-key-code')?.value || '').trim();
+
+    const settingsRaw = Array.isArray(dabDeviceSystemStateSnapshot?.supported_settings)
+      ? dabDeviceSystemStateSnapshot.supported_settings
+      : (Array.isArray(dabDeviceSystemStateSnapshot?.settings_list?.list) ? dabDeviceSystemStateSnapshot.settings_list.list : []);
+    const selectedMeta = settingsRaw.find(item => String(item?.key || '').trim() === settingKey) || null;
+    const allowedValues = Array.isArray(selectedMeta?.allowedValues)
+      ? selectedMeta.allowedValues
+      : (Array.isArray(selectedMeta?.values) ? selectedMeta.values : []);
+    const settingOptionEl = document.getElementById('dab-request-setting-option');
+    if (settingOptionEl) {
+      settingOptionEl.innerHTML = '<option value="">Select allowed option (if available)</option>'
+        + (allowedValues || []).map(v => `<option value="${escHtml(String(v))}">${escHtml(String(v))}</option>`).join('');
+      if (settingOption && Array.from(settingOptionEl.options).some(o => o.value === settingOption)) {
+        settingOptionEl.value = settingOption;
+      }
+      settingOptionEl.style.display = (allowedValues || []).length ? '' : 'none';
+    }
+    const settingValueEl = document.getElementById('dab-request-setting-value');
+    if (settingValueEl) {
+      settingValueEl.style.display = (allowedValues || []).length ? 'none' : '';
+    }
+
+    let payload = {};
+    if (op === 'application/launch' || op === 'applications/launch') {
+      payload = { appId: appId };
+      if (!appId) delete payload.appId;
+      if (parametersRaw) {
+        try {
+          const parsed = JSON.parse(parametersRaw);
+          if (Array.isArray(parsed)) payload.parameters = parsed;
+        } catch (_) {
+          payload.parameters = parametersRaw.split(',').map(v => String(v || '').trim()).filter(Boolean);
+        }
+      }
+    } else if (op === 'applications/launch-with-content') {
+      payload = { appId: appId, contentId: contentId };
+      if (!appId) delete payload.appId;
+      if (!contentId) delete payload.contentId;
+    } else if (op === 'application/exit' || op === 'applications/exit') {
+      payload = { appId: appId };
+      if (!appId) delete payload.appId;
+    } else if (op === 'applications/get-state' || op === 'application/get-state') {
+      payload = { appId: appId };
+      if (!appId) delete payload.appId;
+    } else if (op === 'system/settings/get') {
+      payload = { key: settingKey };
+      if (!settingKey) delete payload.key;
+    } else if (op === 'system/settings/set') {
+      if (settingKey) payload = { [settingKey]: settingValue };
+      else payload = {};
+    } else if (op === 'input/key/press' || op === 'input/key-press') {
+      payload = { keyCode: keyCode };
+      if (!keyCode) delete payload.keyCode;
+    } else if (op === 'input/long-key-press' || op === 'input/long-key/press') {
+      payload = { keyCode: keyCode, durationMs: 1500 };
+      if (!keyCode) delete payload.keyCode;
+    }
+    payloadEl.value = JSON.stringify(payload, null, 2);
+  }
+
+  async function executeDabRequestFromPanel() {
+    const opEl = document.getElementById('dab-request-operation');
+    const payloadEl = document.getElementById('dab-request-payload');
+    const statusEl = document.getElementById('dab-system-operation-result');
+    const responseEl = document.getElementById('dab-request-response');
+    const deviceId = requireSelectedDabDevice('dab-system-operation-result', 'Select a DAB device first.');
+    if (!deviceId || !opEl || !payloadEl) return;
+    const operation = String(opEl.value || '').trim();
+    if (!operation) {
+      if (statusEl) {
+        statusEl.textContent = '✗ Select an operation first.';
+        statusEl.style.color = '#f87171';
+      }
+      return;
+    }
+
+    let payload = {};
+    try {
+      payload = payloadEl.value.trim() ? JSON.parse(payloadEl.value) : {};
+    } catch (e) {
+      if (statusEl) {
+        statusEl.textContent = `✗ Invalid payload JSON: ${e.message}`;
+        statusEl.style.color = '#f87171';
+      }
+      return;
+    }
+
+    if (statusEl) {
+      statusEl.textContent = `Executing ${operation}...`;
+      statusEl.style.color = '#93c5fd';
+    }
+    try {
+      const data = await api('/dab/execute-request', 'POST', { device_id: deviceId, operation, payload });
+      if (statusEl) {
+        statusEl.textContent = data.success ? `✓ ${operation} executed` : `✗ ${operation} failed`;
+        statusEl.style.color = data.success ? '#4ade80' : '#f87171';
+      }
+      if (responseEl) responseEl.textContent = JSON.stringify(data, null, 2);
+      if (String(operation).toLowerCase() === 'system/settings/set' || String(operation).toLowerCase() === 'system/settings/get') {
+        await refreshCurrentSettingsStatus(true, true);
+      }
+    } catch (e) {
+      if (statusEl) {
+        statusEl.textContent = `✗ ${e.message}`;
+        statusEl.style.color = '#f87171';
+      }
+      if (responseEl) responseEl.textContent = String(e.message || e);
+    }
+  }
+
+  function renderDabDeviceSystemState() {
+    const statusEl = document.getElementById('dab-system-state-status');
+    const updatedEl = document.getElementById('dab-system-state-updated');
+    const fileEl = document.getElementById('dab-system-state-file');
+    const settingsListEl = document.getElementById('dab-system-settings-list');
+    const settingsGetEl = document.getElementById('dab-system-settings-get');
+    const appsEl = document.getElementById('dab-system-applications');
+    const voicesEl = document.getElementById('dab-system-voices');
+    const keysEl = document.getElementById('dab-system-keys');
+    const rawEl = document.getElementById('dab-system-raw-json');
+
+    const data = dabDeviceSystemStateSnapshot;
+    if (!data || typeof data !== 'object') {
+      if (statusEl) statusEl.textContent = 'No system snapshot loaded.';
+      if (updatedEl) updatedEl.textContent = 'Last updated: --';
+      if (fileEl) fileEl.textContent = 'JSON file: --';
+      renderDabOperationsGrid([]);
+      renderSystemRequestOperationOptions([]);
+      refreshDabRequestMetadataControls();
+      if (settingsListEl) settingsListEl.innerHTML = renderSysstateEmpty();
+      if (settingsGetEl) settingsGetEl.innerHTML = renderSysstateEmpty();
+      if (appsEl) appsEl.innerHTML = renderSysstateEmpty();
+      if (voicesEl) voicesEl.innerHTML = renderSysstateEmpty();
+      if (keysEl) keysEl.innerHTML = renderSysstateEmpty();
+      if (rawEl) rawEl.textContent = 'No snapshot loaded.';
+      return;
+    }
+
+    if (statusEl) {
+      statusEl.textContent = `Loaded capability/status for ${String(data.device_id || '-')}`;
+      statusEl.style.color = '#4ade80';
+    }
+    if (updatedEl) updatedEl.textContent = `Last updated: ${String(data.last_updated || data.captured_at || '--')}`;
+    if (fileEl) fileEl.textContent = `JSON file: ${String(data.json_file || '--')}`;
+
+    const settingsList = Array.isArray(data?.supported_settings) ? data.supported_settings : (Array.isArray(data?.settings_list?.list) ? data.settings_list.list : []);
+    const settingsValues = Array.isArray(data?.current_setting_values) ? data.current_setting_values : (Array.isArray(data?.settings_get?.values) ? data.settings_get.values : []);
+    const apps = Array.isArray(data?.installed_applications) ? data.installed_applications : (Array.isArray(data?.applications_list?.list) ? data.applications_list.list : []);
+    const voices = Array.isArray(data?.supported_voice_systems) ? data.supported_voice_systems : (Array.isArray(data?.voice_list?.list) ? data.voice_list.list : []);
+    const keys = Array.isArray(data?.supported_keys) ? data.supported_keys : (Array.isArray(data?.keys?.list) ? data.keys.list : []);
+
+    if (settingsListEl) settingsListEl.innerHTML = renderSettingsListBlock(settingsList);
+    if (settingsGetEl) settingsGetEl.innerHTML = renderSettingsValuesBlock(settingsValues);
+    if (appsEl) appsEl.innerHTML = renderApplicationsBlock(apps);
+    if (voicesEl) voicesEl.innerHTML = renderSysstateChipList(voices, 'No voices available.');
+    if (keysEl) keysEl.innerHTML = renderSysstateChipList(keys, 'No keys available.');
+    if (rawEl) rawEl.textContent = JSON.stringify(data, null, 2);
+    refreshDabRequestMetadataControls();
+    syncRequestPayloadFromControls();
+  }
+
+  async function loadDabOperationsGrid(deviceId = getSelectedDabDeviceId(), forceRefresh = false) {
+    const resolved = String(deviceId || '').trim();
+    if (!isValidDabDeviceId(resolved)) {
+      dabOperationsGridRows = [];
+      renderDabOperationsGrid([]);
+      renderSystemRequestOperationOptions([]);
+      return;
+    }
+    try {
+      const data = await api(`/dab/device-operations-grid?device_id=${encodeURIComponent(resolved)}&refresh=${forceRefresh ? 'true' : 'false'}`);
+      dabOperationsGridRows = Array.isArray(data.rows) ? data.rows : [];
+      renderDabOperationsGrid(dabOperationsGridRows);
+      renderSystemRequestOperationOptions(dabOperationsGridRows);
+    } catch (_) {
+      dabOperationsGridRows = [];
+      renderDabOperationsGrid([]);
+      renderSystemRequestOperationOptions([]);
+    }
+  }
+
+  async function refreshCurrentSettingsStatus(silent = false, force = false) {
+    const resolved = String(getSelectedDabDeviceId() || '').trim();
+    const metaEl = document.getElementById('dab-current-settings-meta');
+    if (!isValidDabDeviceId(resolved)) return;
+    try {
+      const data = await api(`/dab/device-current-settings?device_id=${encodeURIComponent(resolved)}&force=${force ? 'true' : 'false'}`);
+      const values = Array.isArray(data.current_setting_values) ? data.current_setting_values : [];
+      if (!dabDeviceSystemStateSnapshot || typeof dabDeviceSystemStateSnapshot !== 'object') dabDeviceSystemStateSnapshot = {};
+      dabDeviceSystemStateSnapshot.current_setting_values = values;
+      dabDeviceSystemStateSnapshot.settings_get = {
+        count: Number(data.count || values.length),
+        failed: Number(data.failed || 0),
+        values,
+      };
+      dabDeviceSystemStateSnapshot.last_updated = String(data.last_updated || dabDeviceSystemStateSnapshot.last_updated || '');
+      if (metaEl) {
+        metaEl.textContent = `Auto-refresh every 15s · ${values.length} settings · ${Number(data.failed || 0)} failed · ${String(data.last_updated || '--')}`;
+      }
+      renderDabDeviceSystemState();
+    } catch (e) {
+      if (!silent && metaEl) metaEl.textContent = `Current settings refresh failed: ${e.message}`;
+    }
+  }
+
+  function startCurrentSettingsRefreshLoop() {
+    if (settingsValueRefreshTimer) {
+      clearInterval(settingsValueRefreshTimer);
+      settingsValueRefreshTimer = null;
+    }
+    settingsValueRefreshTimer = setInterval(() => {
+      refreshCurrentSettingsStatus(true, false);
+    }, 15000);
+  }
+
+  async function loadDabDeviceSystemState(deviceId = getSelectedDabDeviceId(), silent = false, forceRefresh = false) {
+    const statusEl = document.getElementById('dab-system-state-status');
+    const resolved = String(deviceId || '').trim();
+    if (!isValidDabDeviceId(resolved)) {
+      dabDeviceSystemStateSnapshot = null;
+      renderDabDeviceSystemState();
+      if (statusEl) {
+        statusEl.textContent = 'No valid device selected.';
+        statusEl.style.color = '#fca5a5';
+      }
+      return;
+    }
+    if (!silent && statusEl) {
+      statusEl.textContent = `Loading system status for ${resolved}...`;
+      statusEl.style.color = '#93c5fd';
+    }
+    try {
+      const data = await api(`/dab/device-capability-status?device_id=${encodeURIComponent(resolved)}&refresh=${forceRefresh ? 'true' : 'false'}`);
+      dabDeviceSystemStateSnapshot = data;
+      renderDabDeviceSystemState();
+      await loadDabOperationsGrid(resolved, forceRefresh);
+      await refreshCurrentSettingsStatus(true, false);
+    } catch (e) {
+      if (statusEl) {
+        statusEl.textContent = `Unable to load system status: ${e.message}`;
+        statusEl.style.color = '#f87171';
+      }
+    }
+  }
+
+  async function refreshDabDeviceSystemState(silent = false, forceRefresh = true) {
+    await loadDabDeviceSystemState(getSelectedDabDeviceId(), silent, forceRefresh);
+  }
+
+  function renderDabDeviceSettingsTable() {
+    const tbody = document.getElementById('dab-settings-table-body');
+    if (!tbody) return;
+    const q = String(document.getElementById('dab-settings-search')?.value || '').trim().toLowerCase();
+    const rows = (dabDeviceSettingsSnapshot || []).filter(item => {
+      if (!q) return true;
+      const blob = [
+        item.key,
+        item.friendlyName,
+        item.current_value,
+        item.read_error,
+      ].map(value => String(value == null ? '' : value).toLowerCase()).join(' ');
+      return blob.includes(q);
+    });
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="5" class="empty-state" style="padding:0.75rem;">No settings match the current filter.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows.map(item => {
+      const ok = !!item.read_success;
+      const statusText = ok ? `OK (${item.read_status || 200})` : `FAILED (${item.read_status || 0})`;
+      const statusClass = ok ? 'settings-status-ok' : 'settings-status-fail';
+      const key = escHtml(String(item.key || ''));
+      const value = escHtml(compactDisplayValue(item.current_value, 110));
+      const friendlyName = escHtml(String(item.friendlyName || item.name || '-'));
+      const err = escHtml(String(item.read_error || '-'));
+      return `<tr>
+        <td class="settings-col-key">${key}</td>
+        <td class="settings-col-value">${value}</td>
+        <td class="settings-col-name">${friendlyName}</td>
+        <td class="settings-col-state ${statusClass}">${escHtml(statusText)}</td>
+        <td class="settings-col-error">${err}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  async function loadDabDeviceSettings(deviceId = getSelectedDabDeviceId(), silent = false) {
+    const statusEl = document.getElementById('dab-settings-status');
+    const countEl = document.getElementById('dab-settings-count');
+    const failedEl = document.getElementById('dab-settings-failed');
+    const updatedEl = document.getElementById('dab-settings-updated');
+    const warningEl = document.getElementById('dab-settings-warning');
+    const resolved = String(deviceId || '').trim();
+
+    if (!isValidDabDeviceId(resolved)) {
+      dabDeviceSettingsSnapshot = [];
+      dabDeviceSettingsMeta = { capturedAt: '', failedReads: 0, warning: '', degraded: false };
+      if (statusEl) {
+        statusEl.textContent = 'No valid device selected.';
+        statusEl.style.color = '#fca5a5';
+      }
+      if (countEl) countEl.textContent = '0 settings';
+      if (failedEl) failedEl.textContent = '0 read failures';
+      if (updatedEl) updatedEl.textContent = 'Last updated: --';
+      if (warningEl) warningEl.textContent = '';
+      renderDabDeviceSettingsTable();
+      return;
+    }
+
+    if (!silent && statusEl) {
+      statusEl.textContent = `Loading settings for ${resolved}...`;
+      statusEl.style.color = '#93c5fd';
+    }
+
+    try {
+      const data = await api(`/dab/device-settings?device_id=${encodeURIComponent(resolved)}`);
+      dabDeviceSettingsSnapshot = Array.isArray(data.settings) ? data.settings : [];
+      dabDeviceSettingsMeta = {
+        capturedAt: String(data.captured_at || ''),
+        failedReads: Number(data.failed_reads || 0),
+        warning: String(data.warning || data.list_error || ''),
+        degraded: !!data.degraded,
+      };
+      if (countEl) countEl.textContent = `${dabDeviceSettingsSnapshot.length} setting${dabDeviceSettingsSnapshot.length === 1 ? '' : 's'}`;
+      if (failedEl) failedEl.textContent = `${dabDeviceSettingsMeta.failedReads} read failure${dabDeviceSettingsMeta.failedReads === 1 ? '' : 's'}`;
+      if (updatedEl) updatedEl.textContent = `Last updated: ${dabDeviceSettingsMeta.capturedAt || '--'}`;
+      if (warningEl) {
+        warningEl.textContent = dabDeviceSettingsMeta.warning ? `Warning: ${dabDeviceSettingsMeta.warning}` : '';
+        warningEl.style.color = dabDeviceSettingsMeta.warning ? '#fcd34d' : '#94a3b8';
+      }
+      if (statusEl) {
+        const ok = !!data.success;
+        statusEl.textContent = ok
+          ? `Loaded settings for ${resolved}${dabDeviceSettingsMeta.degraded ? ' (degraded)' : ''}`
+          : `Settings list failed for ${resolved}`;
+        statusEl.style.color = ok ? '#4ade80' : '#f87171';
+      }
+      renderDabDeviceSettingsTable();
+    } catch (e) {
+      if (statusEl) {
+        statusEl.textContent = `Unable to load settings: ${e.message}`;
+        statusEl.style.color = '#f87171';
+      }
+      if (!silent) {
+        dabDeviceSettingsSnapshot = [];
+        renderDabDeviceSettingsTable();
+      }
+    }
+  }
+
+  async function refreshDabDeviceSettings(silent = false) {
+    await loadDabDeviceSettings(getSelectedDabDeviceId(), silent);
+  }
+
+  async function refreshDabDeviceSettingValues(silent = false) {
+    const resolved = String(getSelectedDabDeviceId() || '').trim();
+    if (!isValidDabDeviceId(resolved)) return;
+    try {
+      const data = await api(`/dab/device-settings/values?device_id=${encodeURIComponent(resolved)}`);
+      const values = Array.isArray(data.values) ? data.values : [];
+      const byKey = new Map(values.map(item => [String(item.key || '').trim(), item]));
+      dabDeviceSettingsSnapshot = (dabDeviceSettingsSnapshot || []).map(item => {
+        const key = String(item.key || '').trim();
+        const latest = byKey.get(key);
+        return latest ? { ...item, ...latest } : item;
+      });
+      const existingKeys = new Set((dabDeviceSettingsSnapshot || []).map(item => String(item.key || '').trim()));
+      const missing = values.filter(v => !existingKeys.has(String(v.key || '').trim()));
+      if (missing.length) dabDeviceSettingsSnapshot = [...dabDeviceSettingsSnapshot, ...missing];
+      dabDeviceSettingsMeta.capturedAt = String(data.captured_at || dabDeviceSettingsMeta.capturedAt || '');
+      dabDeviceSettingsMeta.failedReads = Number(data.failed || 0);
+      const failedEl = document.getElementById('dab-settings-failed');
+      const updatedEl = document.getElementById('dab-settings-updated');
+      if (failedEl) failedEl.textContent = `${dabDeviceSettingsMeta.failedReads} read failure${dabDeviceSettingsMeta.failedReads === 1 ? '' : 's'}`;
+      if (updatedEl) updatedEl.textContent = `Last updated: ${dabDeviceSettingsMeta.capturedAt || '--'}`;
+      if (!silent) {
+        const statusEl = document.getElementById('dab-settings-status');
+        if (statusEl) {
+          statusEl.textContent = `Updated setting values for ${resolved}`;
+          statusEl.style.color = '#4ade80';
+        }
+      }
+      renderDabDeviceSettingsTable();
+      if (dabDeviceSystemStateSnapshot && dabDeviceSystemStateSnapshot.settings_get && Array.isArray(dabDeviceSystemStateSnapshot.settings_get.values)) {
+        dabDeviceSystemStateSnapshot.settings_get.values = values;
+        dabDeviceSystemStateSnapshot.settings_get.count = Number(data.count || values.length);
+        dabDeviceSystemStateSnapshot.settings_get.failed = Number(data.failed || 0);
+        dabDeviceSystemStateSnapshot.captured_at = String(data.captured_at || dabDeviceSystemStateSnapshot.captured_at || '');
+        renderDabDeviceSystemState();
+      }
+    } catch (e) {
+      if (!silent) {
+        const statusEl = document.getElementById('dab-settings-status');
+        if (statusEl) {
+          statusEl.textContent = `Unable to refresh setting values: ${e.message}`;
+          statusEl.style.color = '#f87171';
+        }
+      }
+    }
+  }
+
+  function startSettingsValueRefreshLoop() {
+    if (settingsValueRefreshTimer) {
+      clearInterval(settingsValueRefreshTimer);
+      settingsValueRefreshTimer = null;
+    }
   }
 
   function getSelectedDabDeviceId() {
@@ -958,7 +2064,7 @@
       </div>`;
   }
 
-  async function loadDabDeviceInfo(deviceId = getSelectedDabDeviceId()) {
+  async function loadDabDeviceInfo(deviceId = getSelectedDabDeviceId(), forceCatalogRefresh = false) {
     const infoStatusEl = document.getElementById('dab-device-info-status');
     const statusEl = document.getElementById('dab-device-status');
     const resolved = String(deviceId || '').trim();
@@ -977,10 +2083,12 @@
       infoStatusEl.textContent = data.success ? 'Loaded' : 'Unavailable';
       statusEl.textContent = `Selected device: ${resolved}`;
       renderDabDeviceSummary(data.result || {}, discovered);
+      await loadDabDeviceSystemState(resolved, true, !!forceCatalogRefresh);
     } catch (e) {
       infoStatusEl.textContent = 'Error';
       statusEl.textContent = `Unable to fetch device info: ${e.message}`;
       renderDabDeviceSummary({ error: e.message, deviceId: resolved }, getDiscoveredDabDevice(resolved));
+      await loadDabDeviceSystemState(resolved, true, !!forceCatalogRefresh);
     }
   }
 
@@ -1022,7 +2130,7 @@
       statusEl.textContent = data.fallback_used
         ? `Discovery timed out; using ${discoveredDabDevices.length} fallback device${discoveredDabDevices.length === 1 ? '' : 's'}.`
         : `Discovered ${discoveredDabDevices.length} device${discoveredDabDevices.length === 1 ? '' : 's'}.`;
-      await loadDabDeviceInfo(resolved);
+      await loadDabDeviceInfo(resolved, true);
     } catch (e) {
       countEl.textContent = '0';
       select.innerHTML = '<option value="">Discovery failed</option>';
@@ -1043,7 +2151,7 @@
     const deviceId = select ? select.value : '';
     setSelectedDabDeviceId(deviceId);
     await persistSelectedDeviceContext(deviceId, true);
-    await loadDabDeviceInfo(deviceId);
+    await loadDabDeviceInfo(deviceId, true);
     await Promise.allSettled([loadCaptureSource(), refreshStreamDiagnostics()]);
   }
   async function checkHealth() {
@@ -1627,6 +2735,7 @@
     const goal = document.getElementById('yts-job-goal').value.trim();
     const device = document.getElementById('yts-job-device').value.trim();
     const steps = document.getElementById('yts-job-steps').value.trim();
+    const uiNavToggle = document.getElementById('yts-runner-ui-nav-toggle');
 
     if (!goal) {
       document.getElementById('yts-job-output').textContent = 'Job goal is required.';
@@ -1641,6 +2750,7 @@
       const selectedDeviceId = device || requireSelectedDabDevice('yts-job-output', 'Select a DAB device before submitting a YTS job.');
       if (!selectedDeviceId) return;
       body.device_id = selectedDeviceId;
+      body.ui_navigation_allowed = !!(uiNavToggle && uiNavToggle.checked);
       if (steps) body.max_steps = parseInt(steps, 10);
 
       const data = await api('/yts/job', 'POST', body);
@@ -1882,21 +2992,102 @@
         box.innerHTML = '<div class="empty-state">No DAB logs yet.</div>';
         return;
       }
-      box.innerHTML = t.events.map((e, i) => `<div class="log-line">${i + 1}. ${escHtml(JSON.stringify(e))}</div>`).join('');
+      box.innerHTML = t.events.map((e, i) => {
+        if (e && e.type === 'request') {
+          const payload = JSON.stringify(e.payload || {}, null, 2);
+          return `<div class="log-line">${i + 1}. <strong>REQUEST</strong> ${escHtml(String(e.op || 'unknown-op'))}\n${escHtml(payload)}</div>`;
+        }
+        if (e && e.type === 'response') {
+          const data = JSON.stringify(e.data || {}, null, 2);
+          const statusCode = Number(e.status || 0);
+          const statusText = statusCode === 200 ? '200 OK' : (statusCode > 0 ? `${statusCode}` : 'UNKNOWN');
+          const taskDone = !!e.success && statusCode === 200;
+          const meta = {
+            success: !!e.success,
+            status: e.status,
+            status_text: statusText,
+            task_done: taskDone,
+            topic: e.topic || '',
+            request_id: e.request_id || '',
+          };
+          return `<div class="log-line">${i + 1}. <strong>RESPONSE</strong> ${escHtml(String(e.op || 'unknown-op'))} ${escHtml(JSON.stringify(meta))}\n${escHtml(data)}</div>`;
+        }
+        return `<div class="log-line">${i + 1}. ${escHtml(JSON.stringify(e))}</div>`;
+      }).join('');
     } catch (e) {
       box.innerHTML = `<div class="empty-state">Failed to load DAB logs: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  async function refreshTaskTraceLog(runId, statusData = null) {
+    const box = document.getElementById('task-trace-log');
+    if (!box) return;
+    try {
+      const status = statusData || await api(`/run/${runId}/status`);
+      const [history, ai, dab, narration] = await Promise.all([
+        api(`/run/${runId}/history`),
+        api(`/run/${runId}/ai-transcript`),
+        api(`/run/${runId}/dab-transcript`),
+        api(`/run/${runId}/narration`),
+      ]);
+
+      const lines = [];
+      lines.push(`run_id: ${status.run_id}`);
+      lines.push(`status: ${status.status}`);
+      lines.push(`goal: ${status.goal}`);
+      lines.push(`steps: ${status.step_count} | ai_requests: ${status.ai_request_count || 0} | retries: ${status.retries}`);
+      lines.push(`current_app: ${status.current_app || '-'} | screen: ${status.current_screen || '-'}`);
+      lines.push(`error: ${status.error || '-'}`);
+      lines.push('');
+
+      lines.push('=== ACTION HISTORY ===');
+      (history.actions || []).forEach((a) => {
+        lines.push(`#${a.step} ${a.action} [${a.result}] reason=${a.reason || '-'} params=${JSON.stringify(a.params || {})}`);
+      });
+      if (!(history.actions || []).length) lines.push('(no action history)');
+      lines.push('');
+
+      lines.push('=== DAB TRANSCRIPT ===');
+      (dab.events || []).forEach((e, idx) => {
+        if (e && e.type === 'request') {
+          lines.push(`${idx + 1}. REQUEST ${e.op || 'unknown-op'} payload=${JSON.stringify(e.payload || {})}`);
+        } else if (e && e.type === 'response') {
+          const sc = Number(e.status || 0);
+          const st = sc === 200 ? '200 OK' : (sc > 0 ? String(sc) : 'UNKNOWN');
+          lines.push(`${idx + 1}. RESPONSE ${e.op || 'unknown-op'} success=${!!e.success} status=${st} data=${JSON.stringify(e.data || {})}`);
+        } else {
+          lines.push(`${idx + 1}. ${JSON.stringify(e)}`);
+        }
+      });
+      if (!(dab.events || []).length) lines.push('(no dab events)');
+      lines.push('');
+
+      lines.push('=== AI TRANSCRIPT ===');
+      (ai.events || []).forEach((e, idx) => lines.push(`${idx + 1}. ${JSON.stringify(e)}`));
+      if (!(ai.events || []).length) lines.push('(no ai events)');
+      lines.push('');
+
+      lines.push('=== NARRATION ===');
+      (narration.events || []).forEach((e, idx) => lines.push(`${idx + 1}. step=${e.step} [${e.tts_category}] ${e.tts_text}`));
+      if (!(narration.events || []).length) lines.push('(no narration events)');
+
+      box.textContent = lines.join('\n');
+    } catch (e) {
+      box.textContent = `Failed to load task trace: ${e.message}`;
     }
   }
 
   async function startRun() {
     const goal = document.getElementById('goal-input').value.trim();
     const appId = document.getElementById('app-id-input').value.trim();
+    const uiNavToggle = document.getElementById('run-ui-nav-toggle');
     const errEl = document.getElementById('start-error');
     if (!goal) { errEl.textContent = 'Goal is required.'; return; }
     errEl.textContent = '';
     try {
       const body = { goal };
       if (appId) body.app_id = appId;
+      body.ui_navigation_allowed = !!(uiNavToggle && uiNavToggle.checked);
       const data = await api('/run/start', 'POST', body);
       await loadRuns();
       selectRun(data.run_id);
@@ -2494,6 +3685,9 @@
       <label style="margin-top:1rem;"><input type="checkbox" id="yts-arg-test-record-video" style="width:auto; margin-right:0.45rem;"> Record TV video while this YTS job runs</label>
       <div class="yts-hint">Stores a per-job video artifact when the active capture source supports recording. The terminal transcript is also saved and can be downloaded after the run.</div>
 
+      <label style="margin-top:1rem;"><input type="checkbox" id="yts-arg-test-ui-navigation-allowed" style="width:auto; margin-right:0.45rem;"> Allow UI navigation fallback</label>
+      <div class="yts-hint">Use UI navigation fallback when direct operations are unavailable.</div>
+
       <label style="margin-top:1rem;">Filter Tokens</label>
       <textarea id="yts-arg-test-filter" placeholder='Optional filter tokens, e.g. "Time" "Smoke"'></textarea>
 
@@ -2589,6 +3783,7 @@
       global_options: {},
       output_file: null,
       interactive_ai: false,
+      ui_navigation_allowed: !!document.getElementById('yts-runner-ui-nav-toggle')?.checked,
       device_id: selectedDeviceId,
     };
 
@@ -2625,6 +3820,7 @@
       const jsonOutput = document.getElementById('yts-arg-test-json-output').value.trim();
       body.interactive_ai = document.getElementById('yts-arg-test-interactive-ai').checked;
       body.record_video = document.getElementById('yts-arg-test-record-video').checked;
+      body.ui_navigation_allowed = !!document.getElementById('yts-arg-test-ui-navigation-allowed')?.checked;
 
       if (!resolvedIds.length && !filterTokens.length && !guided && !extraArgs.length) {
         document.getElementById('yts-command-status').innerHTML = '<span style="color:#f87171;">✗ Select tests, add test IDs, or choose a suite/category/name before running.</span>';
@@ -3062,6 +4258,7 @@
         refreshNarration(selectedRunId),
         refreshAiTranscript(selectedRunId),
         refreshDabTranscript(selectedRunId),
+        refreshTaskTraceLog(selectedRunId, data),
       ]);
 
       if (data.has_screenshot) {
@@ -3234,7 +4431,28 @@
         box.innerHTML = '<div class="empty-state">No DAB logs yet.</div>';
         return;
       }
-      box.innerHTML = t.events.map((e, i) => `<div class="log-line">${i + 1}. ${escHtml(JSON.stringify(e))}</div>`).join('');
+      box.innerHTML = t.events.map((e, i) => {
+        if (e && e.type === 'request') {
+          const payload = JSON.stringify(e.payload || {}, null, 2);
+          return `<div class="log-line">${i + 1}. <strong>REQUEST</strong> ${escHtml(String(e.op || 'unknown-op'))}\n${escHtml(payload)}</div>`;
+        }
+        if (e && e.type === 'response') {
+          const data = JSON.stringify(e.data || {}, null, 2);
+          const statusCode = Number(e.status || 0);
+          const statusText = statusCode === 200 ? '200 OK' : (statusCode > 0 ? `${statusCode}` : 'UNKNOWN');
+          const taskDone = !!e.success && statusCode === 200;
+          const meta = {
+            success: !!e.success,
+            status: e.status,
+            status_text: statusText,
+            task_done: taskDone,
+            topic: e.topic || '',
+            request_id: e.request_id || '',
+          };
+          return `<div class="log-line">${i + 1}. <strong>RESPONSE</strong> ${escHtml(String(e.op || 'unknown-op'))} ${escHtml(JSON.stringify(meta))}\n${escHtml(data)}</div>`;
+        }
+        return `<div class="log-line">${i + 1}. ${escHtml(JSON.stringify(e))}</div>`;
+      }).join('');
     } catch (e) {
       box.innerHTML = `<div class="empty-state">Failed to load DAB logs: ${escHtml(e.message)}</div>`;
     }
@@ -3243,6 +4461,7 @@
   async function startRun() {
     const goal = document.getElementById('goal-input').value.trim();
     const appId = document.getElementById('app-id-input').value.trim();
+    const uiNavToggle = document.getElementById('run-ui-nav-toggle');
     const errEl = document.getElementById('start-error');
     if (!goal) { errEl.textContent = 'Goal is required.'; return; }
     const deviceId = requireSelectedDabDevice('start-error', 'Select a DAB device before starting a run.');
@@ -3251,6 +4470,7 @@
     try {
       const body = { goal };
       if (appId) body.app_id = appId;
+      body.ui_navigation_allowed = !!(uiNavToggle && uiNavToggle.checked);
       body.device_id = deviceId;
       const data = await api('/run/start', 'POST', body);
       await loadRuns();
@@ -3309,6 +4529,7 @@
     initYtsControlCenter();
     await Promise.allSettled([
       checkHealth(),
+      loadAiModels(),
       loadDabDevices(),
       loadRuns(),
       loadCaptureSource(),
@@ -3322,6 +4543,7 @@
 
   // Init
   initializeDashboard();
+  startCurrentSettingsRefreshLoop();
   setInterval(checkHealth, 30000);
   setInterval(loadRuns, 5000);
   setInterval(loadCaptureSource, 10000);

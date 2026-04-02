@@ -156,6 +156,8 @@ class RunState(BaseModel):
     # ------------------------------------------------------------------ #
     retries: int = 0
     step_count: int = 0
+    ai_request_count: int = 0
+    ui_navigation_allowed: bool = False
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
     error: Optional[str] = None

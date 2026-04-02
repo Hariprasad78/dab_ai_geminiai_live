@@ -56,6 +56,7 @@ from vertex_live_dab_agent.dab.topics import (
     TOPIC_SYSTEM_SETTINGS_GET,
     TOPIC_SYSTEM_SETTINGS_LIST,
     TOPIC_SYSTEM_SETTINGS_SET,
+    TOPIC_VOICE_LIST,
     format_topic,
 )
 
@@ -209,6 +210,10 @@ class DABClientBase(ABC):
         """Optional: query a system setting."""
         return DABResponse(False, 501, {"error": "system/settings/get not supported", "setting": setting_key}, "", "")
 
+    async def get_all_settings_values(self) -> DABResponse:
+        """Optional: query all system setting values in a single request."""
+        return DABResponse(False, 501, {"error": "bulk system/settings/get not supported"}, "", "")
+
     async def set_setting(self, setting_key: str, value: Any) -> DABResponse:
         """Optional: update a system setting."""
         return DABResponse(False, 501, {"error": "system/settings/set not supported", "setting": setting_key}, "", "")
@@ -227,6 +232,10 @@ class DABClientBase(ABC):
     async def get_device_info(self) -> DABResponse:
         """Optional: return selected device info."""
         return DABResponse(False, 501, {"error": "device/info not supported"}, "", "")
+
+    async def list_voices(self) -> DABResponse:
+        """Optional: list available voices on the device."""
+        return DABResponse(False, 501, {"error": "voice/list not supported"}, "", "")
 
 
 # ---------------------------------------------------------------------------
@@ -424,6 +433,23 @@ class MockDABClient(DABClientBase):
             request_id=req_id,
         )
 
+    async def get_all_settings_values(self) -> DABResponse:
+        await self._simulate_latency()
+        req_id = str(uuid.uuid4())
+        return DABResponse(
+            success=True,
+            status=200,
+            data={
+                "settings": {
+                    "timezone": "UTC",
+                    "language": "en-US",
+                    "brightness": 50,
+                }
+            },
+            topic=TOPIC_SYSTEM_SETTINGS_GET,
+            request_id=req_id,
+        )
+
     async def set_setting(self, setting_key: str, value: Any) -> DABResponse:
         await self._simulate_latency()
         req_id = str(uuid.uuid4())
@@ -487,6 +513,17 @@ class MockDABClient(DABClientBase):
                 "capabilities": ["applications/list", "input/key-press", "output/image", "device/info"],
             },
             topic=TOPIC_DEVICE_INFO,
+            request_id=req_id,
+        )
+
+    async def list_voices(self) -> DABResponse:
+        await self._simulate_latency()
+        req_id = str(uuid.uuid4())
+        return DABResponse(
+            success=True,
+            status=200,
+            data={"voices": ["default"]},
+            topic=TOPIC_VOICE_LIST,
             request_id=req_id,
         )
 
@@ -654,9 +691,31 @@ class AdapterDABClient(DABClientBase):
         """Get one system setting value."""
         return await self._send_with_retry(TOPIC_SYSTEM_SETTINGS_GET, {"key": str(setting_key)})
 
+    async def get_all_settings_values(self) -> DABResponse:
+        """Get all settings in one system/settings/get request when supported by the device."""
+        return await self._send_with_retry(TOPIC_SYSTEM_SETTINGS_GET, {})
+
     async def set_setting(self, setting_key: str, value: Any) -> DABResponse:
         """Set one system setting value."""
-        return await self._send_with_retry(TOPIC_SYSTEM_SETTINGS_SET, {"key": str(setting_key), "value": value})
+        canonical_key = str(setting_key)
+        # Conformance payload shape expects {"<settingName>": <value>}.
+        try:
+            resp = await self._send_with_retry(TOPIC_SYSTEM_SETTINGS_SET, {canonical_key: value})
+            if bool(getattr(resp, "success", False)):
+                return resp
+            err_text = str((getattr(resp, "data", {}) or {}).get("error") or "").lower()
+            should_fallback_legacy = (
+                ("missing" in err_text and "key" in err_text)
+                or ("missing" in err_text and "value" in err_text)
+                or ("required" in err_text and "key" in err_text)
+                or ("required" in err_text and "value" in err_text)
+            )
+            if not should_fallback_legacy:
+                return resp
+        except Exception:
+            # Fallback to legacy key/value shape below.
+            pass
+        return await self._send_with_retry(TOPIC_SYSTEM_SETTINGS_SET, {"key": canonical_key, "value": value})
 
     async def open_content(self, content: str, parameters: Optional[Dict[str, Any]] = None) -> DABResponse:
         """Open content directly when device supports content/open."""
@@ -698,6 +757,10 @@ class AdapterDABClient(DABClientBase):
     async def get_device_info(self) -> DABResponse:
         """Fetch device metadata from device/info."""
         return await self._send_with_retry(TOPIC_DEVICE_INFO, {})
+
+    async def list_voices(self) -> DABResponse:
+        """List available voices (voice/list)."""
+        return await self._send_with_retry(TOPIC_VOICE_LIST, {})
 
     async def close(self) -> None:
         """Close the underlying transport."""

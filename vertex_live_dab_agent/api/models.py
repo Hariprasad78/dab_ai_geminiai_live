@@ -11,7 +11,8 @@ class StartRunRequest(BaseModel):
     content: Optional[str] = None
     device_profile_id: Optional[str] = None
     policy_mode: Optional[str] = None
-    max_steps: Optional[int] = Field(default=None, gt=0, description="Override max steps for this run")
+    ui_navigation_allowed: bool = False
+    max_steps: Optional[int] = Field(default=None, gt=0, description="Override max AI planning requests for this run (capped at 50)")
 
 
 class StartRunResponse(BaseModel):
@@ -33,6 +34,8 @@ class RunStatusResponse(BaseModel):
     status: str
     goal: str
     step_count: int
+    ai_request_count: int = 0
+    ui_navigation_allowed: bool = False
     retries: int
     current_app: Optional[str] = None
     current_screen: Optional[str] = None
@@ -240,6 +243,18 @@ class ConfigSummaryResponse(BaseModel):
     tts_model: str
     tts_voice_name: str
     tts_language_code: str
+
+
+class RuntimeModelUpdateRequest(BaseModel):
+    model: str
+
+
+class RuntimeModelResponse(BaseModel):
+    success: bool
+    active_vertex_planner_model: str
+    configured_vertex_planner_model: str
+    available_models: List[str] = Field(default_factory=list)
+    message: Optional[str] = None
 
 
 class CaptureSourceResponse(BaseModel):

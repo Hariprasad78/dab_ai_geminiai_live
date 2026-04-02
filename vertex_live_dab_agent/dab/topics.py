@@ -24,6 +24,7 @@ TOPIC_SYSTEM_SETTINGS_LIST = "dab/{device_id}/system/settings/list"
 TOPIC_SYSTEM_SETTINGS_GET = "dab/{device_id}/system/settings/get"
 TOPIC_SYSTEM_SETTINGS_SET = "dab/{device_id}/system/settings/set"
 TOPIC_CONTENT_OPEN = "dab/{device_id}/content/open"
+TOPIC_VOICE_LIST = "dab/{device_id}/voice/list"
 
 # ---------------------------------------------------------------------------
 # Standard DAB key codes

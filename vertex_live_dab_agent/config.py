@@ -21,6 +21,13 @@ if load_dotenv is not None:
 @dataclass
 class Config:
     # Vertex AI
+    google_api_key: str = field(
+        default_factory=lambda: (
+            os.environ.get("GOOGLE_API_KEY")
+            or os.environ.get("GEMINI_API_KEY")
+            or ""
+        )
+    )
     google_cloud_project: str = field(default_factory=lambda: os.environ.get("GOOGLE_CLOUD_PROJECT", ""))
     google_cloud_location: str = field(default_factory=lambda: os.environ.get("GOOGLE_CLOUD_LOCATION", "asia-south1"))
     google_application_credentials: str = field(default_factory=lambda: os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", ""))
@@ -37,7 +44,7 @@ class Config:
     vertex_429_wait_seconds: float = field(
         default_factory=lambda: float(os.environ.get("VERTEX_429_WAIT_SECONDS", "1.5"))
     )
-    vertex_live_model: str = field(default_factory=lambda: os.environ.get("VERTEX_LIVE_MODEL", "gemini-2.0-flash-live-preview-04-09"))
+    vertex_live_model: str = field(default_factory=lambda: os.environ.get("VERTEX_LIVE_MODEL", "gemini-3.1-flash-live-preview"))
     enable_vertex_planner: bool = field(default_factory=lambda: os.environ.get("ENABLE_VERTEX_PLANNER", "false").lower() == "true")
 
     # LiveKit

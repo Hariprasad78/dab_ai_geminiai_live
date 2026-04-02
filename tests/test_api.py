@@ -20,6 +20,11 @@ def reset_api_state(tmp_path, monkeypatch):
     api_mod._yts_live_visual_tasks.clear()
     api_mod._yts_live_processes.clear()
     api_mod._yts_live_visual_cache.clear()
+    api_mod._device_dab_catalog_cache.clear()
+    api_mod._device_dab_catalog_inflight.clear()
+    api_mod._device_settings_values_cache.clear()
+    api_mod._device_settings_values_inflight.clear()
+    api_mod._device_settings_values_last_request_at.clear()
     api_mod._dab_client = None
     api_mod._planner = None
     api_mod._screen_capture = None
@@ -38,6 +43,11 @@ def reset_api_state(tmp_path, monkeypatch):
     api_mod._yts_live_visual_tasks.clear()
     api_mod._yts_live_processes.clear()
     api_mod._yts_live_visual_cache.clear()
+    api_mod._device_dab_catalog_cache.clear()
+    api_mod._device_dab_catalog_inflight.clear()
+    api_mod._device_settings_values_cache.clear()
+    api_mod._device_settings_values_inflight.clear()
+    api_mod._device_settings_values_last_request_at.clear()
     api_mod._dab_client = None
     api_mod._planner = None
     api_mod._screen_capture = None
@@ -1921,3 +1931,529 @@ async def test_start_run_rejects_when_another_run_is_active(client):
     resp = await client.post("/run/start", json={"goal": "New run"})
     assert resp.status_code == 409
     assert "active-run" in str(resp.json().get("detail", ""))
+
+
+@pytest.mark.asyncio
+async def test_device_setting_values_throttle_uses_cached(monkeypatch):
+    class _Resp:
+        def __init__(self, success=True, status=200, data=None):
+            self.success = success
+            self.status = status
+            self.data = data or {}
+
+    class FakeDab:
+        def __init__(self):
+            self.get_calls = 0
+
+        async def list_operations(self):
+            return _Resp(data={"operations": ["system/settings/list", "system/settings/get"]})
+
+        async def list_keys(self):
+            return _Resp(data={"keyCodes": []})
+
+        async def list_apps(self):
+            return _Resp(data={"apps": []})
+
+        async def list_voices(self):
+            return _Resp(data={"voices": []})
+
+        async def list_settings(self):
+            return _Resp(data={"settings": [{"key": "timezone", "friendlyName": "Time Zone"}]})
+
+        async def get_setting(self, key):
+            self.get_calls += 1
+            return _Resp(data={"key": key, "value": "Asia/Kolkata"})
+
+    fake = FakeDab()
+    monkeypatch.setattr(api_mod, "get_dab_client", lambda: fake)
+    monkeypatch.setattr(api_mod, "_resolve_selected_device_id", lambda device_id=None: str(device_id or "dev-throttle"))
+    monkeypatch.setattr(api_mod, "_is_valid_discovered_device_id", lambda _value: True)
+
+    async def _noop_apply(device_id, persist=True):
+        return {"selected_device_id": device_id}
+
+    monkeypatch.setattr(api_mod, "_apply_selected_device_context", _noop_apply)
+    monkeypatch.setattr(api_mod, "_device_settings_values_min_interval_seconds", 60.0)
+
+    first = await api_mod.dab_device_setting_values(device_id="dev-throttle", force=False)
+    second = await api_mod.dab_device_setting_values(device_id="dev-throttle", force=False)
+
+    assert first["success"] is True
+    assert second["success"] is True
+    assert fake.get_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_device_setting_values_inflight_dedup(monkeypatch):
+    class _Resp:
+        def __init__(self, success=True, status=200, data=None):
+            self.success = success
+            self.status = status
+            self.data = data or {}
+
+    class FakeDab:
+        def __init__(self):
+            self.get_calls = 0
+
+        async def list_operations(self):
+            return _Resp(data={"operations": ["system/settings/list", "system/settings/get"]})
+
+        async def list_keys(self):
+            return _Resp(data={"keyCodes": []})
+
+        async def list_apps(self):
+            return _Resp(data={"apps": []})
+
+        async def list_voices(self):
+            return _Resp(data={"voices": []})
+
+        async def list_settings(self):
+            return _Resp(data={"settings": [{"key": "timezone"}]})
+
+        async def get_setting(self, key):
+            self.get_calls += 1
+            await asyncio.sleep(0.05)
+            return _Resp(data={"key": key, "value": "UTC"})
+
+    fake = FakeDab()
+    monkeypatch.setattr(api_mod, "get_dab_client", lambda: fake)
+    monkeypatch.setattr(api_mod, "_resolve_selected_device_id", lambda device_id=None: str(device_id or "dev-dedup"))
+    monkeypatch.setattr(api_mod, "_is_valid_discovered_device_id", lambda _value: True)
+
+    async def _noop_apply(device_id, persist=True):
+        return {"selected_device_id": device_id}
+
+    monkeypatch.setattr(api_mod, "_apply_selected_device_context", _noop_apply)
+
+    await asyncio.gather(
+        api_mod.dab_device_setting_values(device_id="dev-dedup", force=True),
+        api_mod.dab_device_setting_values(device_id="dev-dedup", force=True),
+    )
+
+    assert fake.get_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_device_setting_values_respects_concurrency_limit(monkeypatch):
+    class _Resp:
+        def __init__(self, success=True, status=200, data=None):
+            self.success = success
+            self.status = status
+            self.data = data or {}
+
+    class FakeDab:
+        def __init__(self):
+            self.active = 0
+            self.max_active = 0
+
+        async def list_operations(self):
+            return _Resp(data={"operations": ["system/settings/list", "system/settings/get"]})
+
+        async def list_keys(self):
+            return _Resp(data={"keyCodes": []})
+
+        async def list_apps(self):
+            return _Resp(data={"apps": []})
+
+        async def list_voices(self):
+            return _Resp(data={"voices": []})
+
+        async def list_settings(self):
+            settings = [{"key": f"k{i}"} for i in range(12)]
+            return _Resp(data={"settings": settings})
+
+        async def get_setting(self, key):
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            await asyncio.sleep(0.01)
+            self.active -= 1
+            return _Resp(data={"key": key, "value": "v"})
+
+    fake = FakeDab()
+    monkeypatch.setattr(api_mod, "get_dab_client", lambda: fake)
+    monkeypatch.setattr(api_mod, "_resolve_selected_device_id", lambda device_id=None: str(device_id or "dev-limit"))
+    monkeypatch.setattr(api_mod, "_is_valid_discovered_device_id", lambda _value: True)
+
+    async def _noop_apply(device_id, persist=True):
+        return {"selected_device_id": device_id}
+
+    monkeypatch.setattr(api_mod, "_apply_selected_device_context", _noop_apply)
+
+    resp = await api_mod.dab_device_setting_values(device_id="dev-limit", force=True)
+    assert resp["success"] is True
+    assert resp["count"] == 12
+    assert fake.max_active <= int(api_mod._device_settings_get_max_concurrency)
+
+
+@pytest.mark.asyncio
+async def test_device_capability_status_marks_unsupported_sections(monkeypatch):
+    class _Resp:
+        def __init__(self, success=True, status=200, data=None):
+            self.success = success
+            self.status = status
+            self.data = data or {}
+
+    class FakeDab:
+        async def list_operations(self):
+            return _Resp(data={"operations": ["operations/list", "system/settings/list", "system/settings/get"]})
+
+        async def list_keys(self):
+            raise AssertionError("input/key/list should not be called when unsupported by operations/list")
+
+        async def list_apps(self):
+            raise AssertionError("applications/list should not be called when unsupported by operations/list")
+
+        async def list_voices(self):
+            raise AssertionError("voice/list should not be called when unsupported by operations/list")
+
+        async def list_settings(self):
+            return _Resp(data={"settings": [{"key": "timezone"}]})
+
+        async def get_setting(self, key):
+            return _Resp(data={"key": key, "value": "UTC"})
+
+    fake = FakeDab()
+    monkeypatch.setattr(api_mod, "get_dab_client", lambda: fake)
+    monkeypatch.setattr(api_mod, "_resolve_selected_device_id", lambda device_id=None: str(device_id or "dev-cap"))
+    monkeypatch.setattr(api_mod, "_is_valid_discovered_device_id", lambda _value: True)
+
+    async def _noop_apply(device_id, persist=True):
+        return {"selected_device_id": device_id}
+
+    monkeypatch.setattr(api_mod, "_apply_selected_device_context", _noop_apply)
+
+    data = await api_mod.dab_device_capability_status(device_id="dev-cap", refresh=True)
+    unsupported_sections = {item.get("section") for item in (data.get("unsupported_or_missing_sections") or [])}
+    assert "applications/list" in unsupported_sections
+    assert "input/key/list" in unsupported_sections
+    assert "voice/list" in unsupported_sections
+    assert "supported_settings" in data
+    assert isinstance(data.get("supported_settings"), list)
+
+
+@pytest.mark.asyncio
+async def test_operations_grid_support_comes_from_operations_list(monkeypatch):
+    class _Resp:
+        def __init__(self, success=True, status=200, data=None):
+            self.success = success
+            self.status = status
+            self.data = data or {}
+
+    class FakeDab:
+        async def list_operations(self):
+            return _Resp(data={"operations": ["operations/list", "input/key/list", "input/key/press"]})
+
+        async def list_keys(self):
+            return _Resp(data={"keyCodes": ["KEYCODE_DPAD_UP"]})
+
+        async def list_apps(self):
+            return _Resp(data={"apps": []})
+
+        async def list_voices(self):
+            return _Resp(data={"voices": []})
+
+        async def list_settings(self):
+            return _Resp(data={"settings": []})
+
+        async def get_setting(self, key):
+            return _Resp(data={"key": key, "value": None})
+
+    fake = FakeDab()
+    monkeypatch.setattr(api_mod, "get_dab_client", lambda: fake)
+    monkeypatch.setattr(api_mod, "_resolve_selected_device_id", lambda device_id=None: str(device_id or "dev-grid"))
+    monkeypatch.setattr(api_mod, "_is_valid_discovered_device_id", lambda _value: True)
+
+    async def _noop_apply(device_id, persist=True):
+        return {"selected_device_id": device_id}
+
+    monkeypatch.setattr(api_mod, "_apply_selected_device_context", _noop_apply)
+
+    data = await api_mod.dab_device_operations_grid(device_id="dev-grid", refresh=True)
+    rows = {row["operation"]: row for row in data["rows"]}
+    assert rows["input/key/press"]["supported"] is True
+    assert rows["application/launch"]["supported"] is False
+
+
+@pytest.mark.asyncio
+async def test_execute_request_maps_to_manual_action(monkeypatch):
+    called = {}
+
+    async def _fake_manual_action(request):
+        called["action"] = request.action
+        called["params"] = dict(request.params or {})
+        return api_mod.ManualActionResponse(success=True, action=request.action, result={"ok": True}, error=None)
+
+    monkeypatch.setattr(api_mod, "manual_action", _fake_manual_action)
+    monkeypatch.setattr(api_mod, "_resolve_selected_device_id", lambda device_id=None: str(device_id or "dev-exec"))
+
+    req = api_mod.DABExecuteRequest(operation="input/key/press", payload={"key_code": "KEYCODE_DPAD_UP"}, device_id="dev-exec")
+    resp = await api_mod.dab_execute_request(req)
+
+    assert resp["success"] is True
+    assert called["action"] == "KEY_PRESS_CODE"
+    assert called["params"]["key_code"] == "KEYCODE_DPAD_UP"
+
+
+@pytest.mark.asyncio
+async def test_current_settings_refresh_does_not_refetch_catalog_when_cache_expired(monkeypatch):
+    class _Resp:
+        def __init__(self, success=True, status=200, data=None):
+            self.success = success
+            self.status = status
+            self.data = data or {}
+
+    class FakeDab:
+        def __init__(self):
+            self.list_operations_calls = 0
+
+        async def list_operations(self):
+            self.list_operations_calls += 1
+            return _Resp(data={"operations": ["operations/list", "system/settings/list", "system/settings/get"]})
+
+        async def list_keys(self):
+            return _Resp(data={"keyCodes": []})
+
+        async def list_apps(self):
+            return _Resp(data={"apps": []})
+
+        async def list_voices(self):
+            return _Resp(data={"voices": []})
+
+        async def list_settings(self):
+            return _Resp(data={"settings": [{"key": "timezone"}]})
+
+        async def get_setting(self, key):
+            return _Resp(data={"key": key, "value": "UTC"})
+
+    fake = FakeDab()
+    monkeypatch.setattr(api_mod, "get_dab_client", lambda: fake)
+    monkeypatch.setattr(api_mod, "_resolve_selected_device_id", lambda device_id=None: str(device_id or "dev-nolist"))
+    monkeypatch.setattr(api_mod, "_is_valid_discovered_device_id", lambda _value: True)
+
+    async def _noop_apply(device_id, persist=True):
+        return {"selected_device_id": device_id}
+
+    monkeypatch.setattr(api_mod, "_apply_selected_device_context", _noop_apply)
+
+    await api_mod.dab_device_system_state(device_id="dev-nolist", refresh=True)
+    assert fake.list_operations_calls == 1
+
+    monkeypatch.setattr(api_mod, "_device_dab_catalog_ttl_seconds", 0.0)
+
+    await api_mod.dab_device_current_settings(device_id="dev-nolist", force=True)
+    assert fake.list_operations_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_execute_request_launch_uses_content_id(monkeypatch):
+    called = {}
+
+    async def _fake_manual_action(request):
+        called["action"] = request.action
+        called["params"] = dict(request.params or {})
+        return api_mod.ManualActionResponse(success=True, action=request.action, result={"ok": True}, error=None)
+
+    monkeypatch.setattr(api_mod, "manual_action", _fake_manual_action)
+    monkeypatch.setattr(api_mod, "_resolve_selected_device_id", lambda device_id=None: str(device_id or "dev-launch"))
+
+    req = api_mod.DABExecuteRequest(
+        operation="application/launch",
+        payload={"app_id": "com.google.android.youtube.tv", "content_id": "abc123"},
+        device_id="dev-launch",
+    )
+    resp = await api_mod.dab_execute_request(req)
+
+    assert resp["success"] is True
+    assert called["action"] == "LAUNCH_APP"
+    assert called["params"]["app_id"] == "com.google.android.youtube.tv"
+    assert called["params"]["content"] == "abc123"
+
+
+@pytest.mark.asyncio
+async def test_current_settings_prefers_single_bulk_get(monkeypatch):
+    class _Resp:
+        def __init__(self, success=True, status=200, data=None):
+            self.success = success
+            self.status = status
+            self.data = data or {}
+
+    class FakeDab:
+        def __init__(self):
+            self.single_get_calls = 0
+            self.bulk_get_calls = 0
+
+        async def list_operations(self):
+            return _Resp(data={"operations": ["operations/list", "system/settings/list", "system/settings/get"]})
+
+        async def list_keys(self):
+            return _Resp(data={"keyCodes": []})
+
+        async def list_apps(self):
+            return _Resp(data={"apps": []})
+
+        async def list_voices(self):
+            return _Resp(data={"voices": []})
+
+        async def list_settings(self):
+            return _Resp(data={"settings": [{"key": "timezone"}, {"key": "language"}]})
+
+        async def get_setting(self, key):
+            self.single_get_calls += 1
+            return _Resp(data={"key": key, "value": "fallback"})
+
+        async def get_all_settings_values(self):
+            self.bulk_get_calls += 1
+            return _Resp(data={"settings": {"timezone": "UTC", "language": "en-US"}})
+
+    fake = FakeDab()
+    monkeypatch.setattr(api_mod, "get_dab_client", lambda: fake)
+    monkeypatch.setattr(api_mod, "_resolve_selected_device_id", lambda device_id=None: str(device_id or "dev-bulk"))
+    monkeypatch.setattr(api_mod, "_is_valid_discovered_device_id", lambda _value: True)
+
+    async def _noop_apply(device_id, persist=True):
+        return {"selected_device_id": device_id}
+
+    monkeypatch.setattr(api_mod, "_apply_selected_device_context", _noop_apply)
+
+    await api_mod.dab_device_system_state(device_id="dev-bulk", refresh=True)
+    data = await api_mod.dab_device_current_settings(device_id="dev-bulk", force=True)
+    assert data["success"] is True
+    assert fake.bulk_get_calls >= 1
+    assert fake.single_get_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_execute_request_settings_set_accepts_setting_map_payload(monkeypatch):
+    called = {}
+
+    async def _fake_manual_action(request):
+        called["action"] = request.action
+        called["params"] = dict(request.params or {})
+        return api_mod.ManualActionResponse(success=True, action=request.action, result={"ok": True}, error=None)
+
+    monkeypatch.setattr(api_mod, "manual_action", _fake_manual_action)
+    monkeypatch.setattr(api_mod, "_resolve_selected_device_id", lambda device_id=None: str(device_id or "dev-set-map"))
+
+    req = api_mod.DABExecuteRequest(
+        operation="system/settings/set",
+        payload={"language": "en-US"},
+        device_id="dev-set-map",
+    )
+    resp = await api_mod.dab_execute_request(req)
+    assert resp["success"] is True
+    assert called["action"] == "SET_SETTING"
+    assert called["params"] == {"language": "en-US"}
+
+
+@pytest.mark.asyncio
+async def test_manual_set_setting_ignores_request_id_key(monkeypatch):
+    class _Resp:
+        def __init__(self, success=True, status=200, data=None):
+            self.success = success
+            self.status = status
+            self.data = data or {}
+
+    class FakeDab:
+        def __init__(self):
+            self.last_set = None
+
+        async def list_operations(self):
+            return _Resp(data={"operations": ["system/settings/set"]})
+
+        async def get_device_info(self):
+            return _Resp(data={"platform": "android"})
+
+        async def set_setting(self, setting_key, value):
+            self.last_set = (setting_key, value)
+            return _Resp(success=True, data={"ok": True})
+
+    fake = FakeDab()
+    monkeypatch.setattr(api_mod, "get_dab_client", lambda: fake)
+    monkeypatch.setattr(api_mod, "_resolve_selected_device_id", lambda device_id=None: str(device_id or "dev-reqid"))
+
+    async def _noop_apply(device_id, persist=True):
+        return {"selected_device_id": device_id}
+
+    monkeypatch.setattr(api_mod, "_ensure_selected_device_context", _noop_apply)
+    monkeypatch.setattr(api_mod, "_refresh_device_setting_values_snapshot_safe", lambda device_id=None: asyncio.sleep(0))
+    monkeypatch.setattr(api_mod, "_infer_android_and_adb_device_id", lambda *args, **kwargs: asyncio.sleep(0, result=(True, "adb-1", "android", True, "adb", None)))
+    monkeypatch.setattr(api_mod, "_resolve_api_setting_execution_method", lambda **kwargs: ("dab", "ok"))
+
+    resp = await api_mod.manual_action(
+        api_mod.ManualActionRequest(
+            action="SET_SETTING",
+            params={"requestId": "abc", "language": "en-US"},
+            device_id="dev-reqid",
+        )
+    )
+
+    assert resp.success is True
+    assert fake.last_set == ("language", "en-US")
+
+
+@pytest.mark.asyncio
+async def test_catalog_parses_applications_alias_field(monkeypatch):
+    class _Resp:
+        def __init__(self, success=True, status=200, data=None):
+            self.success = success
+            self.status = status
+            self.data = data or {}
+
+    class FakeDab:
+        async def list_operations(self):
+            return _Resp(data={"operations": ["operations/list", "applications/list", "system/settings/list", "system/settings/get"]})
+
+        async def list_keys(self):
+            return _Resp(data={"keyCodes": []})
+
+        async def list_apps(self):
+            return _Resp(data={"applications": [{"appId": "com.google.android.youtube.tv", "name": "YouTube"}]})
+
+        async def list_voices(self):
+            return _Resp(data={"voices": []})
+
+        async def list_settings(self):
+            return _Resp(data={"settings": [{"key": "language"}]})
+
+        async def get_setting(self, key):
+            return _Resp(data={"key": key, "value": "en-US"})
+
+    fake = FakeDab()
+    monkeypatch.setattr(api_mod, "get_dab_client", lambda: fake)
+    monkeypatch.setattr(api_mod, "_resolve_selected_device_id", lambda device_id=None: str(device_id or "dev-apps-alias"))
+    monkeypatch.setattr(api_mod, "_is_valid_discovered_device_id", lambda _value: True)
+
+    async def _noop_apply(device_id, persist=True):
+        return {"selected_device_id": device_id}
+
+    monkeypatch.setattr(api_mod, "_apply_selected_device_context", _noop_apply)
+
+    data = await api_mod.dab_device_system_state(device_id="dev-apps-alias", refresh=True)
+    apps = list(data.get("installed_applications") or [])
+    assert len(apps) == 1
+    assert apps[0].get("appId") == "com.google.android.youtube.tv"
+
+
+@pytest.mark.asyncio
+async def test_execute_request_launch_passes_parameters(monkeypatch):
+    called = {}
+
+    async def _fake_manual_action(request):
+        called["action"] = request.action
+        called["params"] = dict(request.params or {})
+        return api_mod.ManualActionResponse(success=True, action=request.action, result={"ok": True}, error=None)
+
+    monkeypatch.setattr(api_mod, "manual_action", _fake_manual_action)
+    monkeypatch.setattr(api_mod, "_resolve_selected_device_id", lambda device_id=None: str(device_id or "dev-launch-params"))
+
+    req = api_mod.DABExecuteRequest(
+        operation="applications/launch",
+        payload={"appId": "com.google.android.youtube.tv", "parameters": ["v%3DSs75O8yllyc"]},
+        device_id="dev-launch-params",
+    )
+    resp = await api_mod.dab_execute_request(req)
+
+    assert resp["success"] is True
+    assert called["action"] == "LAUNCH_APP"
+    assert called["params"]["app_id"] == "com.google.android.youtube.tv"
+    assert called["params"]["parameters"] == ["v%3DSs75O8yllyc"]

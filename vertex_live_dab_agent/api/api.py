@@ -37,6 +37,8 @@ from vertex_live_dab_agent.api.models import (
     CaptureSelectRequest,
     CaptureSourceResponse,
     ConfigSummaryResponse,
+    RuntimeModelResponse,
+    RuntimeModelUpdateRequest,
     HealthResponse,
     FinalDiagnosis,
     FriendlyRunExplanationResponse,
@@ -126,6 +128,7 @@ _livekit_task: Optional[asyncio.Task] = None
 _tts_service: Optional[GoogleTTSService] = None
 _vertex_text_client: Optional[VertexPlannerClient] = None
 _vertex_live_visual_client: Optional[VertexPlannerClient] = None
+_runtime_vertex_planner_model_override: Optional[str] = None
 _yts_live_commands: Dict[str, Dict[str, Any]] = {}
 _yts_live_tasks: Dict[str, asyncio.Task] = {}
 _yts_live_visual_tasks: Dict[str, asyncio.Task] = {}
@@ -144,6 +147,16 @@ _discovery_warning_cache: Optional[str] = None
 _discover_devices_in_flight: Optional[asyncio.Task] = None
 _device_capabilities_cache: Dict[str, Any] = {}
 _device_capabilities_cache_at: float = 0.0
+_device_dab_catalog_cache: Dict[str, Dict[str, Any]] = {}
+_device_dab_catalog_inflight: Dict[str, asyncio.Task] = {}
+_device_settings_values_cache: Dict[str, Dict[str, Any]] = {}
+_device_settings_values_inflight: Dict[str, asyncio.Task] = {}
+_device_settings_values_last_request_at: Dict[str, float] = {}
+_device_dab_catalog_ttl_seconds: float = 120.0
+_device_settings_values_ttl_seconds: float = 15.0
+_device_settings_values_min_interval_seconds: float = 15.0
+_device_settings_get_max_concurrency: int = 4
+_device_settings_get_semaphore = asyncio.Semaphore(_device_settings_get_max_concurrency)
 
 _APP_ID_ALIASES: Dict[str, str] = {
     "com.netflix.ninja": "netflix",
@@ -155,6 +168,34 @@ _APP_ID_ALIASES: Dict[str, str] = {
     "com.android.tv.settings": "settings",
     "settings": "settings",
 }
+
+_COMMON_VERTEX_MODELS: List[str] = [
+    "gemini-3.1-pro-preview",
+    "gemini-3.1-flash-live-preview",
+    "gemini-2.5-flash-live-preview",
+    "gemini-3-flash-preview",
+    "gemini-3.1-flash-lite-preview",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+]
+
+
+def _shared_ai_prompt_preamble() -> str:
+    """Return shared prompt style used across orchestrator planner and YTS flows."""
+    try:
+        planner = get_planner()
+        text = str(getattr(planner, "_planner_system_prompt", "") or "").strip()
+        if text:
+            return text
+    except Exception:
+        pass
+    return (
+        "You are a TV UI navigation planner. "
+        "Use screenshot-grounded evidence, stay concise, and avoid speculation. "
+        "For uncertain UI navigation, request a UI checkpoint capture before any commit/select action. "
+        "Return machine-readable output when requested."
+    )
 
 
 def _utc_now_iso() -> str:
@@ -173,6 +214,683 @@ def _device_capabilities_cache_path() -> Path:
     root = Path(base_dir) if base_dir else Path("/home/harry/youtube/ai_tool/artifacts")
     root.mkdir(parents=True, exist_ok=True)
     return root / "device_capabilities_cache.json"
+
+
+def _device_system_state_path(device_id: str) -> Path:
+    base_dir = os.getenv("ARTIFACTS_BASE_DIR")
+    root = Path(base_dir) if base_dir else Path("/home/harry/youtube/ai_tool/artifacts")
+    root.mkdir(parents=True, exist_ok=True)
+    safe_device_id = re.sub(r"[^A-Za-z0-9._-]+", "_", str(device_id or "unknown").strip())
+    safe_device_id = safe_device_id.strip("._-") or "unknown"
+    return root / f"device_system_state_{safe_device_id}.json"
+
+
+def _normalize_settings_entries_from_payload(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Normalize settings/list payloads that may be list-based or key-value objects."""
+    if not isinstance(payload, dict):
+        return []
+
+    settings_entries: List[Dict[str, Any]] = []
+    raw_settings = payload.get("settings")
+
+    if isinstance(raw_settings, list):
+        for item in raw_settings:
+            if isinstance(item, dict):
+                key = str(item.get("key") or item.get("name") or item.get("id") or "").strip()
+                if not key:
+                    continue
+                row = dict(item)
+                row["key"] = key
+                settings_entries.append(row)
+            elif isinstance(item, str):
+                key = str(item).strip()
+                if key:
+                    settings_entries.append({"key": key, "friendlyName": key})
+        return settings_entries
+
+    ignored = {
+        "status",
+        "error",
+        "warning",
+        "degraded",
+        "requestId",
+        "request_id",
+        "topic",
+    }
+    for key, value in payload.items():
+        k = str(key or "").strip()
+        if not k or k in ignored:
+            continue
+        row: Dict[str, Any] = {
+            "key": k,
+            "friendlyName": k.replace("_", " ").title(),
+            "writable": True,
+            "schema": value,
+        }
+        if isinstance(value, dict):
+            if "min" in value:
+                row["min"] = value.get("min")
+            if "max" in value:
+                row["max"] = value.get("max")
+            if "values" in value and isinstance(value.get("values"), list):
+                row["allowedValues"] = value.get("values")
+        elif isinstance(value, list):
+            row["allowedValues"] = value
+        settings_entries.append(row)
+    return settings_entries
+
+
+def _extract_setting_value(data: Dict[str, Any], key: str) -> Any:
+    value = data.get("value")
+    if value is not None:
+        return value
+    if key in data:
+        return data.get(key)
+    if isinstance(data.get("result"), dict):
+        return data.get("result", {}).get("value")
+    return None
+
+
+def _build_settings_read_error(resp_success: bool, data: Dict[str, Any]) -> Optional[str]:
+    if resp_success:
+        return None
+    return str(data.get("error") or "settings/get failed")
+
+
+def _extract_bulk_settings_map(data: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(data, dict):
+        return {}
+
+    direct_settings = data.get("settings")
+    if isinstance(direct_settings, dict):
+        return {str(k): v for k, v in direct_settings.items()}
+    if isinstance(direct_settings, list):
+        out: Dict[str, Any] = {}
+        for item in direct_settings:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("key") or item.get("name") or "").strip()
+            if not key:
+                continue
+            if "value" in item:
+                out[key] = item.get("value")
+            elif key in item:
+                out[key] = item.get(key)
+        if out:
+            return out
+
+    values = data.get("values")
+    if isinstance(values, dict):
+        return {str(k): v for k, v in values.items()}
+    if isinstance(values, list):
+        out: Dict[str, Any] = {}
+        for item in values:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("key") or item.get("name") or "").strip()
+            if not key:
+                continue
+            if "value" in item:
+                out[key] = item.get("value")
+        if out:
+            return out
+
+    ignored = {
+        "success",
+        "status",
+        "error",
+        "message",
+        "request_id",
+        "requestId",
+        "device_id",
+        "deviceId",
+        "captured_at",
+        "timestamp",
+        "topic",
+        "values",
+        "settings",
+    }
+    fallback: Dict[str, Any] = {}
+    for key, value in data.items():
+        k = str(key or "").strip()
+        if not k or k in ignored:
+            continue
+        fallback[k] = value
+    return fallback
+
+
+def _normalize_operation_name(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or "").strip().lower())
+
+
+def _operation_is_supported(supported_operations: List[str], candidates: List[str]) -> bool:
+    normalized = {_normalize_operation_name(item) for item in (supported_operations or []) if str(item or "").strip()}
+    if not normalized:
+        return False
+    return any(_normalize_operation_name(candidate) in normalized for candidate in candidates)
+
+
+def _get_cached_payload(cache: Dict[str, Dict[str, Any]], device_id: str) -> Optional[Dict[str, Any]]:
+    entry = cache.get(device_id)
+    if not isinstance(entry, dict):
+        return None
+    payload = entry.get("payload")
+    return dict(payload) if isinstance(payload, dict) else None
+
+
+async def _safe_dab_call(label: str, callable_obj) -> Dict[str, Any]:
+    try:
+        resp = await callable_obj()
+        data = dict(resp.data or {}) if isinstance(getattr(resp, "data", None), dict) else {}
+        return {
+            "success": bool(resp.success),
+            "status": int(getattr(resp, "status", 0) or 0),
+            "error": None if resp.success else str(data.get("error") or f"{label} failed"),
+            "data": data,
+        }
+    except Exception as exc:
+        return {
+            "success": False,
+            "status": 0,
+            "error": str(exc),
+            "data": {},
+        }
+
+
+async def _refresh_device_dab_catalog(device_id: str) -> Dict[str, Any]:
+    logger.info("DAB catalog refresh start: device=%s", device_id)
+    dab = get_dab_client()
+    operations_result = await _safe_dab_call("operations/list", dab.list_operations)
+    operations = operations_result["data"].get("operations")
+    if not isinstance(operations, list):
+        operations = []
+
+    ops_truth_available = bool(operations_result["success"] and operations)
+
+    async def _fetch_list_with_support(
+        operation_name: str,
+        candidates: List[str],
+        fn,
+    ) -> Dict[str, Any]:
+        if ops_truth_available and not _operation_is_supported(operations, candidates):
+            return {
+                "success": False,
+                "status": 0,
+                "error": f"{operation_name} unsupported by operations/list",
+                "data": {},
+                "unsupported": True,
+            }
+        result = await _safe_dab_call(operation_name, fn)
+        result["unsupported"] = False
+        return result
+
+    keys_result = await _fetch_list_with_support("input/key/list", ["input/key/list"], dab.list_keys)
+    apps_result = await _fetch_list_with_support("applications/list", ["applications/list", "application/list"], dab.list_apps)
+    settings_result = await _fetch_list_with_support("system/settings/list", ["system/settings/list"], dab.list_settings)
+    voice_result = await _fetch_list_with_support("voice/list", ["voice/list", "voices/list"], dab.list_voices)
+
+    keys_payload = dict(keys_result.get("data") or {})
+    keys = keys_payload.get("keyCodes")
+    if not isinstance(keys, list):
+        keys = keys_payload.get("keys")
+    if not isinstance(keys, list):
+        keys = keys_payload.get("supportedKeys")
+    if not isinstance(keys, list):
+        keys = []
+    apps_payload = dict(apps_result.get("data") or {})
+    apps = apps_payload.get("apps")
+    if not isinstance(apps, list):
+        apps = apps_payload.get("applications")
+    if not isinstance(apps, list):
+        apps = apps_payload.get("list")
+    if not isinstance(apps, list):
+        apps = []
+    voice_payload = dict(voice_result.get("data") or {})
+    voices = voice_payload.get("voices")
+    if not isinstance(voices, list):
+        voices = voice_payload.get("voiceSystems")
+    if not isinstance(voices, list):
+        voices = voice_payload.get("list")
+    if not isinstance(voices, list):
+        voices = []
+
+    raw_settings_payload = settings_result["data"] if isinstance(settings_result.get("data"), dict) else {}
+    settings_list = _normalize_settings_entries_from_payload(raw_settings_payload)
+
+    payload = {
+        "device_id": device_id,
+        "captured_at": _utc_now_iso(),
+        "operations": {
+            "status": operations_result["status"],
+            "success": operations_result["success"],
+            "error": operations_result["error"],
+            "list": operations,
+            "raw_payload": dict(operations_result.get("data") or {}),
+        },
+        "keys": {
+            "status": keys_result["status"],
+            "success": keys_result["success"],
+            "error": keys_result["error"],
+            "list": keys,
+            "raw_payload": dict(keys_result.get("data") or {}),
+            "unsupported": bool(keys_result.get("unsupported")),
+        },
+        "applications_list": {
+            "status": apps_result["status"],
+            "success": apps_result["success"],
+            "error": apps_result["error"],
+            "list": apps,
+            "raw_payload": dict(apps_result.get("data") or {}),
+            "unsupported": bool(apps_result.get("unsupported")),
+        },
+        "voice_list": {
+            "status": voice_result["status"],
+            "success": voice_result["success"],
+            "error": voice_result["error"],
+            "list": voices,
+            "raw_payload": dict(voice_result.get("data") or {}),
+            "unsupported": bool(voice_result.get("unsupported")),
+        },
+        "settings_list": {
+            "status": settings_result["status"],
+            "success": settings_result["success"],
+            "error": settings_result["error"],
+            "warning": raw_settings_payload.get("warning"),
+            "degraded": bool(raw_settings_payload.get("degraded")),
+            "list": settings_list,
+            "raw_payload": dict(raw_settings_payload),
+            "unsupported": bool(settings_result.get("unsupported")),
+        },
+    }
+
+    _device_dab_catalog_cache[device_id] = {
+        "cached_at": time.monotonic(),
+        "payload": payload,
+    }
+    logger.info(
+        "DAB catalog refresh end: device=%s ops=%s keys=%s settings=%s apps=%s voices=%s",
+        device_id,
+        len(operations),
+        len(keys),
+        len(settings_list),
+        len(apps),
+        len(voices),
+    )
+    return payload
+
+
+async def _get_device_dab_catalog_cached(device_id: str, *, force: bool = False) -> Dict[str, Any]:
+    now = time.monotonic()
+    cached_entry = _device_dab_catalog_cache.get(device_id)
+    if (not force) and isinstance(cached_entry, dict):
+        cached_at = float(cached_entry.get("cached_at") or 0.0)
+        if (now - cached_at) <= max(0.0, float(_device_dab_catalog_ttl_seconds)):
+            logger.info("DAB catalog cache hit: device=%s age=%.2fs", device_id, now - cached_at)
+            payload = _get_cached_payload(_device_dab_catalog_cache, device_id)
+            if payload is not None:
+                return payload
+
+    inflight = _device_dab_catalog_inflight.get(device_id)
+    if inflight is not None and not inflight.done():
+        payload = _get_cached_payload(_device_dab_catalog_cache, device_id)
+        if payload is not None:
+            logger.info("DAB catalog dedup hit (stale-safe): device=%s", device_id)
+            return payload
+        logger.info("DAB catalog dedup wait: device=%s", device_id)
+        return await inflight
+
+    logger.info("DAB catalog cache miss: device=%s force=%s", device_id, force)
+    task = asyncio.create_task(_refresh_device_dab_catalog(device_id))
+    _device_dab_catalog_inflight[device_id] = task
+    try:
+        return await task
+    finally:
+        current = _device_dab_catalog_inflight.get(device_id)
+        if current is task:
+            _device_dab_catalog_inflight.pop(device_id, None)
+
+
+async def _persist_settings_values_to_snapshot(device_id: str, payload: Dict[str, Any]) -> None:
+    snapshot_path = _device_system_state_path(device_id)
+    snapshot: Dict[str, Any] = {}
+    if snapshot_path.exists():
+        loaded = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            snapshot = loaded
+    current_values = list(payload.get("values") or [])
+    refresh_status = dict(snapshot.get("refresh_status") or {})
+    refresh_status["settings_get"] = {
+        "success": True,
+        "status": 200,
+        "error": None,
+        "count": int(payload.get("count") or 0),
+        "failed": int(payload.get("failed") or 0),
+        "updated_at": str(payload.get("captured_at") or _utc_now_iso()),
+    }
+    snapshot.update(
+        {
+            "success": True,
+            "device_id": device_id,
+            "captured_at": str(payload.get("captured_at") or _utc_now_iso()),
+            "last_updated": str(payload.get("captured_at") or _utc_now_iso()),
+            "json_file": str(snapshot_path),
+            "current_setting_values": current_values,
+            "refresh_status": refresh_status,
+            "settings_get": {
+                "count": int(payload.get("count") or 0),
+                "failed": int(payload.get("failed") or 0),
+                "values": current_values,
+            },
+        }
+    )
+    snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+_DAB_OPERATION_GRID_DEFINITIONS: List[Dict[str, Any]] = [
+    {"operation": "operations/list", "candidates": ["operations/list"], "metadata_source": "operations/list", "related_source": "supported_operations", "default_action": "OPERATIONS_LIST"},
+    {"operation": "applications/list", "candidates": ["applications/list", "application/list"], "metadata_source": "applications/list", "related_source": "installed_applications", "default_action": "APPLICATIONS_LIST"},
+    {"operation": "applications/launch", "candidates": ["applications/launch", "application/launch"], "metadata_source": "applications/list", "related_source": "installed_applications", "default_action": "LAUNCH_APP"},
+    {"operation": "applications/launch-with-content", "candidates": ["applications/launch-with-content", "applications/launch"], "metadata_source": "applications/list", "related_source": "installed_applications", "default_action": "LAUNCH_APP"},
+    {"operation": "applications/get-state", "candidates": ["applications/get-state", "application/get-state"], "metadata_source": "applications/list", "related_source": "installed_applications", "default_action": "GET_STATE"},
+    {"operation": "applications/exit", "candidates": ["applications/exit", "application/exit"], "metadata_source": "applications/list", "related_source": "installed_applications", "default_action": "EXIT_APP"},
+    {"operation": "voice/list", "candidates": ["voice/list", "voices/list"], "metadata_source": "voice/list", "related_source": "supported_voice_systems", "default_action": "VOICE_LIST"},
+    {"operation": "system/settings/list", "candidates": ["system/settings/list"], "metadata_source": "system/settings/list", "related_source": "supported_settings", "default_action": "SETTINGS_LIST"},
+    {"operation": "system/settings/get", "candidates": ["system/settings/get"], "metadata_source": "system/settings/list", "related_source": "current_setting_values", "default_action": "GET_SETTING"},
+    {"operation": "system/settings/set", "candidates": ["system/settings/set"], "metadata_source": "system/settings/list", "related_source": "supported_settings", "default_action": "SET_SETTING"},
+    {"operation": "input/key/list", "candidates": ["input/key/list"], "metadata_source": "input/key/list", "related_source": "supported_keys", "default_action": "KEY_LIST"},
+    {"operation": "input/key-press", "candidates": ["input/key-press", "input/key/press"], "metadata_source": "input/key/list", "related_source": "supported_keys", "default_action": "KEY_PRESS_CODE"},
+    {"operation": "input/long-key-press", "candidates": ["input/long-key-press", "input/long-key/press"], "metadata_source": "input/key/list", "related_source": "supported_keys", "default_action": "LONG_KEY_PRESS"},
+]
+
+
+def _build_device_capability_status_snapshot(
+    device_id: str,
+    catalog: Dict[str, Any],
+    values_payload: Dict[str, Any],
+    snapshot_path: Path,
+) -> Dict[str, Any]:
+    ops_section = dict(catalog.get("operations") or {})
+    keys_section = dict(catalog.get("keys") or {})
+    apps_section = dict(catalog.get("applications_list") or {})
+    voices_section = dict(catalog.get("voice_list") or {})
+    settings_section = dict(catalog.get("settings_list") or {})
+
+    supported_operations = list(ops_section.get("list") or [])
+    supported_keys = list(keys_section.get("list") or [])
+    installed_applications = list(apps_section.get("list") or [])
+    supported_voice_systems = list(voices_section.get("list") or [])
+    supported_settings = list(settings_section.get("list") or [])
+    current_setting_values = list(values_payload.get("values") or [])
+
+    unsupported_or_missing_sections: List[Dict[str, Any]] = []
+    section_checks = [
+        ("operations/list", ops_section),
+        ("input/key/list", keys_section),
+        ("applications/list", apps_section),
+        ("voice/list", voices_section),
+        ("system/settings/list", settings_section),
+        ("system/settings/get", {"success": True, "status": 200, "error": None} if current_setting_values else {"success": False, "status": 0, "error": "No settings/get values yet"}),
+    ]
+    for section_name, section_data in section_checks:
+        unsupported = bool(section_data.get("unsupported"))
+        success = bool(section_data.get("success"))
+        if unsupported or not success:
+            unsupported_or_missing_sections.append(
+                {
+                    "section": section_name,
+                    "status": "unsupported" if unsupported else "missing_or_failed",
+                    "reason": str(section_data.get("error") or ("Unsupported by operations/list" if unsupported else "No data")),
+                }
+            )
+
+    refresh_status = {
+        "catalog": {
+            "updated_at": str(catalog.get("captured_at") or _utc_now_iso()),
+            "success": bool(ops_section.get("success")),
+            "error": ops_section.get("error"),
+        },
+        "settings_get": {
+            "updated_at": str(values_payload.get("captured_at") or _utc_now_iso()),
+            "success": True,
+            "count": int(values_payload.get("count") or 0),
+            "failed": int(values_payload.get("failed") or 0),
+        },
+    }
+
+    snapshot = {
+        "success": True,
+        "device_id": device_id,
+        "last_updated": str(values_payload.get("captured_at") or catalog.get("captured_at") or _utc_now_iso()),
+        "supported_operations": supported_operations,
+        "supported_keys": supported_keys,
+        "installed_applications": installed_applications,
+        "supported_voice_systems": supported_voice_systems,
+        "supported_settings": supported_settings,
+        "current_setting_values": current_setting_values,
+        "unsupported_or_missing_sections": unsupported_or_missing_sections,
+        "raw_list_payloads": {
+            "operations/list": dict(ops_section.get("raw_payload") or {}),
+            "input/key/list": dict(keys_section.get("raw_payload") or {}),
+            "applications/list": dict(apps_section.get("raw_payload") or {}),
+            "voice/list": dict(voices_section.get("raw_payload") or {}),
+            "system/settings/list": dict(settings_section.get("raw_payload") or {}),
+        },
+        "refresh_status": refresh_status,
+        "json_file": str(snapshot_path),
+        # backward-compatible fields for existing UI consumers
+        "captured_at": str(values_payload.get("captured_at") or catalog.get("captured_at") or _utc_now_iso()),
+        "operations": ops_section,
+        "keys": keys_section,
+        "applications_list": apps_section,
+        "voice_list": voices_section,
+        "settings_list": settings_section,
+        "settings_get": {
+            "count": int(values_payload.get("count") or 0),
+            "failed": int(values_payload.get("failed") or 0),
+            "values": current_setting_values,
+        },
+    }
+    return snapshot
+
+
+def _build_operations_grid_rows(snapshot: Dict[str, Any]) -> List[Dict[str, Any]]:
+    supported_operations = [str(v or "").strip() for v in (snapshot.get("supported_operations") or []) if str(v or "").strip()]
+    current_values = list(snapshot.get("current_setting_values") or [])
+    rows: List[Dict[str, Any]] = []
+    for item in _DAB_OPERATION_GRID_DEFINITIONS:
+        operation_name = str(item.get("operation") or "")
+        candidates = [str(v or "") for v in (item.get("candidates") or [operation_name])]
+        supported = _operation_is_supported(supported_operations, candidates)
+        rows.append(
+            {
+                "operation": operation_name,
+                "supported": supported,
+                "metadata_source": item.get("metadata_source"),
+                "related_source": item.get("related_source"),
+                "default_action": item.get("default_action"),
+                "related_count": (
+                    len(current_values)
+                    if item.get("related_source") == "current_setting_values"
+                    else len(snapshot.get(item.get("related_source") or "") or [])
+                ),
+            }
+        )
+    for op in supported_operations:
+        if any(_normalize_operation_name(op) == _normalize_operation_name(str(row.get("operation") or "")) for row in rows):
+            continue
+        rows.append(
+            {
+                "operation": op,
+                "supported": True,
+                "metadata_source": "operations/list",
+                "related_source": "n/a",
+                "default_action": None,
+                "related_count": 0,
+            }
+        )
+    return rows
+
+
+async def _refresh_device_settings_values(device_id: str, *, settings_entries: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    logger.info("DAB settings/get refresh start: device=%s", device_id)
+    dab = get_dab_client()
+
+    if settings_entries is None:
+        cached_catalog_payload = _get_cached_payload(_device_dab_catalog_cache, device_id)
+        settings_entries = list(((cached_catalog_payload or {}).get("settings_list") or {}).get("list") or [])
+
+    if settings_entries is None or not settings_entries:
+        try:
+            snapshot_path = _device_system_state_path(device_id)
+            if snapshot_path.exists():
+                loaded = json.loads(snapshot_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    settings_entries = list(loaded.get("supported_settings") or [])
+                    if not settings_entries:
+                        settings_entries = list((loaded.get("settings_list") or {}).get("list") or [])
+        except Exception as exc:
+            logger.warning("Failed to reuse stored settings/list for settings/get refresh: device=%s error=%s", device_id, exc)
+
+    if settings_entries is None or not settings_entries:
+        # Last resort: fetch catalog (this is expected only on first load / explicit refresh).
+        catalog = await _get_device_dab_catalog_cached(device_id, force=False)
+        settings_entries = list((catalog.get("settings_list") or {}).get("list") or [])
+
+    async def _read_setting(entry: Dict[str, Any]) -> Dict[str, Any]:
+        key = str(entry.get("key") or "").strip()
+        row = dict(entry)
+        row["key"] = key
+        if not key:
+            row.update({"read_success": False, "read_status": 0, "read_error": "invalid setting key", "current_value": None, "read_raw": {}})
+            return row
+
+        async with _device_settings_get_semaphore:
+            try:
+                resp = await dab.get_setting(key)
+                data = dict(resp.data or {}) if isinstance(getattr(resp, "data", None), dict) else {}
+                row.update(
+                    {
+                        "read_success": bool(resp.success),
+                        "read_status": int(getattr(resp, "status", 0) or 0),
+                        "read_error": _build_settings_read_error(bool(resp.success), data),
+                        "current_value": _extract_setting_value(data, key),
+                        "read_raw": data,
+                    }
+                )
+                return row
+            except Exception as exc:
+                row.update({"read_success": False, "read_status": 0, "read_error": str(exc), "current_value": None, "read_raw": {}})
+                return row
+
+    values: List[Dict[str, Any]] = []
+
+    bulk_reader = getattr(dab, "get_all_settings_values", None)
+    if callable(bulk_reader):
+        try:
+            bulk_resp = await bulk_reader()
+            bulk_data = dict(bulk_resp.data or {}) if isinstance(getattr(bulk_resp, "data", None), dict) else {}
+            bulk_map = _extract_bulk_settings_map(bulk_data)
+            if bool(getattr(bulk_resp, "success", False)) and bulk_map:
+                for entry in (settings_entries or []):
+                    key = str((entry or {}).get("key") or "").strip()
+                    row = dict(entry or {})
+                    row["key"] = key
+                    has_value = key in bulk_map
+                    row.update(
+                        {
+                            "read_success": has_value,
+                            "read_status": int(getattr(bulk_resp, "status", 0) or 0),
+                            "read_error": None if has_value else "missing key in bulk settings/get response",
+                            "current_value": bulk_map.get(key),
+                            "read_raw": bulk_data,
+                        }
+                    )
+                    values.append(row)
+                logger.info("DAB settings/get refresh used bulk request: device=%s keys=%s", device_id, len(values))
+            elif bool(getattr(bulk_resp, "success", False)) and not settings_entries and bulk_map:
+                for key, current_value in bulk_map.items():
+                    values.append(
+                        {
+                            "key": str(key),
+                            "friendlyName": str(key).replace("_", " ").title(),
+                            "read_success": True,
+                            "read_status": int(getattr(bulk_resp, "status", 0) or 0),
+                            "read_error": None,
+                            "current_value": current_value,
+                            "read_raw": bulk_data,
+                        }
+                    )
+                logger.info("DAB settings/get refresh used bulk request without settings/list: device=%s keys=%s", device_id, len(values))
+        except Exception as exc:
+            logger.warning("Bulk settings/get request failed for %s: %s", device_id, exc)
+
+    if not values and settings_entries:
+        values = list(await asyncio.gather(*[_read_setting(item) for item in settings_entries]))
+
+    payload = {
+        "success": True,
+        "device_id": device_id,
+        "captured_at": _utc_now_iso(),
+        "count": len(values),
+        "failed": sum(1 for item in values if not bool(item.get("read_success"))),
+        "values": values,
+    }
+
+    _device_settings_values_cache[device_id] = {
+        "cached_at": time.monotonic(),
+        "payload": payload,
+    }
+    _device_settings_values_last_request_at[device_id] = time.monotonic()
+
+    try:
+        await _persist_settings_values_to_snapshot(device_id, payload)
+    except Exception as exc:
+        logger.warning("Failed to persist settings/get value snapshot for %s: %s", device_id, exc)
+
+    logger.info("DAB settings/get refresh end: device=%s keys=%s failed=%s", device_id, len(values), payload["failed"])
+    return payload
+
+
+async def _get_device_settings_values_cached(device_id: str, *, force: bool = False, throttle: bool = True) -> Dict[str, Any]:
+    now = time.monotonic()
+    cached_entry = _device_settings_values_cache.get(device_id)
+    cached_payload = _get_cached_payload(_device_settings_values_cache, device_id)
+
+    if (not force) and throttle and cached_payload is not None:
+        last_req = float(_device_settings_values_last_request_at.get(device_id, 0.0) or 0.0)
+        delta = now - last_req
+        if delta < max(0.0, float(_device_settings_values_min_interval_seconds)):
+            logger.info("DAB settings/get throttled: device=%s age=%.2fs", device_id, delta)
+            _device_settings_values_last_request_at[device_id] = now
+            return cached_payload
+
+    if (not force) and isinstance(cached_entry, dict) and cached_payload is not None:
+        cached_at = float(cached_entry.get("cached_at") or 0.0)
+        if (now - cached_at) <= max(0.0, float(_device_settings_values_ttl_seconds)):
+            logger.info("DAB settings/get cache hit: device=%s age=%.2fs", device_id, now - cached_at)
+            _device_settings_values_last_request_at[device_id] = now
+            return cached_payload
+
+    inflight = _device_settings_values_inflight.get(device_id)
+    if inflight is not None and not inflight.done():
+        if cached_payload is not None:
+            logger.info("DAB settings/get dedup hit (stale-safe): device=%s", device_id)
+            _device_settings_values_last_request_at[device_id] = now
+            return cached_payload
+        logger.info("DAB settings/get dedup wait: device=%s", device_id)
+        _device_settings_values_last_request_at[device_id] = now
+        return await inflight
+
+    logger.info("DAB settings/get cache miss: device=%s force=%s", device_id, force)
+    task = asyncio.create_task(_refresh_device_settings_values(device_id))
+    _device_settings_values_inflight[device_id] = task
+    _device_settings_values_last_request_at[device_id] = now
+    try:
+        return await task
+    finally:
+        current = _device_settings_values_inflight.get(device_id)
+        if current is task:
+            _device_settings_values_inflight.pop(device_id, None)
 
 
 def _load_device_capabilities_cache() -> Dict[str, Any]:
@@ -1870,13 +2588,22 @@ def get_vertex_text_client() -> Optional[VertexPlannerClient]:
     if not _vertex_planner_requested():
         return None
     c = get_config()
+    active_model = _get_active_vertex_planner_model()
     try:
         project = _resolve_vertex_project(c.google_cloud_project)
-        _vertex_text_client = VertexPlannerClient(
-            project=project,
-            location=c.google_cloud_location,
-            model=c.vertex_planner_model,
-        )
+        try:
+            _vertex_text_client = VertexPlannerClient(
+                project=project,
+                location=c.google_cloud_location,
+                model=active_model,
+                api_key=str(getattr(c, "google_api_key", "") or "").strip() or None,
+            )
+        except TypeError:
+            _vertex_text_client = VertexPlannerClient(
+                project=project,
+                location=c.google_cloud_location,
+                model=active_model,
+            )
     except Exception as exc:
         logger.warning("Vertex text client unavailable for YTS interactive help: %s", exc)
         _vertex_text_client = None
@@ -1899,7 +2626,7 @@ def _is_live_preview_vertex_model(model_name: Optional[str]) -> bool:
 def _select_vertex_visual_model() -> str:
     c = get_config()
     live_model = str(c.vertex_live_model or "").strip()
-    planner_model = str(c.vertex_planner_model or "").strip()
+    planner_model = _get_active_vertex_planner_model()
     if live_model and not _is_live_preview_vertex_model(live_model):
         return live_model
     return planner_model or live_model
@@ -1914,11 +2641,19 @@ def get_vertex_live_visual_client() -> Optional[VertexPlannerClient]:
     c = get_config()
     try:
         project = _resolve_vertex_project(c.google_cloud_project)
-        _vertex_live_visual_client = VertexPlannerClient(
-            project=project,
-            location=c.google_cloud_location,
-            model=_select_vertex_visual_model(),
-        )
+        try:
+            _vertex_live_visual_client = VertexPlannerClient(
+                project=project,
+                location=c.google_cloud_location,
+                model=_select_vertex_visual_model(),
+                api_key=str(getattr(c, "google_api_key", "") or "").strip() or None,
+            )
+        except TypeError:
+            _vertex_live_visual_client = VertexPlannerClient(
+                project=project,
+                location=c.google_cloud_location,
+                model=_select_vertex_visual_model(),
+            )
     except Exception as exc:
         logger.warning("Vertex live visual client unavailable for YTS monitoring: %s", exc)
         _vertex_live_visual_client = None
@@ -1981,14 +2716,15 @@ async def _refresh_yts_live_visual_monitor(command_id: str) -> Optional[Dict[str
             "confidence": 0.0,
         }
     else:
-        prompt = (
-            "You are continuously monitoring an Android TV guided validation run. "
-            "Inspect the attached screenshot directly. Do not rely on OCR or local text extraction. "
-            "Return strict JSON with keys: summary, playback_visible, player_controls_visible, "
-            "settings_gear_visible, stats_for_nerds_visible, focus_target, confidence. "
-            "Use short factual summary text. If numbered or menu options appear, mention only what is visibly selected.\n\n"
-            f"YTS command: {state.get('command') or 'unknown'}\n"
-            f"Recent terminal logs:\n{log_text or '(no recent logs)'}\n"
+        prompt = "\n\n".join(
+            [
+                _shared_ai_prompt_preamble(),
+                "Task: monitor Android TV guided validation state from the attached screenshot.",
+                "Return strict JSON with keys: summary, playback_visible, player_controls_visible, settings_gear_visible, stats_for_nerds_visible, focus_target, confidence.",
+                "Rules: use screenshot as source of truth; Do not rely on OCR or local text extraction; keep summary short and factual; mention selected menu item only when clearly visible; request a UI navigation checkpoint when commit path is uncertain.",
+                f"YTS command: {state.get('command') or 'unknown'}",
+                f"Recent terminal logs:\n{log_text or '(no recent logs)'}",
+            ]
         )
         try:
             response = await client.generate_content(
@@ -2113,29 +2849,22 @@ async def _suggest_yts_prompt_response(command_id: str, prompt_text: str, option
             if numeric_response_required
             else "Prefer a single token like 1, 2, 3, 4, yes, or no. If the terminal shows numbered options, return the number only.\n\n"
         )
-        prompt = "".join(
+        prompt = "\n\n".join(
             [
-                "You are helping answer an interactive YTS terminal prompt. ",
-                "Read the terminal guide carefully and inspect the attached TV screenshot before answering. ",
-                "Return only the exact response to send back to the terminal. ",
-                response_instruction,
-                f"Interactive prompt: {prompt_text}\n",
-                f"Allowed options: {', '.join(options) if options else 'infer from prompt'}\n\n",
-                "Use these rules:\n",
-                "1. The active test context and recent terminal logs may contain the test guide, the current test name, and operator instructions.\n",
-                "2. The attached screenshot is the primary visual context.\n",
-                "3. Choose the option that matches both the guide and what is visible on TV.\n",
-                "4. If the screen and logs conflict, prefer the screenshot.\n",
-                "5. Treat setup notes, headings, and option lists as context only until there is a clear question or decision request.\n",
-                "6. If uncertain, choose the safest non-destructive option.\n\n",
-                f"Active test terminal context:\n{active_test_log_text or '(active test context unavailable)'}\n\n",
-                f"Recent terminal logs:\n{recent_log_text or '(no recent logs)'}\n\n",
-                f"Executed DAB setup actions before answering: {json.dumps(setup_actions, ensure_ascii=False)}\n\n",
-                f"TV visual context source: {visual_context.get('source', 'unknown')}\n",
-                f"TV observation sequence: {json.dumps(visual_context.get('observations') or [], ensure_ascii=False)}\n\n",
-                f"Latest Gemini live visual analysis: {json.dumps(visual_context.get('analysis') or state.get('latest_visual_analysis') or {}, ensure_ascii=False)}\n\n",
-                f"TV capture summary:\n{visual_context.get('summary', 'No TV screenshot available.')}\n\n",
-                f"Capture status: {json.dumps(visual_context.get('capture_status') or {}, ensure_ascii=False)}\n",
+                _shared_ai_prompt_preamble(),
+                "Task: answer the interactive YTS terminal prompt with a single safe operator response.",
+                response_instruction.strip(),
+                f"Interactive prompt: {prompt_text}",
+                f"Allowed options: {', '.join(options) if options else 'infer from prompt'}",
+                "Rules: attached screenshot is the primary visual context; prefer non-destructive option when uncertain; if UI path is unclear, favor response that allows a UI navigation checkpoint first; return only the response token.",
+                f"Active test terminal context:\n{active_test_log_text or '(active test context unavailable)'}",
+                f"Recent terminal logs:\n{recent_log_text or '(no recent logs)'}",
+                f"Executed DAB setup actions before answering: {json.dumps(setup_actions, ensure_ascii=False)}",
+                f"TV visual context source: {visual_context.get('source', 'unknown')}",
+                f"TV observation sequence: {json.dumps(visual_context.get('observations') or [], ensure_ascii=False)}",
+                f"Latest Gemini live visual analysis: {json.dumps(visual_context.get('analysis') or state.get('latest_visual_analysis') or {}, ensure_ascii=False)}",
+                f"TV capture summary:\n{visual_context.get('summary', 'No TV screenshot available.')}",
+                f"Capture status: {json.dumps(visual_context.get('capture_status') or {}, ensure_ascii=False)}",
             ]
         )
         try:
@@ -2917,8 +3646,39 @@ def _vertex_planner_requested() -> bool:
             return True
 
     config = get_config()
+    api_key = str(getattr(config, "google_api_key", "") or "").strip()
+    if api_key and config.vertex_planner_model:
+        return True
     project = _resolve_vertex_project(config.google_cloud_project)
     return bool(project and config.google_cloud_location and config.vertex_planner_model)
+
+
+def _get_active_vertex_planner_model() -> str:
+    override = str(_runtime_vertex_planner_model_override or "").strip()
+    if override:
+        return override
+    return str(get_config().vertex_planner_model or "").strip()
+
+
+def _get_available_vertex_models() -> List[str]:
+    c = get_config()
+    models = {
+        str(m).strip()
+        for m in [
+            *_COMMON_VERTEX_MODELS,
+            str(c.vertex_planner_model or "").strip(),
+            str(c.vertex_live_model or "").strip(),
+        ]
+        if str(m).strip()
+    }
+    return sorted(models)
+
+
+def _reset_runtime_model_clients() -> None:
+    global _planner, _vertex_text_client, _vertex_live_visual_client
+    _planner = None
+    _vertex_text_client = None
+    _vertex_live_visual_client = None
 
 
 def get_dab_client() -> DABClientBase:
@@ -2934,18 +3694,27 @@ def get_planner() -> Planner:
     global _planner
     if _planner is None:
         c = get_config()
+        active_model = _get_active_vertex_planner_model()
         vertex_client = None
         if _vertex_planner_requested():
             try:
                 project = _resolve_vertex_project(c.google_cloud_project)
-                vertex_client = VertexPlannerClient(
-                    project=project,
-                    location=c.google_cloud_location,
-                    model=c.vertex_planner_model,
-                )
+                try:
+                    vertex_client = VertexPlannerClient(
+                        project=project,
+                        location=c.google_cloud_location,
+                        model=active_model,
+                        api_key=str(getattr(c, "google_api_key", "") or "").strip() or None,
+                    )
+                except TypeError:
+                    vertex_client = VertexPlannerClient(
+                        project=project,
+                        location=c.google_cloud_location,
+                        model=active_model,
+                    )
                 logger.info(
                     "Planner initialized with Vertex model=%s project=%s location=%s",
-                    c.vertex_planner_model,
+                    active_model,
                     project,
                     c.google_cloud_location,
                 )
@@ -3228,6 +3997,54 @@ async def config_summary() -> ConfigSummaryResponse:
     )
 
 
+@app.get("/config/runtime-model", response_model=RuntimeModelResponse)
+async def runtime_model_summary() -> RuntimeModelResponse:
+    c = get_config()
+    active = _get_active_vertex_planner_model()
+    configured = str(c.vertex_planner_model or "").strip()
+    return RuntimeModelResponse(
+        success=True,
+        active_vertex_planner_model=active,
+        configured_vertex_planner_model=configured,
+        available_models=_get_available_vertex_models(),
+        message=("runtime override active" if active and active != configured else "using configured model"),
+    )
+
+
+@app.post("/config/runtime-model", response_model=RuntimeModelResponse)
+async def runtime_model_update(request: RuntimeModelUpdateRequest) -> RuntimeModelResponse:
+    global _runtime_vertex_planner_model_override
+    requested = str(request.model or "").strip()
+    c = get_config()
+    configured = str(c.vertex_planner_model or "").strip()
+
+    if not requested:
+        raise HTTPException(status_code=400, detail="model is required")
+
+    if requested.lower() in {"default", "configured", "reset"}:
+        _runtime_vertex_planner_model_override = None
+        _reset_runtime_model_clients()
+        active = _get_active_vertex_planner_model()
+        return RuntimeModelResponse(
+            success=True,
+            active_vertex_planner_model=active,
+            configured_vertex_planner_model=configured,
+            available_models=_get_available_vertex_models(),
+            message="runtime override cleared; using configured model",
+        )
+
+    _runtime_vertex_planner_model_override = requested
+    _reset_runtime_model_clients()
+    active = _get_active_vertex_planner_model()
+    return RuntimeModelResponse(
+        success=True,
+        active_vertex_planner_model=active,
+        configured_vertex_planner_model=configured,
+        available_models=_get_available_vertex_models(),
+        message="runtime model updated",
+    )
+
+
 class DeviceContextSelectRequest(BaseModel):
     device_id: str
     persist: bool = True
@@ -3360,6 +4177,126 @@ async def dab_device_info(device_id: Optional[str] = None) -> dict:
     }
 
 
+@app.get("/dab/device-settings", response_model=dict)
+async def dab_device_settings(device_id: Optional[str] = None) -> dict:
+    """Return settings/list plus current values using cached catalog/value snapshots."""
+    current_selected_device_id = str(_resolve_selected_device_id() or "").strip()
+    resolved_device_id = str(_resolve_selected_device_id(device_id) or "").strip()
+    if not _is_valid_discovered_device_id(resolved_device_id):
+        raise HTTPException(status_code=400, detail="No selected device available")
+
+    if str(device_id or "").strip() and resolved_device_id != current_selected_device_id:
+        await _apply_selected_device_context(resolved_device_id, persist=True)
+
+    catalog = await _get_device_dab_catalog_cached(resolved_device_id, force=False)
+    values_payload = await _get_device_settings_values_cached(resolved_device_id, force=False, throttle=True)
+    settings_entries = list((catalog.get("settings_list") or {}).get("list") or [])
+    by_key = {
+        str(item.get("key") or "").strip(): item
+        for item in (values_payload.get("values") or [])
+        if isinstance(item, dict)
+    }
+    settings_with_values: List[Dict[str, Any]] = []
+    for entry in settings_entries:
+        if not isinstance(entry, dict):
+            continue
+        key = str(entry.get("key") or "").strip()
+        merged = dict(entry)
+        if key and key in by_key:
+            merged.update(by_key[key])
+        settings_with_values.append(merged)
+
+    failed_reads = int(values_payload.get("failed") or 0)
+    settings_meta = catalog.get("settings_list") or {}
+    return {
+        "success": bool(settings_meta.get("success", True)),
+        "device_id": resolved_device_id,
+        "captured_at": str(values_payload.get("captured_at") or _utc_now_iso()),
+        "warning": settings_meta.get("warning"),
+        "degraded": bool(settings_meta.get("degraded")),
+        "list_status": int(settings_meta.get("status", 0) or 0),
+        "list_error": settings_meta.get("error"),
+        "settings_count": len(settings_with_values),
+        "failed_reads": failed_reads,
+        "settings": settings_with_values,
+    }
+
+
+@app.get("/dab/device-settings/values", response_model=dict)
+async def dab_device_setting_values(device_id: Optional[str] = None, force: bool = False) -> dict:
+    """Refresh setting values only (system/settings/get) using cached catalog when possible."""
+    resolved_device_id = str(_resolve_selected_device_id(device_id) or "").strip()
+    if not _is_valid_discovered_device_id(resolved_device_id):
+        raise HTTPException(status_code=400, detail="No selected device available")
+
+    current_selected_device_id = str(_resolve_selected_device_id() or "").strip()
+    if str(device_id or "").strip() and resolved_device_id != current_selected_device_id:
+        await _apply_selected_device_context(resolved_device_id, persist=True)
+
+    return await _get_device_settings_values_cached(
+        resolved_device_id,
+        force=bool(force),
+        throttle=not bool(force),
+    )
+
+
+@app.get("/dab/device-system-state", response_model=dict)
+async def dab_device_system_state(device_id: Optional[str] = None, refresh: bool = False) -> dict:
+    """Read persisted per-device capability/status JSON; refresh only when explicitly requested."""
+    current_selected_device_id = str(_resolve_selected_device_id() or "").strip()
+    resolved_device_id = str(_resolve_selected_device_id(device_id) or "").strip()
+    if not _is_valid_discovered_device_id(resolved_device_id):
+        raise HTTPException(status_code=400, detail="No selected device available")
+
+    if str(device_id or "").strip() and resolved_device_id != current_selected_device_id:
+        await _apply_selected_device_context(resolved_device_id, persist=True)
+
+    snapshot_path = _device_system_state_path(resolved_device_id)
+    if not refresh and snapshot_path.exists():
+        try:
+            cached = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            if isinstance(cached, dict):
+                return cached
+        except Exception:
+            pass
+
+    catalog = await _get_device_dab_catalog_cached(resolved_device_id, force=bool(refresh))
+    values_payload = await _get_device_settings_values_cached(
+        resolved_device_id,
+        force=bool(refresh),
+        throttle=not bool(refresh),
+    )
+    snapshot = _build_device_capability_status_snapshot(
+        device_id=resolved_device_id,
+        catalog=catalog,
+        values_payload=values_payload,
+        snapshot_path=snapshot_path,
+    )
+
+    try:
+        snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as exc:
+        logger.warning("Failed to persist device system state snapshot for %s: %s", resolved_device_id, exc)
+
+    return snapshot
+
+
+async def _refresh_device_system_state_snapshot_safe(device_id: Optional[str] = None) -> None:
+    """Best-effort refresh of persisted device system snapshot JSON."""
+    try:
+        await dab_device_system_state(device_id=device_id, refresh=True)
+    except Exception as exc:
+        logger.warning("Skipping system-state snapshot refresh for device=%s: %s", device_id, exc)
+
+
+async def _refresh_device_setting_values_snapshot_safe(device_id: Optional[str] = None) -> None:
+    """Best-effort refresh for settings/get values only (lightweight)."""
+    try:
+        await dab_device_setting_values(device_id=device_id, force=True)
+    except Exception as exc:
+        logger.warning("Skipping settings-values snapshot refresh for device=%s: %s", device_id, exc)
+
+
 @app.get("/capture/source", response_model=CaptureSourceResponse)
 async def capture_source() -> CaptureSourceResponse:
     """Return capture source mode and HDMI availability diagnostics."""
@@ -3461,6 +4398,7 @@ async def start_run(request: StartRunRequest) -> StartRunResponse:
         state.device_profile_id = str(request.device_profile_id).strip()
     if request.policy_mode:
         state.hybrid_policy_mode = str(request.policy_mode).strip()
+    state.ui_navigation_allowed = bool(request.ui_navigation_allowed)
     explicit_content = str(request.content or "").strip()
     inferred_content = _infer_launch_content_from_goal(request.goal)
     if explicit_content:
@@ -3850,6 +4788,8 @@ async def get_run_status(run_id: str) -> RunStatusResponse:
         status=state.status.value,
         goal=state.goal,
         step_count=state.step_count,
+        ai_request_count=state.ai_request_count,
+        ui_navigation_allowed=bool(state.ui_navigation_allowed),
         retries=state.retries,
         current_app=state.current_app,
         current_screen=state.current_screen,
@@ -3900,6 +4840,8 @@ async def get_run_status(run_id: str) -> RunStatusResponse:
         status=state.status.value,
         goal=state.goal,
         step_count=state.step_count,
+        ai_request_count=state.ai_request_count,
+        ui_navigation_allowed=bool(state.ui_navigation_allowed),
         retries=state.retries,
         current_app=state.current_app,
         current_screen=state.current_screen,
@@ -4203,10 +5145,16 @@ async def manual_action(request: ManualActionRequest) -> ManualActionResponse:
         if action in KEY_MAP:
             resp = await dab.key_press(KEY_MAP[action])
             return ManualActionResponse(success=resp.success, action=action, result=resp.data)
+        elif action == "KEY_PRESS_CODE":
+            key_code = str(params.get("key_code") or params.get("keyCode") or "").strip().upper()
+            if not key_code:
+                raise HTTPException(status_code=400, detail="key_code is required for KEY_PRESS_CODE")
+            resp = await dab.key_press(key_code)
+            return ManualActionResponse(success=resp.success, action=action, result=resp.data)
         elif action == "LONG_KEY_PRESS":
             key_action = str(params.get("key_action", "")).strip().upper()
-            key_code = str(params.get("key_code", "")).strip().upper()
-            duration_ms = int(params.get("duration_ms", 1500))
+            key_code = str(params.get("key_code") or params.get("keyCode") or "").strip().upper()
+            duration_ms = int(params.get("duration_ms") or params.get("durationMs") or 1500)
             resolved_key = KEY_MAP.get(key_action) if key_action else key_code
             if not resolved_key:
                 raise HTTPException(
@@ -4216,14 +5164,19 @@ async def manual_action(request: ManualActionRequest) -> ManualActionResponse:
             resp = await dab.long_key_press(resolved_key, duration_ms=duration_ms)
             return ManualActionResponse(success=resp.success, action=action, result=resp.data)
         elif action == "LAUNCH_APP":
-            app_id = params.get("app_id", "")
+            app_id = params.get("app_id") or params.get("appId") or ""
             if not app_id:
                 raise HTTPException(status_code=400, detail="app_id is required for LAUNCH_APP")
             app_id = _validate_app_id(app_id)
-            launch_parameters = {}
-            content = str(params.get("content", "")).strip()
+            launch_parameters: Dict[str, Any] = {}
+            content = str(params.get("content") or params.get("content_id") or params.get("contentId") or "").strip()
             if content:
                 launch_parameters["content"] = content
+            raw_parameters = params.get("parameters")
+            if isinstance(raw_parameters, list):
+                launch_parameters["parameters"] = raw_parameters
+            elif isinstance(raw_parameters, dict):
+                launch_parameters.update(raw_parameters)
             resp = await dab.launch_app(app_id, parameters=launch_parameters or None)
             return ManualActionResponse(success=resp.success, action=action, result=resp.data)
         elif action == "WAIT":
@@ -4232,26 +5185,34 @@ async def manual_action(request: ManualActionRequest) -> ManualActionResponse:
             await asyncio.sleep(seconds)
             return ManualActionResponse(success=True, action=action, result={"seconds": seconds})
         elif action == "GET_STATE":
-            app_id = params.get("app_id") or get_config().youtube_app_id
+            app_id = params.get("app_id") or params.get("appId") or get_config().youtube_app_id
             app_id = _validate_app_id(app_id)
             resp = await dab.get_app_state(app_id)
             return ManualActionResponse(success=resp.success, action=action, result=resp.data)
         elif action == "EXIT_APP":
-            app_id = params.get("app_id") or get_config().youtube_app_id
+            app_id = params.get("app_id") or params.get("appId") or get_config().youtube_app_id
             app_id = _validate_app_id(app_id)
             resp = await dab.exit_app(app_id)
             return ManualActionResponse(success=resp.success, action=action, result=resp.data)
         elif action == "OPERATIONS_LIST":
             resp = await dab.list_operations()
+            await _refresh_device_system_state_snapshot_safe(_resolve_selected_device_id(request.device_id))
             return ManualActionResponse(success=resp.success, action=action, result=resp.data)
         elif action == "APPLICATIONS_LIST":
             resp = await dab.list_apps()
+            await _refresh_device_system_state_snapshot_safe(_resolve_selected_device_id(request.device_id))
             return ManualActionResponse(success=resp.success, action=action, result=resp.data)
         elif action == "KEY_LIST":
             resp = await dab.list_keys()
+            await _refresh_device_system_state_snapshot_safe(_resolve_selected_device_id(request.device_id))
             return ManualActionResponse(success=resp.success, action=action, result=resp.data)
         elif action == "SETTINGS_LIST":
             resp = await dab.list_settings()
+            await _refresh_device_system_state_snapshot_safe(_resolve_selected_device_id(request.device_id))
+            return ManualActionResponse(success=resp.success, action=action, result=resp.data)
+        elif action == "VOICE_LIST":
+            resp = await dab.list_voices()
+            await _refresh_device_system_state_snapshot_safe(_resolve_selected_device_id(request.device_id))
             return ManualActionResponse(success=resp.success, action=action, result=resp.data)
         elif action == "GET_SETTING":
             setting_key = _normalize_setting_key(str(params.get("key") or params.get("setting_key") or ""))
@@ -4296,6 +5257,7 @@ async def manual_action(request: ManualActionRequest) -> ManualActionResponse:
             if method == "dab":
                 resp = await dab.get_setting(setting_key)
                 if resp.success:
+                    await _refresh_device_setting_values_snapshot_safe(selected_device_id)
                     return ManualActionResponse(success=True, action=action, result=resp.data)
                 if not _is_dab_setting_operation_unavailable(resp):
                     return ManualActionResponse(success=False, action=action, result=resp.data)
@@ -4321,6 +5283,7 @@ async def manual_action(request: ManualActionRequest) -> ManualActionResponse:
                         result={"path": "ADB_FALLBACK", "fallback": fallback_read},
                         error=str(fallback_read.get("error") or "ADB timezone read failed"),
                     )
+                await _refresh_device_setting_values_snapshot_safe(selected_device_id)
                 return ManualActionResponse(
                     success=True,
                     action=action,
@@ -4334,11 +5297,23 @@ async def manual_action(request: ManualActionRequest) -> ManualActionResponse:
             return ManualActionResponse(success=False, action=action, error=reason)
         elif action == "SET_SETTING":
             setting_key = _normalize_setting_key(str(params.get("key") or params.get("setting_key") or ""))
+            requested_value = params.get("value") if "value" in params else None
+            if not setting_key:
+                reserved = {
+                    "app_id", "appId", "content", "content_id", "contentId", "parameters",
+                    "key", "setting_key", "settingKey", "value", "duration_ms", "durationMs",
+                    "key_code", "keyCode", "key_action", "requestId", "request_id", "status",
+                    "success", "error", "message", "topic", "timestamp", "captured_at",
+                    "device_id", "deviceId",
+                }
+                dynamic_keys = [k for k in params.keys() if str(k or "").strip() and str(k) not in reserved]
+                if len(dynamic_keys) == 1:
+                    setting_key = _normalize_setting_key(str(dynamic_keys[0]))
+                    requested_value = params.get(dynamic_keys[0])
             if not setting_key:
                 raise HTTPException(status_code=400, detail="key is required for SET_SETTING")
-            if "value" not in params:
+            if requested_value is None:
                 raise HTTPException(status_code=400, detail="value is required for SET_SETTING")
-            requested_value = params.get("value")
             selected_device_id = _resolve_selected_device_id(request.device_id)
             ops_resp = await dab.list_operations()
             supported_ops = [str(o) for o in ((ops_resp.data or {}).get("operations", []) if isinstance(getattr(ops_resp, "data", None), dict) else [])]
@@ -4380,6 +5355,7 @@ async def manual_action(request: ManualActionRequest) -> ManualActionResponse:
                 if resp.success:
                     if _is_timezone_setting_key(setting_key):
                         logger.info("Timezone setting path used: DAB direct operation succeeded key=%s", setting_key)
+                    await _refresh_device_setting_values_snapshot_safe(selected_device_id)
                     return ManualActionResponse(success=True, action=action, result=resp.data)
                 if not _is_dab_setting_operation_unavailable(resp):
                     return ManualActionResponse(success=False, action=action, result=resp.data)
@@ -4455,6 +5431,7 @@ async def manual_action(request: ManualActionRequest) -> ManualActionResponse:
                     error=str(fallback_result.get("error") or "Timezone verification failed").strip() or "Timezone verification failed",
                 )
 
+            await _refresh_device_setting_values_snapshot_safe(selected_device_id)
             return ManualActionResponse(
                 success=True,
                 action=action,
@@ -4641,3 +5618,156 @@ async def dab_apps() -> dict:
     """Return installed/launchable application list from device."""
     resp = await get_dab_client().list_apps()
     return {"success": resp.success, "result": resp.data}
+
+
+@app.get("/dab/voices", response_model=dict)
+async def dab_voices() -> dict:
+    """Return supported voice list from device."""
+    resp = await get_dab_client().list_voices()
+    return {"success": resp.success, "result": resp.data}
+
+
+@app.post("/dab/device-system-state/refresh", response_model=dict)
+async def dab_device_system_state_refresh(device_id: Optional[str] = None) -> dict:
+    """Force-refresh and persist the current device system state snapshot JSON."""
+    return await dab_device_system_state(device_id=device_id, refresh=True)
+
+
+@app.get("/dab/device-capability-status", response_model=dict)
+async def dab_device_capability_status(device_id: Optional[str] = None, refresh: bool = False) -> dict:
+    """Alias endpoint returning normalized per-device DAB capability/status JSON."""
+    return await dab_device_system_state(device_id=device_id, refresh=bool(refresh))
+
+
+@app.get("/dab/device-capability-status/raw", response_model=dict)
+async def dab_device_capability_status_raw(device_id: Optional[str] = None) -> dict:
+    """Return raw stored JSON snapshot for debugging."""
+    resolved_device_id = str(_resolve_selected_device_id(device_id) or "").strip()
+    if not _is_valid_discovered_device_id(resolved_device_id):
+        raise HTTPException(status_code=400, detail="No selected device available")
+    snapshot_path = _device_system_state_path(resolved_device_id)
+    if not snapshot_path.exists():
+        return {"success": False, "device_id": resolved_device_id, "error": "snapshot not found", "json_file": str(snapshot_path), "raw": {}}
+    try:
+        raw = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {"success": False, "device_id": resolved_device_id, "error": str(exc), "json_file": str(snapshot_path), "raw": {}}
+    return {"success": True, "device_id": resolved_device_id, "json_file": str(snapshot_path), "raw": raw if isinstance(raw, dict) else {}}
+
+
+@app.get("/dab/device-operations-grid", response_model=dict)
+async def dab_device_operations_grid(device_id: Optional[str] = None, refresh: bool = False) -> dict:
+    """Return operation rows with support enablement derived from operations/list."""
+    snapshot = await dab_device_system_state(device_id=device_id, refresh=bool(refresh))
+    rows = _build_operations_grid_rows(snapshot)
+    return {
+        "success": True,
+        "device_id": snapshot.get("device_id"),
+        "last_updated": snapshot.get("last_updated"),
+        "rows": rows,
+    }
+
+
+@app.get("/dab/device-current-settings", response_model=dict)
+async def dab_device_current_settings(device_id: Optional[str] = None, force: bool = False) -> dict:
+    """Return current setting values from system/settings/get using cache+single-flight protection."""
+    values = await dab_device_setting_values(device_id=device_id, force=bool(force))
+    return {
+        "success": bool(values.get("success", True)),
+        "device_id": values.get("device_id"),
+        "last_updated": values.get("captured_at"),
+        "count": int(values.get("count") or 0),
+        "failed": int(values.get("failed") or 0),
+        "current_setting_values": list(values.get("values") or []),
+    }
+
+
+class DABExecuteRequest(BaseModel):
+    operation: str
+    payload: Dict[str, Any] = Field(default_factory=dict)
+    device_id: Optional[str] = None
+
+
+@app.post("/dab/execute-request", response_model=dict)
+async def dab_execute_request(request: DABExecuteRequest) -> dict:
+    """Execute a frontend-provided DAB operation through existing manual action routing."""
+    operation = str(request.operation or "").strip()
+    if not operation:
+        raise HTTPException(status_code=400, detail="operation is required")
+
+    operation_lower = operation.lower()
+    payload = dict(request.payload or {})
+
+    action = ""
+    params: Dict[str, Any] = {}
+    if operation_lower == "operations/list":
+        action = "OPERATIONS_LIST"
+    elif operation_lower == "applications/list":
+        action = "APPLICATIONS_LIST"
+    elif operation_lower in {"application/launch", "applications/launch"}:
+        action = "LAUNCH_APP"
+        content_value = payload.get("content")
+        if content_value is None:
+            content_value = payload.get("content_id")
+        if content_value is None:
+            content_value = payload.get("contentId")
+        params = {
+            "app_id": payload.get("app_id") or payload.get("appId"),
+            "content": content_value,
+            "parameters": payload.get("parameters"),
+        }
+    elif operation_lower == "applications/launch-with-content":
+        action = "LAUNCH_APP"
+        params = {
+            "app_id": payload.get("app_id") or payload.get("appId"),
+            "content": payload.get("content") or payload.get("content_id") or payload.get("contentId"),
+        }
+    elif operation_lower in {"applications/get-state", "application/get-state"}:
+        action = "GET_STATE"
+        if payload.get("app_id") or payload.get("appId"):
+            params = {"app_id": payload.get("app_id") or payload.get("appId")}
+    elif operation_lower in {"application/exit", "applications/exit"}:
+        action = "EXIT_APP"
+        if payload.get("app_id") or payload.get("appId"):
+            params = {"app_id": payload.get("app_id") or payload.get("appId")}
+    elif operation_lower in {"voice/list", "voices/list"}:
+        action = "VOICE_LIST"
+    elif operation_lower == "system/settings/list":
+        action = "SETTINGS_LIST"
+    elif operation_lower == "system/settings/get":
+        action = "GET_SETTING"
+        params = {"key": payload.get("key") or payload.get("settingKey") or payload.get("setting_key")}
+    elif operation_lower == "system/settings/set":
+        action = "SET_SETTING"
+        params = dict(payload)
+        if payload.get("settingKey") and payload.get("value") is not None:
+            params = {"key": payload.get("settingKey"), "value": payload.get("value")}
+    elif operation_lower == "input/key/list":
+        action = "KEY_LIST"
+    elif operation_lower in {"input/key/press", "input/key-press"}:
+        action = "KEY_PRESS_CODE"
+        params = {"key_code": payload.get("key_code") or payload.get("keyCode")}
+    elif operation_lower in {"input/long-key-press", "input/long-key/press"}:
+        action = "LONG_KEY_PRESS"
+        params = {
+            "key_code": payload.get("key_code") or payload.get("keyCode"),
+            "duration_ms": payload.get("duration_ms") or payload.get("durationMs") or 1500,
+        }
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported operation mapping: {operation}")
+
+    manual = await manual_action(
+        ManualActionRequest(
+            action=action,
+            params=params,
+            device_id=request.device_id,
+        )
+    )
+    return {
+        "success": bool(manual.success),
+        "device_id": str(_resolve_selected_device_id(request.device_id) or ""),
+        "operation": operation,
+        "action": action,
+        "result": manual.result,
+        "error": manual.error,
+    }

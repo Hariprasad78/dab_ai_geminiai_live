@@ -26,9 +26,9 @@ def is_timezone_key(setting_key: Optional[str]) -> bool:
 
 def has_android_adb_fallback(operation: str, setting_key: Optional[str]) -> bool:
     op = str(operation or "").strip().lower()
-    if op not in {"system/settings/get", "system/settings/set", "system/settings/list"}:
+    if op not in {"system/settings/get", "system/settings/set"}:
         return False
-    return is_timezone_key(setting_key)
+    return bool(str(setting_key or "").strip())
 
 
 def resolve_execution_method(*, is_android: bool, dab_supported: bool, adb_fallback_available: bool) -> ExecutionDecision:

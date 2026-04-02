@@ -8,10 +8,12 @@ from pathlib import Path
 from typing import Any, Optional
 
 from vertex_live_dab_agent.android_timezone import (
+    get_setting_via_adb,
     get_timezone_via_adb,
     is_adb_device_online,
     list_timezones_via_adb,
     resolve_timezone_from_supported,
+    set_setting_via_adb,
     set_timezone_via_adb,
 )
 from vertex_live_dab_agent.artifacts.logger import ArtifactStore
@@ -67,7 +69,8 @@ class Orchestrator:
         self._capture = capture or ScreenCapture(self._dab)
         self._app_resolver = AppResolver(self._dab)
         self._validator = Validator()
-        self._max_steps = max_steps if max_steps is not None else self._config.max_steps_per_run
+        requested_ai_budget = max_steps if max_steps is not None else self._config.max_steps_per_run
+        self._max_ai_requests = max(1, min(50, int(requested_ai_budget)))
         self._capture_interval_steps = max(1, int(self._config.planner_capture_interval_steps))
         self._step_delay_seconds = max(0.0, float(self._config.planner_step_delay_seconds))
         self._run_timeout_seconds = max(1.0, float(getattr(self._config, "session_timeout_seconds", 120)))
@@ -104,7 +107,7 @@ class Orchestrator:
             "run_id": state.run_id,
             "goal": state.goal,
             "started_at": state.started_at,
-            "max_steps": self._max_steps,
+            "max_ai_requests": self._max_ai_requests,
             "mock_mode": self._config.dab_mock_mode,
         })
         logger.info("Run started: run_id=%s goal=%r", state.run_id, state.goal)
@@ -112,8 +115,11 @@ class Orchestrator:
 
         try:
             while state.status == RunStatus.RUNNING:
-                if state.step_count >= self._max_steps:
-                    state.finish(RunStatus.TIMEOUT, "Max steps exceeded")
+                if state.ai_request_count >= self._max_ai_requests:
+                    state.finish(
+                        RunStatus.TIMEOUT,
+                        f"Max AI requests exceeded ({self._max_ai_requests})",
+                    )
                     break
                 elapsed_s = asyncio.get_running_loop().time() - run_started_at
                 if elapsed_s >= self._run_timeout_seconds:
@@ -400,10 +406,12 @@ class Orchestrator:
             )
             vertex_prompt = str(getattr(self._planner, "last_vertex_prompt", "") or "").strip()
             if vertex_prompt:
+                state.ai_request_count += 1
                 state.record_ai_event(
                     {
                         "type": "gemini-request",
                         "step": step,
+                        "ai_request_count": state.ai_request_count,
                         "session_id": state.run_id,
                         "prompt": vertex_prompt,
                     }
@@ -851,6 +859,12 @@ class Orchestrator:
         last = state.narration_transcript[-1] if state.narration_transcript else None
         if last and str(last.get("tts_text", "")).strip() == text_n and int(last.get("step", -1)) == int(step):
             return
+        # broader dedupe for repeated boilerplate narration across nearby steps
+        # (prevents repeated GOAL/RECOVERY/STEP_START spam in transcript panel).
+        recent = state.narration_transcript[-20:] if state.narration_transcript else []
+        if any(str(item.get("tts_text", "")).strip() == text_n for item in recent):
+            if category in {"GOAL", "RECOVERY", "STEP_START"}:
+                return
         if category == "STEP_START" and last and str(last.get("tts_category", "")) == "STEP_START" and int(step) - int(last.get("step", 0)) <= 0:
             return
         state.record_narration_event(
@@ -903,6 +917,24 @@ class Orchestrator:
     async def _run_stuck_diagnosis_if_needed(self, state: RunState, step: int) -> list[dict]:
         if not self._is_stuck_navigation(state):
             return []
+
+        repeat_back_recovery = self._consecutive_recovery_decisions(state, "PRESS_BACK_AND_RECOVER")
+        if repeat_back_recovery >= 3:
+            state.record_ai_event(
+                {
+                    "type": "recovery-loop-blocked",
+                    "step": step,
+                    "reason": "Repeated identical recovery path detected",
+                    "decision": "PRESS_BACK_AND_RECOVER",
+                    "repeat_count": repeat_back_recovery,
+                }
+            )
+            return [
+                {
+                    "action": ActionType.FAILED.value,
+                    "params": {"reason": "stuck_recovery_loop_detected"},
+                }
+            ]
 
         if state.latest_screenshot_b64 is None:
             capture_result = await self._capture.capture()
@@ -1771,6 +1803,21 @@ class Orchestrator:
             return False
         return bool(adb_device_id)
 
+    @staticmethod
+    def _normalize_adb_setting_key(setting_key: Optional[str]) -> str:
+        key = str(setting_key or "").strip().lower()
+        return re.sub(r"[\s\-]+", "_", key)
+
+    def _can_attempt_android_setting_adb_fallback(
+        self,
+        state: RunState,
+        operation: str,
+        setting_key: Optional[str],
+    ) -> bool:
+        if not self._can_attempt_android_timezone_adb_fallback(state):
+            return False
+        return has_android_adb_fallback(operation, setting_key)
+
     def _resolve_setting_execution_method(self, state: RunState, operation: str, setting_key: Optional[str]) -> tuple[str, str]:
         snapshot = state.capability_snapshot or build_capability_snapshot(
             supported_operations=state.supported_operations,
@@ -1790,12 +1837,18 @@ class Orchestrator:
                 normalized_key = "timezone"
                 key_known_in_snapshot = has_setting(snapshot, normalized_key)
             else:
-                return "unsupported", str(key_norm.get("reason") or "setting key is unsupported")
+                if self._can_attempt_android_setting_adb_fallback(state, operation, normalized_key):
+                    normalized_key = self._normalize_adb_setting_key(normalized_key)
+                    key_known_in_snapshot = False
+                else:
+                    return "unsupported", str(key_norm.get("reason") or "setting key is unsupported")
 
         dab_supported = operation_supported_by_dab(state.supported_operations or [], operation)
         if not has_operation(snapshot, operation):
             dab_supported = False
-        if normalized_key and not key_known_in_snapshot:
+        # Do not hard-block direct DAB setting operations only because
+        # settings/list is incomplete; many devices still accept get/set.
+        if normalized_key and not key_known_in_snapshot and not has_operation(snapshot, operation):
             dab_supported = False
         if self._is_direct_setting_op_unavailable(state, operation, normalized_key):
             dab_supported = False
@@ -2781,6 +2834,8 @@ class Orchestrator:
                     setting_key = str(normalized_key.get("key") or setting_key)
                 elif self._is_timezone_setting_key(setting_key):
                     setting_key = "timezone"
+                elif self._can_attempt_android_setting_adb_fallback(state, "system/settings/get", setting_key):
+                    setting_key = self._normalize_adb_setting_key(setting_key)
                 else:
                     logger.warning("Blocked GET_SETTING before DAB: %s", normalized_key.get("reason"))
                     return False
@@ -2796,9 +2851,6 @@ class Orchestrator:
                 )
 
                 if method == "dab":
-                    if not has_setting(snapshot, setting_key):
-                        logger.warning("Blocked GET_SETTING before DAB: unsupported setting key=%s", setting_key)
-                        return False
                     _log_req(operation, {"key": setting_key})
                     resp = await self._dab.get_setting(setting_key)
                     _log_resp(operation, resp)
@@ -2832,16 +2884,27 @@ class Orchestrator:
                 if not online:
                     logger.warning("ADB read fallback unavailable for %s: %s", adb_device_id, online_detail)
                     return False
-                if not self._is_timezone_setting_key(setting_key):
-                    logger.warning("No Android ADB fallback mapping for GET_SETTING key=%s", setting_key)
-                    return False
-                fallback_read = await get_timezone_via_adb(adb_device_id)
+                if self._is_timezone_setting_key(setting_key):
+                    _log_req(
+                        "adb/system/settings/timezone/get",
+                        {"device_id": adb_device_id, "key": "timezone"},
+                    )
+                    fallback_read = await get_timezone_via_adb(adb_device_id)
+                    adb_op = "adb/system/settings/timezone/get"
+                else:
+                    _log_req(
+                        "adb/system/settings/get",
+                        {"device_id": adb_device_id, "key": setting_key},
+                    )
+                    fallback_read = await get_setting_via_adb(adb_device_id, setting_key)
+                    namespace = str(fallback_read.get("namespace") or "unknown")
+                    adb_op = f"adb/system/settings/{namespace}/{setting_key}/get"
                 success = bool(fallback_read.get("success"))
                 state.record_dab_event(
                     {
                         "type": "response",
                         "step": state.step_count,
-                        "op": "adb/system/settings/timezone/get",
+                        "op": adb_op,
                         "success": success,
                         "status": 200 if success else 500,
                         "data": fallback_read,
@@ -2857,6 +2920,8 @@ class Orchestrator:
                     setting_key = str(normalized_key.get("key") or setting_key)
                 elif self._is_timezone_setting_key(setting_key):
                     setting_key = "timezone"
+                elif self._can_attempt_android_setting_adb_fallback(state, "system/settings/set", setting_key):
+                    setting_key = self._normalize_adb_setting_key(setting_key)
                 else:
                     logger.warning("Blocked SET_SETTING before DAB: %s", normalized_key.get("reason"))
                     return False
@@ -2874,14 +2939,10 @@ class Orchestrator:
                 )
 
                 if method == "dab":
-                    if not has_setting(snapshot, setting_key):
-                        logger.warning("Blocked SET_SETTING before DAB: unsupported setting key=%s", setting_key)
-                        return False
-                    value_norm = normalize_setting_value(snapshot, setting_key, requested_value)
-                    if not bool(value_norm.get("success")):
-                        logger.warning("Blocked SET_SETTING before DAB: %s", value_norm.get("reason"))
-                        return False
-                    requested_value = value_norm.get("value")
+                    if has_setting(snapshot, setting_key):
+                        value_norm = normalize_setting_value(snapshot, setting_key, requested_value)
+                        if bool(value_norm.get("success")):
+                            requested_value = value_norm.get("value")
                     _log_req(operation, {"key": setting_key, "value": requested_value})
                     resp = await self._dab.set_setting(setting_key, requested_value)
                     _log_resp(operation, resp)
@@ -2943,8 +3004,37 @@ class Orchestrator:
                     return False
 
                 if not self._is_timezone_setting_key(setting_key):
-                    logger.warning("No Android ADB fallback mapping for SET_SETTING key=%s", setting_key)
-                    return False
+                    _log_req(
+                        "adb/system/settings/set",
+                        {
+                            "device_id": adb_device_id,
+                            "key": setting_key,
+                            "value": str(requested_value if requested_value is not None else ""),
+                        },
+                    )
+                    fallback_result = await set_setting_via_adb(adb_device_id, setting_key, requested_value)
+                    verified = bool(fallback_result.get("success"))
+                    state.record_dab_event(
+                        {
+                            "type": "response",
+                            "step": state.step_count,
+                            "op": f"adb/system/settings/{setting_key}",
+                            "success": verified,
+                            "status": 200 if verified else 500,
+                            "data": fallback_result,
+                        }
+                    )
+                    state.record_ai_event(
+                        {
+                            "type": "setting-adb-fallback-success" if verified else "setting-adb-fallback-failed",
+                            "step": state.step_count,
+                            "setting_key": setting_key,
+                            "requested_value": str(requested_value if requested_value is not None else ""),
+                            "observed_value": fallback_result.get("observed_value"),
+                            "error": fallback_result.get("error"),
+                        }
+                    )
+                    return verified
 
                 timezone_list = await list_timezones_via_adb(adb_device_id)
                 tz_to_apply = tz_value
@@ -2984,6 +3074,15 @@ class Orchestrator:
                         resolved.get("reason"),
                     )
 
+                _log_req(
+                    "adb/system/settings/timezone",
+                    {
+                        "device_id": adb_device_id,
+                        "key": "timezone",
+                        "requested_timezone": tz_value,
+                        "resolved_timezone": tz_to_apply,
+                    },
+                )
                 fallback_result = await set_timezone_via_adb(adb_device_id, tz_to_apply)
                 verified = bool(fallback_result.get("success"))
                 logger.info(
