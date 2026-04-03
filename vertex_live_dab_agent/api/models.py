@@ -266,6 +266,7 @@ class CaptureSourceResponse(BaseModel):
     enable_hdmi_capture: bool = True
     enable_camera_capture: bool = True
     selected_video_device: Optional[str] = None
+    rotation_degrees: int = 0
     preferred_video_kind: str = "auto"
     effective_preferred_kind: str = "auto"
     video_devices: List[str] = Field(default_factory=list)
@@ -278,4 +279,5 @@ class CaptureSelectRequest(BaseModel):
     source: Optional[str] = None
     device: Optional[str] = None
     preferred_kind: Optional[str] = None
+    rotation_degrees: Optional[int] = None
     persist: bool = True

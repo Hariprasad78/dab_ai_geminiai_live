@@ -74,6 +74,19 @@ async def test_health(client):
 
 
 @pytest.mark.asyncio
+async def test_system_metrics(client):
+    resp = await client.get("/system/metrics")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "timestamp" in data
+    assert "cpu_percent" in data
+    assert "ram_percent" in data
+    assert "cpu_temp_c" in data
+    assert "cpu_count" in data
+    assert "load_1m" in data
+
+
+@pytest.mark.asyncio
 async def test_config_summary(client):
     resp = await client.get("/config")
     assert resp.status_code == 200
@@ -127,6 +140,26 @@ async def test_capture_select_updates_source(client):
     data = resp.json()
     assert data["configured_source"] == "dab"
     assert data["preferred_video_kind"] == "camera"
+
+
+@pytest.mark.asyncio
+async def test_capture_select_updates_rotation(client):
+    resp = await client.post(
+        "/capture/select",
+        json={"rotation_degrees": 270, "persist": False},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["rotation_degrees"] == 270
+
+
+@pytest.mark.asyncio
+async def test_capture_select_rejects_invalid_rotation(client):
+    resp = await client.post(
+        "/capture/select",
+        json={"rotation_degrees": 45, "persist": False},
+    )
+    assert resp.status_code == 400
 
 
 @pytest.mark.asyncio
@@ -385,6 +418,35 @@ async def test_yts_live_command_logs(client, monkeypatch):
     assert data["status"] == "completed"
     assert data["command"] == "yts list --guided"
     assert data["logs"][0]["message"] == "loading"
+
+
+@pytest.mark.asyncio
+async def test_yts_live_command_record_audio_flag(client, monkeypatch):
+    async def fake_run(command_id, request):
+        state = api_mod._yts_live_commands[command_id]
+        state["status"] = "completed"
+        state["returncode"] = 0
+
+    monkeypatch.setattr(api_mod, "_run_yts_command_live", fake_run)
+
+    resp = await client.post(
+        "/yts/command/live",
+        json={
+            "command": "list",
+            "params": ["--guided"],
+            "record_video": True,
+            "record_audio": False,
+        },
+    )
+    assert resp.status_code == 200
+    command_id = resp.json()["command_id"]
+    state_resp = await client.get(f"/yts/command/live/{command_id}")
+    assert state_resp.status_code == 200
+    payload = state_resp.json()
+    assert payload["record_video"] is True
+    assert payload["record_audio"] is False
+    assert payload["video_recording_status"] == "pending"
+    assert payload["audio_recording_status"] == "disabled"
 
 
 @pytest.mark.asyncio

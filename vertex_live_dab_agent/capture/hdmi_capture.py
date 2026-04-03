@@ -11,6 +11,9 @@ import threading
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+_warned_missing_opencv = False
+_CAPTURE_WIDTH_720P = 1280
+_CAPTURE_HEIGHT_720P = 720
 
 
 class HdmiCaptureError(Exception):
@@ -52,17 +55,50 @@ class HdmiCaptureSession:
         height: int = 1080,
         fps: float = 30.0,
         fourcc: str = "MJPG",
+        rotation_degrees: int = 0,
     ) -> None:
         self.device = device
-        self.width = int(width)
-        self.height = int(height)
+        requested_width = int(width)
+        requested_height = int(height)
+        self.width = _CAPTURE_WIDTH_720P
+        self.height = _CAPTURE_HEIGHT_720P
+        if requested_width != self.width or requested_height != self.height:
+            logger.info(
+                "Forcing capture resolution to 720p: requested=%sx%s effective=%sx%s",
+                requested_width,
+                requested_height,
+                self.width,
+                self.height,
+            )
         self.fps = float(fps)
         self.fourcc = (fourcc or "MJPG").upper()
+        self.rotation_degrees = self.normalize_rotation_degrees(rotation_degrees)
 
         self._cv2: Optional[Any] = None
         self._cap: Optional[Any] = None
         self._lock = threading.Lock()
         self._last_error: Optional[str] = None
+
+    @staticmethod
+    def normalize_rotation_degrees(rotation_degrees: int) -> int:
+        value = int(rotation_degrees)
+        if value == 360:
+            return 0
+        if value not in {0, 90, 180, 270}:
+            raise ValueError("rotation_degrees must be one of: 0, 90, 180, 270, 360")
+        return value
+
+    def _rotate_frame(self, frame: Any) -> Any:
+        if self.rotation_degrees == 0:
+            return frame
+        cv2 = self._cv2 or _import_cv2()
+        if self.rotation_degrees == 90:
+            return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+        if self.rotation_degrees == 180:
+            return cv2.rotate(frame, cv2.ROTATE_180)
+        if self.rotation_degrees == 270:
+            return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        return frame
 
     def open(self) -> bool:
         """Open the configured V4L2 device and apply capture settings."""
@@ -90,7 +126,15 @@ class HdmiCaptureSession:
                 return True
             except Exception as exc:
                 self._last_error = str(exc)
-                logger.warning("HDMI open failed: %s", exc)
+                if isinstance(exc, HdmiCaptureError):
+                    global _warned_missing_opencv
+                    if not _warned_missing_opencv:
+                        logger.warning("HDMI open failed: %s", exc)
+                        _warned_missing_opencv = True
+                    else:
+                        logger.debug("HDMI open skipped: %s", exc)
+                else:
+                    logger.warning("HDMI open failed: %s", exc)
                 return False
 
     def _open_capture_with_fallbacks(self, cv2: Any) -> Optional[Any]:
@@ -146,7 +190,7 @@ class HdmiCaptureSession:
             if not ok or frame is None:
                 self._last_error = "Failed to read frame"
                 return None
-            return frame
+            return self._rotate_frame(frame)
 
     def capture_png_base64(self) -> Optional[str]:
         """Capture one frame and return as base64 PNG."""
@@ -185,6 +229,7 @@ class HdmiCaptureSession:
                 "width": float(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
                 "height": float(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
                 "fps": float(self._cap.get(cv2.CAP_PROP_FPS)),
+                "rotation_degrees": float(self.rotation_degrees),
             }
 
     @property

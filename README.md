@@ -228,10 +228,11 @@ pytest tests/ -v
 | `ENABLE_HDMI_CAPTURE` | `true` | Enable HDMI/capture-card video source probing and use |
 | `ENABLE_CAMERA_CAPTURE` | `true` | Enable camera/webcam video source probing and use |
 | `HDMI_CAPTURE_DEVICE` | `` | V4L2 path (e.g. `/dev/video2`); auto-detected when empty |
-| `HDMI_CAPTURE_WIDTH` | `1920` | Requested HDMI capture width |
-| `HDMI_CAPTURE_HEIGHT` | `1080` | Requested HDMI capture height |
+| `HDMI_CAPTURE_WIDTH` | `1280` | HDMI capture width (forced to 720p mode) |
+| `HDMI_CAPTURE_HEIGHT` | `720` | HDMI capture height (forced to 720p mode) |
 | `HDMI_CAPTURE_FPS` | `30.0` | Requested HDMI capture FPS |
 | `HDMI_CAPTURE_FOURCC` | `MJPG` | FOURCC codec (`MJPG` or `YUYV`) |
+| `HDMI_CAPTURE_ROTATION` | `0` | Camera frame rotation in degrees: `0`, `90`, `180`, `270`, or `360` |
 | `HDMI_STREAM_JPEG_QUALITY` | `80` | JPEG quality for browser live stream |
 | `HDMI_AUDIO_ENABLED` | `false` | Enable HDMI audio streaming endpoint |
 | `HDMI_AUDIO_INPUT_FORMAT` | `auto` | Audio input format: `auto`, `alsa`, or `pulse` |
@@ -248,10 +249,11 @@ pytest tests/ -v
 |---|---|---|
 | `GET` | `/` | Browser UI (static/index.html) |
 | `GET` | `/health` | Health check |
+| `GET` | `/system/metrics` | Host CPU/RAM/CPU-temperature/load metrics for live frontend performance graph |
 | `GET` | `/config` | Configuration summary (non-sensitive) |
-| `GET` | `/capture/source` | Capture source diagnostics (HDMI availability, active mode) |
+| `GET` | `/capture/source` | Capture source diagnostics (HDMI availability, active mode, rotation) |
 | `GET` | `/capture/devices` | List `/dev/video*` devices with kind/readability diagnostics |
-| `POST` | `/capture/select` | Select capture source and preferred/explicit video device |
+| `POST` | `/capture/select` | Select capture source, preferred/explicit video device, and rotation |
 | `GET` | `/audio/source` | HDMI audio diagnostics (ALSA devices, ffmpeg availability) |
 | `POST` | `/run/start` | Start a new automation run |
 | `GET` | `/runs` | List all runs (most-recent first) |

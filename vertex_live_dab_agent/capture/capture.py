@@ -72,6 +72,9 @@ class ScreenCapture:
         self._image_source = self._normalize_source(self._config.image_source)
         self._selected_video_device = (self._config.hdmi_capture_device or "").strip() or None
         self._preferred_video_kind = "auto"
+        self._rotation_degrees = self._normalize_rotation_degrees(
+            getattr(self._config, "hdmi_capture_rotation", 0)
+        )
         self._capture_pref_path = os.path.join(self._config.artifacts_base_dir, "capture_preference.json")
         self._load_capture_preference()
         self._capture_lock = asyncio.Lock()
@@ -82,6 +85,12 @@ class ScreenCapture:
         self._warned_dab_cooldown = False
         self._warned_no_hdmi = False
         self._hdmi = hdmi_session
+
+    def _normalize_rotation_degrees(self, rotation_degrees: Optional[int]) -> int:
+        try:
+            return HdmiCaptureSession.normalize_rotation_degrees(int(rotation_degrees or 0))
+        except Exception:
+            return 0
 
     def _normalize_source(self, source: str) -> str:
         s = (source or "auto").strip().lower()
@@ -115,6 +124,9 @@ class ScreenCapture:
             kind = str(data.get("preferred_kind") or "auto").strip().lower()
             if kind in {"auto", "hdmi", "camera"}:
                 self._preferred_video_kind = kind
+            rotation_degrees = data.get("rotation_degrees")
+            if rotation_degrees is not None:
+                self._rotation_degrees = self._normalize_rotation_degrees(rotation_degrees)
         except Exception as exc:
             logger.warning("Failed to load capture preference: %s", exc)
 
@@ -125,6 +137,7 @@ class ScreenCapture:
                 "source": self._image_source,
                 "device": self._selected_video_device,
                 "preferred_kind": self._preferred_video_kind,
+                "rotation_degrees": self._rotation_degrees,
             }
             with open(self._capture_pref_path, "w", encoding="utf-8") as fh:
                 json.dump(payload, fh, ensure_ascii=False, indent=2)
@@ -202,12 +215,14 @@ class ScreenCapture:
         source: Optional[str] = None,
         device: Optional[str] = None,
         preferred_kind: Optional[str] = None,
+        rotation_degrees: Optional[int] = None,
         persist: bool = True,
     ) -> Dict[str, Any]:
         """Set capture source/device preference and re-open capture session."""
         previous_selected_device = self._selected_video_device
         previous_source = self._image_source
         previous_kind = self._preferred_video_kind
+        previous_rotation = self._rotation_degrees
 
         if source is not None:
             raw = str(source).strip().lower()
@@ -244,10 +259,17 @@ class ScreenCapture:
                 raise ValueError("device must be an existing /dev/* path")
             self._selected_video_device = dev or None
 
+        if rotation_degrees is not None:
+            try:
+                self._rotation_degrees = HdmiCaptureSession.normalize_rotation_degrees(int(rotation_degrees))
+            except Exception:
+                raise ValueError("rotation_degrees must be one of: 0, 90, 180, 270, 360")
+
         selection_changed = (
             previous_selected_device != self._selected_video_device
             or previous_source != self._image_source
             or previous_kind != self._preferred_video_kind
+            or previous_rotation != self._rotation_degrees
         )
 
         self.close()
@@ -336,6 +358,7 @@ class ScreenCapture:
                 height=self._config.hdmi_capture_height,
                 fps=self._config.hdmi_capture_fps,
                 fourcc=self._config.hdmi_capture_fourcc,
+                rotation_degrees=self._rotation_degrees,
             )
 
             if device == get_camera_path("adt4"):
@@ -485,6 +508,7 @@ class ScreenCapture:
             "hdmi_available": hdmi_available,
             "hdmi_device": self._hdmi.device if self._hdmi else None,
             "hdmi_info": hdmi_info,
+            "rotation_degrees": self._rotation_degrees,
             "enable_hdmi_capture": bool(self._config.enable_hdmi_capture),
             "enable_camera_capture": bool(self._config.enable_camera_capture),
             "selected_video_device": self._selected_video_device,

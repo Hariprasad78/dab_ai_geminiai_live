@@ -233,6 +233,33 @@
     .kpi { background: rgba(2, 6, 23, 0.52); border:1px solid #284268; border-radius:0.65rem; padding:0.65rem; }
     .kpi .k { color:#93c5fd; font-size:0.7rem; }
     .kpi .v { font-size:1rem; font-weight:700; margin-top:0.2rem; }
+    .perf-card { grid-column: 1 / -1; }
+    .perf-header { display:flex; justify-content:space-between; align-items:center; gap:0.75rem; margin-bottom:0.75rem; flex-wrap:wrap; }
+    .perf-stats { display:flex; gap:0.55rem; flex-wrap:wrap; }
+    .perf-chip { border:1px solid #2d476b; border-radius:999px; padding:0.3rem 0.6rem; background:#0b1730; font-size:0.78rem; color:#c7d2fe; }
+    .perf-chip strong { color:#f8fafc; }
+    .perf-canvas-wrap {
+      position: relative;
+      border: 1px solid #223f68;
+      border-radius: 0.8rem;
+      background: linear-gradient(180deg, rgba(2,6,23,0.65), rgba(2,6,23,0.92));
+      overflow: hidden;
+      min-height: 210px;
+    }
+    .perf-canvas-wrap::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background-image: linear-gradient(rgba(96,165,250,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(96,165,250,0.06) 1px, transparent 1px);
+      background-size: 28px 28px;
+    }
+    #perf-canvas { width:100%; height:220px; display:block; position:relative; z-index:1; }
+    .perf-legend { margin-top:0.55rem; display:flex; gap:0.75rem; flex-wrap:wrap; font-size:0.76rem; color:#93c5fd; }
+    .perf-dot { width:10px; height:10px; border-radius:999px; display:inline-block; margin-right:0.35rem; vertical-align:middle; }
+    .perf-dot.cpu { background:#22d3ee; box-shadow:0 0 8px rgba(34,211,238,0.65); }
+    .perf-dot.ram { background:#f472b6; box-shadow:0 0 8px rgba(244,114,182,0.65); }
+    .perf-dot.temp { background:#fb923c; box-shadow:0 0 8px rgba(251,146,60,0.65); }
     .quick-nav { grid-column:1 / -1; display:flex; gap:0.5rem; flex-wrap:wrap; }
     .quick-nav button { background:#132744; border:1px solid #27466f; color:#bae6fd; }
     .quick-nav button:hover { background:#1b365c; }
@@ -342,6 +369,30 @@
         <div class="kpi"><div class="k">Active Run</div><div class="v" id="kpi-run">None</div></div>
         <div class="kpi"><div class="k">Run Status</div><div class="v" id="kpi-status">--</div></div>
       </div>
+    </div>
+  </div>
+
+  <div class="card perf-card" id="perf-card">
+    <div class="perf-header">
+      <div>
+        <h2>Host Performance</h2>
+        <div class="subtitle">Live CPU and RAM usage graph</div>
+      </div>
+      <div class="perf-stats">
+        <span class="perf-chip">CPU <strong id="perf-cpu-value">--%</strong></span>
+        <span class="perf-chip">RAM <strong id="perf-ram-value">--%</strong></span>
+        <span class="perf-chip">CPU Temp <strong id="perf-temp-value">--°C</strong></span>
+        <span class="perf-chip">Load(1m) <strong id="perf-load1-value">--</strong></span>
+      </div>
+    </div>
+    <div class="perf-canvas-wrap">
+      <canvas id="perf-canvas" width="1200" height="220"></canvas>
+    </div>
+    <div class="perf-legend">
+      <span><span class="perf-dot cpu"></span>CPU usage %</span>
+      <span><span class="perf-dot ram"></span>RAM usage %</span>
+      <span><span class="perf-dot temp"></span>CPU temp °C</span>
+      <span id="perf-updated">Updated: --</span>
     </div>
   </div>
 
@@ -798,6 +849,7 @@
   let pollInterval = null;
   let hdmiStreamRunning = false;
   let hdmiAudioRunning = false;
+  let hdmiAudioLatencyTimer = null;
   let captureSelectionBusy = false;
   let hdmiStreamTransitionToken = 0;
   let lastNarrationIdx = -1;
@@ -815,6 +867,8 @@
   let dabOperationCards = [];
   let settingsValueRefreshTimer = null;
   let settingsValueRefreshDebounceTimer = null;
+  const perfHistoryMaxPoints = 120;
+  const perfHistory = { cpu: [], ram: [], temp: [] };
 
   function normalizeApiBase(v) {
     const s = (v || '').trim();
@@ -2393,6 +2447,125 @@
     setHdmiStreamOverlay('');
   }
 
+  function _pushPerfPoint(seriesName, value) {
+    const series = perfHistory[seriesName];
+    if (!Array.isArray(series)) return;
+    series.push(Number.isFinite(value) ? Number(value) : null);
+    if (series.length > perfHistoryMaxPoints) series.shift();
+  }
+
+  function _drawPerfLine(ctx, points, color, width, height) {
+    if (!Array.isArray(points) || points.length < 2) return;
+
+    const stepX = width / Math.max(1, perfHistoryMaxPoints - 1);
+    let started = false;
+    ctx.beginPath();
+    ctx.lineWidth = 2.6;
+    ctx.strokeStyle = color;
+
+    for (let i = 0; i < points.length; i += 1) {
+      const v = points[i];
+      if (!Number.isFinite(v)) {
+        started = false;
+        continue;
+      }
+      const x = i * stepX;
+      const y = height - (Math.max(0, Math.min(100, v)) / 100) * height;
+      if (!started) {
+        ctx.moveTo(x, y);
+        started = true;
+      } else {
+        ctx.lineTo(x, y);
+      }
+    }
+    ctx.stroke();
+  }
+
+  function _drawPerfGrid(ctx, width, height) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(125, 211, 252, 0.16)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 4; i += 1) {
+      const y = (i / 4) * height;
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(width, y);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawPerfGraph() {
+    const canvas = document.getElementById('perf-canvas');
+    if (!canvas) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const cssWidth = Math.max(320, Math.floor(canvas.clientWidth || 1200));
+    const cssHeight = Math.max(180, Math.floor(canvas.clientHeight || 220));
+    const targetWidth = Math.floor(cssWidth * dpr);
+    const targetHeight = Math.floor(cssHeight * dpr);
+    if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+      canvas.width = targetWidth;
+      canvas.height = targetHeight;
+    }
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.scale(dpr, dpr);
+
+    const width = cssWidth;
+    const height = cssHeight;
+    const bg = ctx.createLinearGradient(0, 0, 0, height);
+    bg.addColorStop(0, 'rgba(2, 6, 23, 0.20)');
+    bg.addColorStop(1, 'rgba(2, 6, 23, 0.52)');
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, width, height);
+
+    _drawPerfGrid(ctx, width, height);
+    _drawPerfLine(ctx, perfHistory.cpu, '#22d3ee', width, height);
+    _drawPerfLine(ctx, perfHistory.ram, '#f472b6', width, height);
+    _drawPerfLine(ctx, perfHistory.temp, '#fb923c', width, height);
+  }
+
+  async function refreshSystemMetrics() {
+    try {
+      const data = await api('/system/metrics');
+      const cpu = Number(data.cpu_percent);
+      const ram = Number(data.ram_percent);
+      const temp = Number(data.cpu_temp_c);
+
+      _pushPerfPoint('cpu', Number.isFinite(cpu) ? cpu : null);
+      _pushPerfPoint('ram', Number.isFinite(ram) ? ram : null);
+      _pushPerfPoint('temp', Number.isFinite(temp) ? temp : null);
+
+      const cpuEl = document.getElementById('perf-cpu-value');
+      const ramEl = document.getElementById('perf-ram-value');
+      const tempEl = document.getElementById('perf-temp-value');
+      const loadEl = document.getElementById('perf-load1-value');
+      const updatedEl = document.getElementById('perf-updated');
+      if (cpuEl) cpuEl.textContent = Number.isFinite(cpu) ? `${cpu.toFixed(1)}%` : '--%';
+      if (ramEl) ramEl.textContent = Number.isFinite(ram) ? `${ram.toFixed(1)}%` : '--%';
+      if (tempEl) tempEl.textContent = Number.isFinite(temp) ? `${temp.toFixed(1)}°C` : '--°C';
+      if (loadEl) {
+        const load = Number(data.load_1m);
+        loadEl.textContent = Number.isFinite(load) ? load.toFixed(2) : '--';
+      }
+      if (updatedEl) {
+        const ts = data.timestamp ? new Date(data.timestamp) : null;
+        updatedEl.textContent = `Updated: ${ts && !Number.isNaN(ts.getTime()) ? ts.toLocaleTimeString() : '--'}`;
+      }
+
+      drawPerfGraph();
+    } catch (_) {
+      _pushPerfPoint('cpu', null);
+      _pushPerfPoint('ram', null);
+      _pushPerfPoint('temp', null);
+      drawPerfGraph();
+    }
+  }
+
   async function toggleAudioStream() {
     if (hdmiAudioRunning) stopAudioStream();
     else await startAudioStream();
@@ -2424,6 +2597,7 @@
       `<audio id="audio-stream-player" controls autoplay playsinline src="${url}"></audio>`;
     const p = document.getElementById('audio-stream-player');
     if (p) {
+      p.preload = 'none';
       p.addEventListener('error', () => {
         stopAudioStream();
         if (resultEl) {
@@ -2431,6 +2605,22 @@
           resultEl.style.color = '#f87171';
         }
       });
+      if (hdmiAudioLatencyTimer) {
+        clearInterval(hdmiAudioLatencyTimer);
+        hdmiAudioLatencyTimer = null;
+      }
+      hdmiAudioLatencyTimer = setInterval(() => {
+        try {
+          if (!p || p.paused || !p.seekable || p.seekable.length === 0) return;
+          const liveEdge = p.seekable.end(p.seekable.length - 1);
+          const drift = liveEdge - p.currentTime;
+          if (Number.isFinite(drift) && drift > 0.45) {
+            p.currentTime = Math.max(0, liveEdge - 0.08);
+          }
+        } catch (_) {
+          // ignore browsers that do not expose seekable ranges for this stream
+        }
+      }, 300);
       try {
         await p.play();
       } catch (_) {
@@ -2447,6 +2637,10 @@
   }
 
   function stopAudioStream() {
+    if (hdmiAudioLatencyTimer) {
+      clearInterval(hdmiAudioLatencyTimer);
+      hdmiAudioLatencyTimer = null;
+    }
     const p = document.getElementById('audio-stream-player');
     if (p) {
       try { p.pause(); } catch (_) {}
@@ -3349,6 +3543,7 @@
     output += `<strong>Last Updated:</strong> ${escHtml(data.updated_at || '(unknown)')}\n\n`;
     if (data.record_video) {
       output += `<strong>Video Recording:</strong> ${escHtml(data.video_recording_status || 'pending')}\n`;
+      output += `<strong>Audio Recording:</strong> ${escHtml(data.audio_recording_status || 'disabled')}\n`;
       if (data.video_file_name) {
         output += `<strong>Video Artifact:</strong> ${escHtml(data.video_file_name)}\n`;
       }
@@ -3685,6 +3880,9 @@
       <label style="margin-top:1rem;"><input type="checkbox" id="yts-arg-test-record-video" style="width:auto; margin-right:0.45rem;"> Record TV video while this YTS job runs</label>
       <div class="yts-hint">Stores a per-job video artifact when the active capture source supports recording. The terminal transcript is also saved and can be downloaded after the run.</div>
 
+      <label style="margin-top:0.65rem;"><input type="checkbox" id="yts-arg-test-record-audio" style="width:auto; margin-right:0.45rem;" checked> Include HDMI audio in recorded video</label>
+      <div class="yts-hint">When enabled, recording tries to include ALSA/Pulse audio in the same MP4 artifact.</div>
+
       <label style="margin-top:1rem;"><input type="checkbox" id="yts-arg-test-ui-navigation-allowed" style="width:auto; margin-right:0.45rem;"> Allow UI navigation fallback</label>
       <div class="yts-hint">Use UI navigation fallback when direct operations are unavailable.</div>
 
@@ -3820,6 +4018,7 @@
       const jsonOutput = document.getElementById('yts-arg-test-json-output').value.trim();
       body.interactive_ai = document.getElementById('yts-arg-test-interactive-ai').checked;
       body.record_video = document.getElementById('yts-arg-test-record-video').checked;
+      body.record_audio = document.getElementById('yts-arg-test-record-audio')?.checked !== false;
       body.ui_navigation_allowed = !!document.getElementById('yts-arg-test-ui-navigation-allowed')?.checked;
 
       if (!resolvedIds.length && !filterTokens.length && !guided && !extraArgs.length) {
@@ -4535,6 +4734,7 @@
       loadCaptureSource(),
       refreshCaptureDevices(),
       refreshStreamDiagnostics(),
+      refreshSystemMetrics(),
       loadYtsTestCatalog(),
     ]);
     await loadYtsCommandHistory();
@@ -4549,6 +4749,8 @@
   setInterval(loadCaptureSource, 10000);
   setInterval(refreshCaptureDevices, 15000);
   setInterval(refreshStreamDiagnostics, 20000);
+  setInterval(refreshSystemMetrics, 1000);
+  window.addEventListener('resize', drawPerfGraph);
 </script>
 </body>
 </html>

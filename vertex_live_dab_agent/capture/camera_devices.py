@@ -6,7 +6,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +21,10 @@ _CAMERA_LABELS = {
     "sonytv": "Sony TV",
     "kirkwood": "Kirkwood",
 }
+
+_cached_config: Optional[Dict[str, str]] = None
+_cached_config_path: Optional[Path] = None
+_warned_missing_config_path: Optional[Path] = None
 
 
 def _default_camera_config_path() -> Path:
@@ -37,9 +41,18 @@ def _default_camera_config_path() -> Path:
 
 
 def _load_camera_device_config() -> Dict[str, str]:
+    global _cached_config, _cached_config_path, _warned_missing_config_path
+
     path = _default_camera_config_path()
+    if _cached_config is not None and _cached_config_path == path:
+        return dict(_cached_config)
+
     if not path.exists():
-        logger.warning("camera_devices.json not found at %s", path)
+        if _warned_missing_config_path != path:
+            logger.warning("camera_devices.json not found at %s", path)
+            _warned_missing_config_path = path
+        _cached_config = {}
+        _cached_config_path = path
         return {}
 
     try:
@@ -50,6 +63,8 @@ def _load_camera_device_config() -> Dict[str, str]:
 
     if not isinstance(raw, dict):
         logger.error("Invalid camera_devices.json at %s: root must be an object", path)
+        _cached_config = {}
+        _cached_config_path = path
         return {}
 
     out: Dict[str, str] = {}
@@ -57,6 +72,9 @@ def _load_camera_device_config() -> Dict[str, str]:
         value = raw.get(key)
         if isinstance(value, str) and value.strip():
             out[key] = value.strip()
+    _cached_config = out
+    _cached_config_path = path
+    _warned_missing_config_path = None
     return out
 
 

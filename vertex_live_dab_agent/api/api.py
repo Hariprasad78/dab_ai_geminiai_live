@@ -14,6 +14,7 @@ import json
 import sqlite3
 import threading
 import time
+import glob
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -97,6 +98,7 @@ _YTS_INTERACTIVE_CAPTURE_DELAY_SECONDS = 0.9
 _YTS_LIVE_VISUAL_MONITOR_INTERVAL_SECONDS = 1.0
 _YTS_LIVE_VISUAL_MONITOR_STALE_SECONDS = 2.5
 _YTS_LIVE_VISUAL_HISTORY_LIMIT = 60
+_last_cpu_times_snapshot: Optional[tuple[float, float]] = None
 
 app = FastAPI(
     title="Vertex Live DAB Agent",
@@ -200,6 +202,112 @@ def _shared_ai_prompt_preamble() -> str:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _read_linux_cpu_times() -> Optional[tuple[float, float]]:
+    """Return (total, idle) CPU times from /proc/stat when available."""
+    try:
+        with open("/proc/stat", "r", encoding="utf-8") as fh:
+            first = fh.readline().strip()
+        if not first.startswith("cpu "):
+            return None
+        parts = [float(x) for x in first.split()[1:] if x]
+        if len(parts) < 4:
+            return None
+        idle = parts[3] + (parts[4] if len(parts) > 4 else 0.0)
+        total = float(sum(parts))
+        return total, idle
+    except Exception:
+        return None
+
+
+def _sample_cpu_percent() -> Optional[float]:
+    """Return CPU usage percent using delta between /proc/stat snapshots."""
+    global _last_cpu_times_snapshot
+    now = _read_linux_cpu_times()
+    if not now:
+        return None
+
+    if _last_cpu_times_snapshot is None:
+        _last_cpu_times_snapshot = now
+        return None
+
+    prev_total, prev_idle = _last_cpu_times_snapshot
+    total, idle = now
+    _last_cpu_times_snapshot = now
+
+    total_delta = total - prev_total
+    idle_delta = idle - prev_idle
+    if total_delta <= 0:
+        return None
+
+    busy = max(0.0, min(1.0, 1.0 - (idle_delta / total_delta)))
+    return round(busy * 100.0, 2)
+
+
+def _sample_memory_percent() -> Optional[float]:
+    """Return RAM usage percent from /proc/meminfo when available."""
+    try:
+        values: Dict[str, float] = {}
+        with open("/proc/meminfo", "r", encoding="utf-8") as fh:
+            for line in fh:
+                if ":" not in line:
+                    continue
+                key, raw = line.split(":", 1)
+                token = raw.strip().split()[0]
+                values[key.strip()] = float(token)
+
+        total = float(values.get("MemTotal", 0.0))
+        available = float(values.get("MemAvailable", 0.0))
+        if total <= 0:
+            return None
+
+        used_ratio = max(0.0, min(1.0, (total - available) / total))
+        return round(used_ratio * 100.0, 2)
+    except Exception:
+        return None
+
+
+def _sample_cpu_temperature_c() -> Optional[float]:
+    """Return CPU temperature in Celsius from Linux thermal zones."""
+    try:
+        candidates: List[tuple[int, float]] = []
+        for zone_dir in sorted(glob.glob("/sys/class/thermal/thermal_zone*")):
+            temp_path = os.path.join(zone_dir, "temp")
+            type_path = os.path.join(zone_dir, "type")
+            if not os.path.exists(temp_path):
+                continue
+
+            try:
+                raw_temp = float(Path(temp_path).read_text(encoding="utf-8").strip())
+            except Exception:
+                continue
+
+            # Kernel usually reports millidegrees C. Fall back for plain C.
+            temp_c = raw_temp / 1000.0 if raw_temp > 1000.0 else raw_temp
+            if temp_c <= 0.0 or temp_c > 150.0:
+                continue
+
+            zone_type = ""
+            try:
+                zone_type = Path(type_path).read_text(encoding="utf-8").strip().lower()
+            except Exception:
+                pass
+
+            priority = 0
+            if any(token in zone_type for token in ("cpu", "x86_pkg", "package", "soc", "core")):
+                priority = 2
+            elif zone_type:
+                priority = 1
+            candidates.append((priority, temp_c))
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return round(float(candidates[0][1]), 2)
+    except Exception:
+        return None
 
 
 def _device_context_path() -> Path:
@@ -1289,7 +1397,9 @@ def _new_yts_live_state(command_id: str, interactive_ai: bool = False) -> Dict[s
         "last_visual_analysis_at": None,
         "artifacts_dir": artifacts_dir,
         "record_video": False,
+        "record_audio": False,
         "video_recording_status": "disabled",
+        "audio_recording_status": "disabled",
         "video_file_name": None,
         "video_file_path": None,
         "terminal_log_name": f"yts-terminal-log-{command_id}.txt",
@@ -1319,6 +1429,7 @@ def _normalize_yts_live_state(state: Dict[str, Any]) -> Dict[str, Any]:
     normalized["latest_visual_analysis"] = dict(normalized.get("latest_visual_analysis") or {})
     normalized["visual_monitor_history"] = list(normalized.get("visual_monitor_history") or [])
     normalized["record_video"] = bool(normalized.get("record_video"))
+    normalized["record_audio"] = bool(normalized.get("record_audio"))
     artifacts_dir = Path(str(normalized.get("artifacts_dir") or _get_yts_live_artifacts_dir(command_id)))
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     normalized["artifacts_dir"] = str(artifacts_dir)
@@ -1563,6 +1674,25 @@ async def _start_yts_video_recording(command_id: str) -> None:
 
     artifacts_dir = Path(str(state.get("artifacts_dir")))
     output_path = artifacts_dir / f"yts-video-{command_id}.mp4"
+
+    include_audio = bool(state.get("record_audio"))
+    audio_format: Optional[str] = None
+    audio_device: Optional[str] = None
+    if include_audio:
+        resolved_format, resolved_device = _resolve_audio_input()
+        if resolved_format in {"alsa", "pulse"} and resolved_device:
+            audio_format = resolved_format
+            audio_device = resolved_device
+            state["audio_recording_status"] = "recording"
+        else:
+            state["audio_recording_status"] = "unavailable"
+            state["logs"].append(
+                {
+                    "stream": "stderr",
+                    "message": "Audio recording unavailable: no supported audio input source (alsa/pulse) found",
+                }
+            )
+
     command = [
         "ffmpeg",
         "-y",
@@ -1574,15 +1704,53 @@ async def _start_yts_video_recording(command_id: str) -> None:
         "5",
         "-i",
         "-",
-        "-an",
+    ]
+
+    if audio_format and audio_device:
+        command.extend(
+            [
+                "-thread_queue_size",
+                "512",
+                "-f",
+                audio_format,
+                "-i",
+                audio_device,
+            ]
+        )
+
+    command.extend(
+        [
         "-c:v",
         "libx264",
         "-preset",
         "veryfast",
         "-pix_fmt",
         "yuv420p",
+        ]
+    )
+
+    if audio_format and audio_device:
+        command.extend(
+            [
+                "-c:a",
+                "aac",
+                "-b:a",
+                "128k",
+                "-ac",
+                str(get_config().hdmi_audio_channels),
+                "-ar",
+                str(get_config().hdmi_audio_sample_rate),
+                "-shortest",
+            ]
+        )
+    else:
+        command.extend(["-an"])
+
+    command.extend(
+        [
         str(output_path),
-    ]
+        ]
+    )
     try:
         process = await asyncio.create_subprocess_exec(
             *command,
@@ -1605,8 +1773,24 @@ async def _start_yts_video_recording(command_id: str) -> None:
             "stream": "system",
             "message": f"Started video recording using active capture session: {shlex.join(command)}",
         })
+        if include_audio and not (audio_format and audio_device):
+            state["logs"].append(
+                {
+                    "stream": "system",
+                    "message": "Continuing with video-only recording because audio input could not be resolved",
+                }
+            )
+        if include_audio and audio_format and audio_device:
+            state["logs"].append(
+                {
+                    "stream": "system",
+                    "message": f"Recording audio input in performance video: format={audio_format} device={audio_device}",
+                }
+            )
     except Exception as exc:
         state["video_recording_status"] = "failed"
+        if include_audio:
+            state["audio_recording_status"] = "failed"
         state["logs"].append({"stream": "stderr", "message": f"Failed to start video recording: {exc}"})
 
     _write_yts_terminal_log_artifact(state)
@@ -1654,8 +1838,12 @@ async def _stop_yts_video_recording(command_id: str) -> None:
             state["video_recording_status"] = "completed"
             state["video_file_name"] = output_path.name
             state["video_file_path"] = str(output_path)
+            if state.get("record_audio") and state.get("audio_recording_status") == "recording":
+                state["audio_recording_status"] = "completed"
         elif state.get("record_video"):
             state["video_recording_status"] = "failed"
+            if state.get("record_audio") and state.get("audio_recording_status") in {"recording", "pending"}:
+                state["audio_recording_status"] = "failed"
         _write_yts_terminal_log_artifact(state)
         _persist_yts_live_state(state)
 
@@ -1725,7 +1913,9 @@ def _summarize_yts_live_state(state: Dict[str, Any]) -> Dict[str, Any]:
         "status": normalized.get("status"),
         "interactive_ai": normalized.get("interactive_ai"),
         "record_video": normalized.get("record_video"),
+        "record_audio": normalized.get("record_audio"),
         "video_recording_status": normalized.get("video_recording_status"),
+        "audio_recording_status": normalized.get("audio_recording_status"),
         "video_file_name": normalized.get("video_file_name"),
         "result_file_name": normalized.get("result_file_name"),
         "awaiting_input": normalized.get("awaiting_input"),
@@ -3008,6 +3198,8 @@ async def _run_yts_command_live(command_id: str, request: "YtsCommandRequest") -
             state = _get_yts_live_state(command_id) or state
             if state.get("video_recording_status") == "recording":
                 state["video_recording_status"] = "stopped"
+            if state.get("record_audio") and state.get("audio_recording_status") == "recording":
+                state["audio_recording_status"] = "stopped"
         await asyncio.to_thread(_write_yts_terminal_log_artifact, state)
         _persist_yts_live_state(state)
         return
@@ -3040,8 +3232,12 @@ async def _run_yts_command_live(command_id: str, request: "YtsCommandRequest") -
             video_path = Path(str(video_path_raw)) if video_path_raw else None
             if recording_started and video_path and video_path.exists():
                 state["video_recording_status"] = "completed"
+                if state.get("record_audio") and state.get("audio_recording_status") == "recording":
+                    state["audio_recording_status"] = "completed"
             elif state.get("video_recording_status") == "recording":
                 state["video_recording_status"] = "stopped"
+                if state.get("record_audio") and state.get("audio_recording_status") == "recording":
+                    state["audio_recording_status"] = "stopped"
         await asyncio.to_thread(_write_yts_terminal_log_artifact, state)
         _persist_yts_live_state(state)
     except asyncio.CancelledError:
@@ -3057,8 +3253,12 @@ async def _run_yts_command_live(command_id: str, request: "YtsCommandRequest") -
             video_path = Path(str(video_path_raw)) if video_path_raw else None
             if recording_started and video_path and video_path.exists():
                 state["video_recording_status"] = "completed"
+                if state.get("record_audio") and state.get("audio_recording_status") == "recording":
+                    state["audio_recording_status"] = "completed"
             elif state.get("video_recording_status") == "recording":
                 state["video_recording_status"] = "stopped"
+                if state.get("record_audio") and state.get("audio_recording_status") == "recording":
+                    state["audio_recording_status"] = "stopped"
         await asyncio.to_thread(_write_yts_terminal_log_artifact, state)
         _persist_yts_live_state(state)
         raise
@@ -3949,6 +4149,33 @@ async def health() -> HealthResponse:
     return HealthResponse(status="ok", mock_mode=config.dab_mock_mode)
 
 
+@app.get("/system/metrics", response_model=dict)
+async def system_metrics() -> dict:
+    """Lightweight host metrics for frontend live charts."""
+    cpu_percent = _sample_cpu_percent()
+    ram_percent = _sample_memory_percent()
+    cpu_temp_c = _sample_cpu_temperature_c()
+
+    load_1m: Optional[float] = None
+    load_5m: Optional[float] = None
+    load_15m: Optional[float] = None
+    try:
+        load_1m, load_5m, load_15m = os.getloadavg()
+    except Exception:
+        pass
+
+    return {
+        "timestamp": _utc_now_iso(),
+        "cpu_percent": cpu_percent,
+        "ram_percent": ram_percent,
+        "cpu_temp_c": cpu_temp_c,
+        "cpu_count": os.cpu_count(),
+        "load_1m": round(float(load_1m), 3) if load_1m is not None else None,
+        "load_5m": round(float(load_5m), 3) if load_5m is not None else None,
+        "load_15m": round(float(load_15m), 3) if load_15m is not None else None,
+    }
+
+
 @app.get("/stream-status")
 async def stream_status() -> dict:
     """Compatibility status endpoint for preview clients."""
@@ -4311,6 +4538,7 @@ async def capture_devices() -> dict:
     return {
         "configured_source": status.get("configured_source"),
         "selected_video_device": status.get("selected_video_device"),
+        "rotation_degrees": status.get("rotation_degrees", 0),
         "preferred_video_kind": status.get("preferred_video_kind"),
         "devices": status.get("video_device_details", []),
     }
@@ -4324,6 +4552,7 @@ async def capture_select(request: CaptureSelectRequest) -> CaptureSourceResponse
             source=request.source,
             device=request.device,
             preferred_kind=request.preferred_kind,
+            rotation_degrees=request.rotation_degrees,
             persist=bool(request.persist),
         )
     except ValueError as exc:
@@ -4516,6 +4745,7 @@ class YtsCommandRequest(BaseModel):
     output_file: Optional[str] = None
     interactive_ai: bool = False
     record_video: bool = False
+    record_audio: bool = True
     device_id: Optional[str] = None
 
 
@@ -4546,7 +4776,9 @@ async def yts_live_command(request: YtsCommandRequest) -> dict:
     state = _new_yts_live_state(command_id, bool(request.interactive_ai))
     state["device_id"] = selected_device_id
     state["record_video"] = bool(request.record_video)
+    state["record_audio"] = bool(request.record_video and request.record_audio)
     state["video_recording_status"] = "pending" if request.record_video else "disabled"
+    state["audio_recording_status"] = "pending" if bool(request.record_video and request.record_audio) else "disabled"
     _yts_live_commands[command_id] = state
     _write_yts_terminal_log_artifact(state)
     _persist_yts_live_state(state)
@@ -5079,14 +5311,41 @@ async def stream_audio() -> StreamingResponse:
     if not input_format or not device:
         raise HTTPException(status_code=404, detail="No supported audio input source (alsa/pulse) found")
 
-    session = HdmiAudioStreamSession(
-        device=device,
-        input_format=input_format,
-        sample_rate=c.hdmi_audio_sample_rate,
-        channels=c.hdmi_audio_channels,
-        bitrate=c.hdmi_audio_bitrate,
-    )
-    started = session.start()
+    attempts: List[tuple[int, int]] = [(int(c.hdmi_audio_channels), int(c.hdmi_audio_sample_rate))]
+    if int(c.hdmi_audio_channels) != 1:
+        attempts.append((1, int(c.hdmi_audio_sample_rate)))
+
+    seen_attempts: set[tuple[int, int]] = set()
+    ordered_attempts: List[tuple[int, int]] = []
+    for attempt in attempts:
+        if attempt in seen_attempts:
+            continue
+        seen_attempts.add(attempt)
+        ordered_attempts.append(attempt)
+
+    session = None
+    started = False
+    used_channels = int(c.hdmi_audio_channels)
+    used_sample_rate = int(c.hdmi_audio_sample_rate)
+    last_error = ""
+
+    def _try_start_audio_session(fmt: str, dev: str) -> tuple[Optional[HdmiAudioStreamSession], bool, int, int, str]:
+        nonlocal last_error
+        for channels, sample_rate in ordered_attempts:
+            candidate = HdmiAudioStreamSession(
+                device=dev,
+                input_format=fmt,
+                sample_rate=sample_rate,
+                channels=channels,
+                bitrate=c.hdmi_audio_bitrate,
+            )
+            if candidate.start():
+                return candidate, True, channels, sample_rate, ""
+            last_error = candidate.last_error or ""
+            candidate.close()
+        return None, False, int(c.hdmi_audio_channels), int(c.hdmi_audio_sample_rate), last_error
+
+    session, started, used_channels, used_sample_rate, _ = _try_start_audio_session(input_format, device)
     if not started:
         # If a fixed device is configured and failed, try one auto-resolve retry.
         if c.hdmi_audio_device:
@@ -5095,22 +5354,31 @@ async def stream_audio() -> StreamingResponse:
                 configured_device="",
             )
             if fallback_format and fallback_device:
-                session.close()
-                session = HdmiAudioStreamSession(
-                    device=fallback_device,
-                    input_format=fallback_format,
-                    sample_rate=c.hdmi_audio_sample_rate,
-                    channels=c.hdmi_audio_channels,
-                    bitrate=c.hdmi_audio_bitrate,
-                )
-                started = session.start()
+                session, started, used_channels, used_sample_rate, _ = _try_start_audio_session(fallback_format, fallback_device)
                 if started:
                     input_format = fallback_format
                     device = fallback_device
 
         if not started:
-            detail = session.last_error or f"Unable to start HDMI audio stream for device {device}"
+            detail = (last_error or (session.last_error if session else "") or f"Unable to start HDMI audio stream for device {device}")
             raise HTTPException(status_code=500, detail=detail)
+
+    if used_channels != int(c.hdmi_audio_channels):
+        logger.info(
+            "Audio stream fallback applied: requested_channels=%s effective_channels=%s device=%s format=%s",
+            c.hdmi_audio_channels,
+            used_channels,
+            device,
+            input_format,
+        )
+    if used_sample_rate != int(c.hdmi_audio_sample_rate):
+        logger.info(
+            "Audio stream fallback applied: requested_sample_rate=%s effective_sample_rate=%s device=%s format=%s",
+            c.hdmi_audio_sample_rate,
+            used_sample_rate,
+            device,
+            input_format,
+        )
 
     async def audio_generator():
         try:

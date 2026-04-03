@@ -3,6 +3,7 @@
 import pytest
 
 from vertex_live_dab_agent.capture.capture import ScreenCapture, extract_output_image_b64
+from vertex_live_dab_agent.capture.hdmi_capture import HdmiCaptureSession
 
 
 def test_extract_output_image_b64_supports_image_key():
@@ -34,3 +35,9 @@ async def test_screen_capture_does_not_run_local_ocr(monkeypatch):
 
     assert result.image_b64 == "image-b64"
     assert result.ocr_text is None
+
+
+def test_hdmi_capture_session_forces_720p_resolution():
+    session = HdmiCaptureSession(device="/dev/video0", width=1920, height=1080)
+    assert session.width == 1280
+    assert session.height == 720
