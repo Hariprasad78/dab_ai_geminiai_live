@@ -657,6 +657,120 @@ async def test_yts_video_metadata_and_download_survive_db_reload(client):
 
 
 @pytest.mark.asyncio
+async def test_yts_pdf_report_download_returns_existing_artifact(client):
+    command_id = "cmd-report-existing"
+    state = api_mod._new_yts_live_state(command_id)
+    report_path = api_mod._get_yts_live_artifacts_dir(command_id) / "report.pdf"
+    report_path.write_bytes(b"%PDF-1.4\n%fake\n")
+    state["report_pdf_name"] = report_path.name
+    state["report_pdf_path"] = str(report_path)
+    api_mod._yts_live_commands[command_id] = state
+
+    resp = await client.get(f"/yts/command/live/{command_id}/report")
+    assert resp.status_code == 200
+    assert resp.content.startswith(b"%PDF-1.4")
+    assert resp.headers["content-type"].startswith("application/pdf")
+
+
+@pytest.mark.asyncio
+async def test_yts_html_report_download_returns_existing_artifact(client):
+    command_id = "cmd-report-html-existing"
+    state = api_mod._new_yts_live_state(command_id)
+    html_path = api_mod._get_yts_live_artifacts_dir(command_id) / "report.html"
+    html_path.write_text("<html><body>ok</body></html>", encoding="utf-8")
+    state["report_html_name"] = html_path.name
+    state["report_html_path"] = str(html_path)
+    api_mod._yts_live_commands[command_id] = state
+
+    resp = await client.get(f"/yts/command/live/{command_id}/report-html")
+    assert resp.status_code == 200
+    assert "<html" in resp.text.lower()
+    assert resp.headers["content-type"].startswith("text/html")
+
+    view_resp = await client.get(f"/yts/command/live/{command_id}/report-view")
+    assert view_resp.status_code == 200
+    assert "<html" in view_resp.text.lower()
+    assert view_resp.headers["content-type"].startswith("text/html")
+    assert "attachment" not in str(view_resp.headers.get("content-disposition", "")).lower()
+
+
+@pytest.mark.asyncio
+async def test_yts_pdf_report_download_generates_when_missing(client, monkeypatch):
+    command_id = "cmd-report-generate"
+    state = api_mod._new_yts_live_state(command_id)
+    missing_path = api_mod._get_yts_live_artifacts_dir(command_id) / "missing-report.pdf"
+    state["report_pdf_name"] = missing_path.name
+    state["report_pdf_path"] = str(missing_path)
+    api_mod._yts_live_commands[command_id] = state
+
+    def fake_generate(current_state):
+        report_path = api_mod._get_yts_live_artifacts_dir(command_id) / "generated-report.pdf"
+        report_path.write_bytes(b"%PDF-1.4\n%generated\n")
+        current_state["report_pdf_name"] = report_path.name
+        current_state["report_pdf_path"] = str(report_path)
+        return report_path
+
+    monkeypatch.setattr(api_mod, "_generate_yts_pdf_report_artifact", fake_generate)
+
+    resp = await client.get(f"/yts/command/live/{command_id}/report")
+    assert resp.status_code == 200
+    assert resp.content.startswith(b"%PDF-1.4")
+    assert api_mod._yts_live_commands[command_id]["report_pdf_name"] == "generated-report.pdf"
+
+
+@pytest.mark.asyncio
+async def test_yts_pdf_report_metadata_and_download_survive_db_reload(client):
+    command_id = "cmd-report-db-reload"
+    state = api_mod._new_yts_live_state(command_id)
+    report_path = api_mod._get_yts_live_artifacts_dir(command_id) / "yts-report-cmd-report-db-reload.pdf"
+    report_path.write_bytes(b"%PDF-1.4\n%persisted\n")
+    state["status"] = "completed"
+    state["returncode"] = 0
+    state["report_pdf_name"] = report_path.name
+    state["report_pdf_path"] = str(report_path)
+    api_mod._persist_yts_live_state(state)
+
+    api_mod._yts_live_commands.clear()
+
+    list_resp = await client.get("/yts/command/live")
+    assert list_resp.status_code == 200
+    summaries = list_resp.json()
+    matching = next(item for item in summaries if item["command_id"] == command_id)
+    assert matching["report_pdf_name"] == report_path.name
+
+    report_resp = await client.get(f"/yts/command/live/{command_id}/report")
+    assert report_resp.status_code == 200
+    assert report_resp.content.startswith(b"%PDF-1.4")
+    assert report_resp.headers["content-type"].startswith("application/pdf")
+
+
+@pytest.mark.asyncio
+async def test_yts_html_report_metadata_and_download_survive_db_reload(client):
+    command_id = "cmd-report-html-db-reload"
+    state = api_mod._new_yts_live_state(command_id)
+    html_path = api_mod._get_yts_live_artifacts_dir(command_id) / "yts-report-cmd-report-html-db-reload.html"
+    html_path.write_text("<html><body>persisted-html</body></html>", encoding="utf-8")
+    state["status"] = "completed"
+    state["returncode"] = 0
+    state["report_html_name"] = html_path.name
+    state["report_html_path"] = str(html_path)
+    api_mod._persist_yts_live_state(state)
+
+    api_mod._yts_live_commands.clear()
+
+    list_resp = await client.get("/yts/command/live")
+    assert list_resp.status_code == 200
+    summaries = list_resp.json()
+    matching = next(item for item in summaries if item["command_id"] == command_id)
+    assert matching["report_html_name"] == html_path.name
+
+    html_resp = await client.get(f"/yts/command/live/{command_id}/report-html")
+    assert html_resp.status_code == 200
+    assert "persisted-html" in html_resp.text
+    assert html_resp.headers["content-type"].startswith("text/html")
+
+
+@pytest.mark.asyncio
 async def test_yts_recording_stderr_suppresses_noisy_jpeg_warnings(monkeypatch):
     command_id = "cmd-jpeg-warning"
     state = api_mod._new_yts_live_state(command_id)
@@ -895,6 +1009,88 @@ async def test_yts_visual_context_prefers_live_stream_when_hdmi_available(monkey
     assert visual_context["capture_status"]["live_stream_only"] is True
 
 
+@pytest.mark.asyncio
+async def test_yts_visual_context_blocks_mismatched_hdmi_device(monkeypatch):
+    command_id = "cmd-hdmi-mismatch"
+    api_mod._yts_live_commands[command_id] = api_mod._new_yts_live_state(command_id, interactive_ai=True)
+
+    class FakeResult:
+        image_b64 = "wrong-device-image"
+        source = "hdmi-capture"
+
+    class FakeCaptureService:
+        def __init__(self):
+            self.live_calls = 0
+
+        async def capture_live_stream_frame(self):
+            self.live_calls += 1
+            return FakeResult()
+
+        async def capture(self):
+            return FakeResult()
+
+        def capture_source_status(self):
+            return {
+                "configured_source": "hdmi-capture",
+                "selected_video_device": "/dev/video10",
+                "hdmi_device": "/dev/video2",
+                "hdmi_available": True,
+            }
+
+    capture = FakeCaptureService()
+    monkeypatch.setattr(api_mod, "get_screen_capture", lambda: capture)
+
+    visual_context = await api_mod._capture_yts_visual_context(command_id)
+
+    assert capture.live_calls == api_mod._YTS_INTERACTIVE_CAPTURE_ATTEMPTS
+    assert visual_context["screenshot_b64"] is None
+    assert visual_context["capture_status"]["device_mismatch"] is True
+    assert "mismatch" in str(visual_context["summary"]).lower()
+
+
+def test_collect_yts_revalidation_conditions_falls_back_to_guided_context(monkeypatch):
+    state = {
+        "prompts": [],
+        "logs": [],
+        "command": "yts test adt-4 sample_test",
+        "test_id": "sample_test",
+    }
+
+    monkeypatch.setattr(
+        api_mod,
+        "_build_yts_guided_prompt_context",
+        lambda _state: "objective: Verify player starts\nexpected_result: Playback begins successfully",
+    )
+
+    conditions = api_mod._collect_yts_revalidation_conditions(state)
+
+    assert conditions
+    assert any("playback" in str(item).lower() for item in conditions)
+
+
+@pytest.mark.asyncio
+async def test_ensure_yts_post_revalidation_if_missing_runs_once(monkeypatch):
+    state = {
+        "status": "completed",
+        "returncode": 0,
+        "revalidation": [],
+        "revalidated_at": None,
+        "logs": [],
+    }
+
+    async def fake_revalidate(target):
+        target["revalidation"] = [{"condition_id": 1, "condition": "demo", "verdict": "UNCERTAIN"}]
+        target["revalidated_at"] = "2026-04-08T00:00:00+00:00"
+
+    monkeypatch.setattr(api_mod, "_run_yts_post_revalidation", fake_revalidate)
+
+    changed = await api_mod._ensure_yts_post_revalidation_if_missing(state)
+
+    assert changed is True
+    assert state["revalidation"]
+    assert state["revalidated_at"]
+
+
 def test_prompt_ready_for_ai_response_requires_real_question_context():
     prompt_entry = {
         "text": "Please select from the following options:\n1: Yes\n2: No",
@@ -1072,6 +1268,147 @@ async def test_yts_prompt_suggestion_maps_yes_no_to_numeric_option(monkeypatch):
         command_id,
         "Does the image on screen render correctly?\nPlease select from the following options:\n1: Yes\n2: No",
         ["1", "2"],
+    )
+
+    assert suggestion["response"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_yts_prompt_suggestion_rejects_remote_action_tokens(monkeypatch):
+    command_id = "cmd-action-token-reject"
+    state = api_mod._new_yts_live_state(command_id, interactive_ai=True)
+    state["logs"] = [{"stream": "stdout", "message": "Continue? yes/no"}]
+    api_mod._yts_live_commands[command_id] = state
+
+    class FakeCaptureResult:
+        image_b64 = "img"
+        source = "hdmi-capture"
+
+    class FakeCaptureService:
+        async def capture(self):
+            return FakeCaptureResult()
+
+        def capture_source_status(self):
+            return {
+                "configured_source": "hdmi-capture",
+                "selected_video_device": "/dev/video0",
+                "hdmi_available": True,
+            }
+
+    class FakeVertexClient:
+        async def generate_content(self, prompt, screenshot_b64=None, session_id=None):
+            return "PRESS_DOWN"
+
+    monkeypatch.setattr(api_mod, "get_screen_capture", lambda: FakeCaptureService())
+    monkeypatch.setattr(api_mod, "get_vertex_text_client", lambda: FakeVertexClient())
+
+    suggestion = await api_mod._suggest_yts_prompt_response(command_id, "Continue? yes/no", ["yes", "no"])
+
+    assert suggestion["response"] in {"yes", "no"}
+    assert suggestion["response"] != "PRESS_DOWN"
+
+
+@pytest.mark.asyncio
+async def test_yts_prompt_suggestion_pass_fail_guard_avoids_false_pass_on_low_confidence(monkeypatch):
+    command_id = "cmd-pass-fail-low-confidence"
+    state = api_mod._new_yts_live_state(command_id, interactive_ai=True)
+    state["logs"] = [{"stream": "stdout", "message": "In-app 21:9 Aspect Ratio validation"}]
+    api_mod._yts_live_commands[command_id] = state
+
+    class FakeCaptureResult:
+        image_b64 = "img"
+        source = "hdmi-capture"
+
+    class FakeCaptureService:
+        async def capture(self):
+            return FakeCaptureResult()
+
+        def capture_source_status(self):
+            return {
+                "configured_source": "hdmi-capture",
+                "selected_video_device": "/dev/video0",
+                "hdmi_available": True,
+            }
+
+    class FakeVertexClient:
+        async def generate_content(self, prompt, screenshot_b64=None, session_id=None):
+            return "1"
+
+    monkeypatch.setattr(api_mod, "get_screen_capture", lambda: FakeCaptureService())
+    monkeypatch.setattr(api_mod, "get_vertex_text_client", lambda: FakeVertexClient())
+    async def _low_conf_visual(_command_id):
+        return {
+            "summary": "Ad overlay visible while playback has not started.",
+            "source": "hdmi-capture",
+            "screenshot_b64": "img",
+            "observations": [{"attempt": 1, "source": "hdmi-capture", "has_screenshot": True}],
+            "capture_status": {"configured_source": "hdmi-capture"},
+            "analysis": {
+                "summary": "Ad overlay visible.",
+                "playback_visible": False,
+                "confidence": 0.31,
+            },
+        }
+
+    monkeypatch.setattr(api_mod, "_capture_yts_visual_context", _low_conf_visual)
+
+    suggestion = await api_mod._suggest_yts_prompt_response(
+        command_id,
+        "Please select from the following options:\n1: Pass\n2: Fail\n3: Skip",
+        ["1", "2", "3"],
+    )
+
+    assert suggestion["response"] in {"2", "3"}
+
+
+@pytest.mark.asyncio
+async def test_yts_prompt_suggestion_pass_fail_guard_allows_pass_with_strong_evidence(monkeypatch):
+    command_id = "cmd-pass-fail-strong-evidence"
+    state = api_mod._new_yts_live_state(command_id, interactive_ai=True)
+    state["logs"] = [{"stream": "stdout", "message": "In-app 21:9 Aspect Ratio validation"}]
+    api_mod._yts_live_commands[command_id] = state
+
+    class FakeCaptureResult:
+        image_b64 = "img"
+        source = "hdmi-capture"
+
+    class FakeCaptureService:
+        async def capture(self):
+            return FakeCaptureResult()
+
+        def capture_source_status(self):
+            return {
+                "configured_source": "hdmi-capture",
+                "selected_video_device": "/dev/video0",
+                "hdmi_available": True,
+            }
+
+    class FakeVertexClient:
+        async def generate_content(self, prompt, screenshot_b64=None, session_id=None):
+            return "1"
+
+    monkeypatch.setattr(api_mod, "get_screen_capture", lambda: FakeCaptureService())
+    monkeypatch.setattr(api_mod, "get_vertex_text_client", lambda: FakeVertexClient())
+    async def _strong_visual(_command_id):
+        return {
+            "summary": "Playback is visible and stable.",
+            "source": "hdmi-capture",
+            "screenshot_b64": "img",
+            "observations": [{"attempt": 1, "source": "hdmi-capture", "has_screenshot": True}],
+            "capture_status": {"configured_source": "hdmi-capture"},
+            "analysis": {
+                "summary": "Playback is visible and controls are hidden.",
+                "playback_visible": True,
+                "confidence": 0.93,
+            },
+        }
+
+    monkeypatch.setattr(api_mod, "_capture_yts_visual_context", _strong_visual)
+
+    suggestion = await api_mod._suggest_yts_prompt_response(
+        command_id,
+        "Please select from the following options:\n1: Pass\n2: Fail\n3: Skip",
+        ["1", "2", "3"],
     )
 
     assert suggestion["response"] == "1"
@@ -1306,6 +1643,66 @@ async def test_yts_prompt_suggestion_uses_active_test_context_for_options_only_p
     assert "navigator.language setting" in fake_client.calls[0]
     assert "Initial value of navigator.language: en-GB." in fake_client.calls[0]
     assert "Active test terminal context:" in fake_client.calls[0]
+
+
+@pytest.mark.asyncio
+async def test_yts_prompt_suggestion_includes_guided_metadata_when_available(monkeypatch):
+    command_id = "cmd-guided-meta"
+    state = api_mod._new_yts_live_state(command_id, interactive_ai=True)
+    state["command"] = "yts test adb:device-01 CobaltVerifyNavigatorLanguage"
+    state["test_id"] = "CobaltVerifyNavigatorLanguage"
+    state["logs"] = [{"stream": "stdout", "message": "Please select from the following options:"}]
+    api_mod._yts_live_commands[command_id] = state
+
+    class FakeCaptureResult:
+        image_b64 = "img"
+        source = "hdmi-capture"
+
+    class FakeCaptureService:
+        async def capture(self):
+            return FakeCaptureResult()
+
+        def capture_source_status(self):
+            return {
+                "configured_source": "hdmi-capture",
+                "selected_video_device": "/dev/video0",
+                "hdmi_available": True,
+            }
+
+    class FakeVertexClient:
+        def __init__(self):
+            self.prompt = ""
+
+        async def generate_content(self, prompt, screenshot_b64=None, session_id=None):
+            self.prompt = prompt
+            return "1"
+
+    fake_client = FakeVertexClient()
+
+    def fake_read_catalog(_path):
+        return [
+            {
+                "test_id": "CobaltVerifyNavigatorLanguage",
+                "test_title": "Settings Language",
+                "objective": "Validate navigator.language updates after changing device language.",
+                "steps": ["Open settings", "Change language", "Return to app"],
+            }
+        ]
+
+    monkeypatch.setattr(api_mod, "get_screen_capture", lambda: FakeCaptureService())
+    monkeypatch.setattr(api_mod, "get_vertex_text_client", lambda: fake_client)
+    monkeypatch.setattr(api_mod, "_read_yts_test_catalog", fake_read_catalog)
+
+    suggestion = await api_mod._suggest_yts_prompt_response(
+        command_id,
+        "Please select from the following options:\n1: OK\n2: Fail",
+        ["1", "2"],
+    )
+
+    assert suggestion["response"] == "1"
+    assert "Guided test metadata:" in fake_client.prompt
+    assert "CobaltVerifyNavigatorLanguage" in fake_client.prompt
+    assert "Validate navigator.language updates" in fake_client.prompt
 
 
 def test_plan_task_macro_actions_supports_explicit_language_setting():
@@ -1598,6 +1995,69 @@ async def test_yts_prompt_suggestion_toggles_ai_observing_state(monkeypatch):
     final_state = api_mod._yts_live_commands[command_id]
     assert final_state["ai_observing_tv"] is False
     assert final_state["ai_status_message"] is None
+
+
+@pytest.mark.asyncio
+async def test_yts_prompt_suggestion_defers_without_visual_screenshot(monkeypatch):
+    command_id = "cmd-no-visual"
+    state = api_mod._new_yts_live_state(command_id, interactive_ai=True)
+    state["logs"] = [{"stream": "stdout", "message": "Continue? yes/no"}]
+    api_mod._yts_live_commands[command_id] = state
+
+    class FakeCaptureResult:
+        image_b64 = ""
+        source = "hdmi-capture"
+
+    class FakeCaptureService:
+        async def capture(self):
+            return FakeCaptureResult()
+
+        def capture_source_status(self):
+            return {
+                "configured_source": "hdmi-capture",
+                "selected_video_device": "/dev/video0",
+                "hdmi_available": True,
+            }
+
+    class FakeVertexClient:
+        async def generate_content(self, prompt, screenshot_b64=None, session_id=None):
+            raise AssertionError("Gemini should not be called without a captured screenshot")
+
+    monkeypatch.setattr(api_mod, "get_screen_capture", lambda: FakeCaptureService())
+    monkeypatch.setattr(api_mod, "get_vertex_text_client", lambda: FakeVertexClient())
+
+    suggestion = await api_mod._suggest_yts_prompt_response(command_id, "Continue? yes/no", ["yes", "no"])
+
+    assert suggestion["response"] is None
+    assert suggestion["source"] == "deferred-no-visual"
+    assert "deferred" in str(suggestion.get("deferred_reason") or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_yts_suggest_endpoint_blocks_send_when_visual_missing(client, monkeypatch):
+    command_id = "cmd-suggest-no-visual"
+    api_mod._yts_live_commands[command_id] = {
+        "command_id": command_id,
+        "status": "running",
+        "awaiting_input": True,
+        "pending_prompt": {"id": 1, "text": "Continue? yes/no", "options": ["yes", "no"], "answered": False},
+        "prompts": [{"id": 1, "text": "Continue? yes/no", "options": ["yes", "no"], "answered": False}],
+    }
+
+    async def fake_suggest(_command_id, _prompt_text, _options=None):
+        return {
+            "response": None,
+            "source": "deferred-no-visual",
+            "deferred_reason": "No fresh TV screenshot available. AI response deferred to avoid blind input.",
+            "visual_summary": "No screenshot",
+            "visual_source": "hdmi-capture",
+        }
+
+    monkeypatch.setattr(api_mod, "_suggest_yts_prompt_response", fake_suggest)
+
+    resp = await client.post(f"/yts/command/live/{command_id}/suggest", json={"send_response": True})
+    assert resp.status_code == 409
+    assert "deferred" in str(resp.json().get("detail", "")).lower()
 
 
 @pytest.mark.asyncio

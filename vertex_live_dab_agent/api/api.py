@@ -1,5 +1,6 @@
 """FastAPI backend for vertex_live_dab_agent."""
 import asyncio
+import base64
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import grp
@@ -1456,6 +1457,12 @@ def _new_yts_live_state(command_id: str, interactive_ai: bool = False) -> Dict[s
         "returncode": None,
         "result_file_content": None,
         "result_file_name": None,
+        "revalidation": [],
+        "revalidated_at": None,
+        "report_html_name": f"yts-report-{command_id}.html",
+        "report_html_path": str(Path(artifacts_dir) / f"yts-report-{command_id}.html"),
+        "report_pdf_name": f"yts-report-{command_id}.pdf",
+        "report_pdf_path": str(Path(artifacts_dir) / f"yts-report-{command_id}.pdf"),
         "created_at": timestamp,
         "updated_at": timestamp,
     }
@@ -1469,6 +1476,7 @@ def _normalize_yts_live_state(state: Dict[str, Any]) -> Dict[str, Any]:
     normalized["logs"] = list(normalized.get("logs") or [])
     normalized["prompts"] = list(normalized.get("prompts") or [])
     normalized["responses"] = list(normalized.get("responses") or [])
+    normalized["revalidation"] = list(normalized.get("revalidation") or [])
     normalized["setup_actions"] = list(normalized.get("setup_actions") or [])
     normalized["executed_setup_signatures"] = list(normalized.get("executed_setup_signatures") or [])
     normalized["awaiting_input"] = bool(normalized.get("awaiting_input"))
@@ -1484,6 +1492,10 @@ def _normalize_yts_live_state(state: Dict[str, Any]) -> Dict[str, Any]:
     normalized["artifacts_dir"] = str(artifacts_dir)
     normalized["terminal_log_name"] = str(normalized.get("terminal_log_name") or f"yts-terminal-log-{command_id}.txt")
     normalized["terminal_log_path"] = str(normalized.get("terminal_log_path") or (artifacts_dir / normalized["terminal_log_name"]))
+    normalized["report_html_name"] = str(normalized.get("report_html_name") or f"yts-report-{command_id}.html")
+    normalized["report_html_path"] = str(normalized.get("report_html_path") or (artifacts_dir / normalized["report_html_name"]))
+    normalized["report_pdf_name"] = str(normalized.get("report_pdf_name") or f"yts-report-{command_id}.pdf")
+    normalized["report_pdf_path"] = str(normalized.get("report_pdf_path") or (artifacts_dir / normalized["report_pdf_name"]))
     video_path_raw = normalized.get("video_file_path")
     video_path_text = str(video_path_raw or "").strip()
     if video_path_text.startswith("<coroutine object"):
@@ -1661,6 +1673,858 @@ def _write_yts_terminal_log_artifact(state: Dict[str, Any]) -> Optional[Path]:
     state["terminal_log_path"] = str(path)
     state["terminal_log_name"] = path.name
     return path
+
+
+def _decode_image_b64_payload(image_b64: str) -> Optional[bytes]:
+    payload = str(image_b64 or "").strip()
+    if not payload:
+        return None
+    if payload.startswith("data:image/") and "," in payload:
+        payload = payload.split(",", 1)[1]
+    try:
+        return base64.b64decode(payload, validate=False)
+    except Exception:
+        return None
+
+
+def _normalize_video_device_path(value: Any) -> str:
+    dev = str(value or "").strip()
+    if not dev:
+        return ""
+    try:
+        return os.path.realpath(dev)
+    except Exception:
+        return dev
+
+
+def _is_hdmi_capture_device_mismatch(status: Dict[str, Any]) -> bool:
+    configured_source = str(status.get("configured_source") or "").strip().lower()
+    if configured_source != "hdmi-capture":
+        return False
+    selected = _normalize_video_device_path(status.get("selected_video_device"))
+    active = _normalize_video_device_path(status.get("hdmi_device"))
+    if not selected or not active:
+        return False
+    return selected != active
+
+
+def _persist_yts_checkpoint_image(command_id: str, image_b64: str, label: str) -> Optional[Path]:
+    raw = _decode_image_b64_payload(image_b64)
+    if not raw:
+        return None
+    safe_label = re.sub(r"[^A-Za-z0-9._-]+", "_", str(label or "checkpoint")).strip("._-") or "checkpoint"
+    artifacts_dir = _get_yts_live_artifacts_dir(command_id)
+    path = artifacts_dir / f"{safe_label}.jpg"
+    try:
+        path.write_bytes(raw)
+    except Exception:
+        return None
+    return path
+
+
+def _persist_yts_ai_evidence_image(command_id: str, prompt_id: Optional[int], image_b64: str) -> Optional[Dict[str, str]]:
+    if not str(image_b64 or "").strip():
+        return None
+    prompt_token = int(prompt_id) if prompt_id is not None else 0
+    image_path = _persist_yts_checkpoint_image(command_id, image_b64, f"prompt-{prompt_token:03d}-ai-evidence")
+    if not image_path:
+        return None
+    return {
+        "captured_at": _utc_now_iso(),
+        "image_name": image_path.name,
+        "image_path": str(image_path),
+    }
+
+
+async def _capture_yts_prompt_checkpoint(command_id: str, prompt_id: int) -> Optional[Dict[str, Any]]:
+    try:
+        capture = get_screen_capture()
+        status = capture.capture_source_status()
+        if _is_hdmi_capture_device_mismatch(status):
+            logger.warning(
+                "Skipping prompt checkpoint due to HDMI device mismatch: command=%s selected=%s active=%s",
+                command_id,
+                status.get("selected_video_device"),
+                status.get("hdmi_device"),
+            )
+            return None
+        use_live_stream_only = bool(status.get("hdmi_available")) and str(status.get("configured_source") or "").lower() != "dab"
+        if use_live_stream_only and hasattr(capture, "capture_live_stream_frame"):
+            result = await capture.capture_live_stream_frame()
+        else:
+            result = await capture.capture()
+        refreshed_status = capture.capture_source_status()
+        if _is_hdmi_capture_device_mismatch(refreshed_status):
+            logger.warning(
+                "Discarding prompt checkpoint frame due to HDMI device mismatch: command=%s selected=%s active=%s",
+                command_id,
+                refreshed_status.get("selected_video_device"),
+                refreshed_status.get("hdmi_device"),
+            )
+            return None
+        image_b64 = str(getattr(result, "image_b64", "") or "").strip()
+        if not image_b64:
+            return None
+        source = str(getattr(result, "source", "") or status.get("configured_source") or "unknown")
+        image_path = _persist_yts_checkpoint_image(command_id, image_b64, f"prompt-{int(prompt_id):03d}")
+        if not image_path:
+            return None
+        return {
+            "captured_at": _utc_now_iso(),
+            "source": source,
+            "image_name": image_path.name,
+            "image_path": str(image_path),
+        }
+    except Exception as exc:
+        logger.warning("Failed to capture YTS prompt checkpoint screenshot: command=%s prompt=%s error=%s", command_id, prompt_id, exc)
+        return None
+
+
+def _build_yts_prompt_justification(prompt_entry: Dict[str, Any]) -> str:
+    response = str(prompt_entry.get("response") or "").strip()
+    ai_suggestion = str(prompt_entry.get("ai_suggestion") or "").strip()
+    ai_source = str(prompt_entry.get("ai_source") or "").strip() or "heuristic"
+    ai_visual_summary = str(prompt_entry.get("ai_visual_summary") or "").strip()
+    setup_actions = prompt_entry.get("setup_actions") if isinstance(prompt_entry.get("setup_actions"), list) else []
+    setup_count = len(setup_actions)
+    bits: List[str] = []
+    if ai_source:
+        bits.append(f"source={ai_source}")
+    if ai_suggestion:
+        bits.append(f"suggestion={ai_suggestion}")
+    if response:
+        bits.append(f"selected={response}")
+    if setup_count:
+        bits.append(f"setup_actions={setup_count}")
+    if ai_visual_summary:
+        bits.append(f"visual={ai_visual_summary}")
+    return " | ".join(bits) if bits else "No AI justification captured."
+
+
+def _escape_html(value: Any) -> str:
+    text = str(value or "")
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#39;")
+    )
+
+
+def _sanitize_error_text(value: Any) -> str:
+    text = str(value or "")
+    text = re.sub(r"([?&]key=)[^&\s]+", r"\1REDACTED", text, flags=re.IGNORECASE)
+    text = re.sub(r"(api[_-]?key\s*[:=]\s*)[^\s,;]+", r"\1REDACTED", text, flags=re.IGNORECASE)
+    return text
+
+
+def _extract_prompt_requirements(prompt_text: str) -> List[str]:
+    lines = []
+    for raw in str(prompt_text or "").splitlines():
+        line = _strip_terminal_ansi(raw).strip()
+        if not line:
+            continue
+        if _parse_yts_prompt_option(line):
+            continue
+        lines.append(line)
+    if not lines and str(prompt_text or "").strip():
+        lines = [str(prompt_text or "").strip()]
+    return lines
+
+
+def _build_prompt_requirement_assessments(prompt_entry: Dict[str, Any]) -> List[Dict[str, str]]:
+    prompt_text = str(prompt_entry.get("text") or "")
+    requirements = _extract_prompt_requirements(prompt_text)
+    response = str(prompt_entry.get("response") or prompt_entry.get("ai_suggestion") or "").strip()
+    response_source = str(prompt_entry.get("response_source") or prompt_entry.get("ai_source") or "").strip() or "unknown"
+    visual_summary = str(prompt_entry.get("ai_visual_summary") or "").strip()
+    setup_actions = prompt_entry.get("setup_actions") if isinstance(prompt_entry.get("setup_actions"), list) else []
+    setup_note = f"setup_actions={len(setup_actions)}" if setup_actions else "no setup actions"
+    ai_evidence = prompt_entry.get("ai_evidence") if isinstance(prompt_entry.get("ai_evidence"), dict) else {}
+    evidence_img = str(ai_evidence.get("image_name") or "").strip()
+    option_labels = _extract_yts_prompt_option_labels(prompt_text)
+    selected_label = option_labels.get(response, "") if response else ""
+    chosen = f"{response} ({selected_label})" if response and selected_label else (response or "-")
+
+    assessments: List[Dict[str, str]] = []
+    for req in requirements:
+        evidence_bits = [f"chosen={chosen}", f"source={response_source}", setup_note]
+        if visual_summary:
+            evidence_bits.append(f"visual={visual_summary}")
+        if evidence_img:
+            evidence_bits.append(f"evidence_image={evidence_img}")
+        assessments.append(
+            {
+                "requirement": req,
+                "answer": chosen,
+                "evidence": " | ".join(evidence_bits),
+                "justification": _build_yts_prompt_justification(prompt_entry),
+            }
+        )
+    return assessments
+
+
+def _generate_yts_html_report_artifact(state: Dict[str, Any]) -> Optional[Path]:
+    html_path_raw = str(state.get("report_html_path") or "").strip()
+    if not html_path_raw:
+        artifacts_dir = Path(str(state.get("artifacts_dir") or _get_yts_live_artifacts_dir(str(state.get("command_id") or "report"))))
+        html_path_raw = str(artifacts_dir / f"yts-report-{state.get('command_id')}.html")
+        state["report_html_path"] = html_path_raw
+        state["report_html_name"] = Path(html_path_raw).name
+    html_path = Path(html_path_raw)
+    html_path.parent.mkdir(parents=True, exist_ok=True)
+
+    prompts = list(state.get("prompts") or [])
+    sections: List[str] = []
+    for prompt in prompts:
+        prompt_id = prompt.get("id")
+        question = _escape_html(prompt.get("text") or "")
+        options = list(prompt.get("options") or [])
+        options_html = "<br/>".join(_escape_html(opt) for opt in options) if options else "-"
+        checkpoint = prompt.get("checkpoint") if isinstance(prompt.get("checkpoint"), dict) else {}
+        ai_evidence = prompt.get("ai_evidence") if isinstance(prompt.get("ai_evidence"), dict) else {}
+        image_path_text = str(checkpoint.get("image_path") or "").strip()
+        image_name = str(checkpoint.get("image_name") or "").strip()
+        ai_image_path_text = str(ai_evidence.get("image_path") or "").strip()
+        ai_image_name = str(ai_evidence.get("image_name") or "").strip()
+        image_html = ""
+        if ai_image_path_text and Path(ai_image_path_text).exists():
+            ai_image_uri = Path(ai_image_path_text).resolve().as_uri()
+            image_html += (
+                f'<div class="imgwrap"><div class="meta"><strong>Gemini evidence screenshot</strong>: {_escape_html(ai_image_name or Path(ai_image_path_text).name)}</div>'
+                f'<img src="{_escape_html(ai_image_uri)}" alt="gemini evidence screenshot" /></div>'
+            )
+        if image_path_text and Path(image_path_text).exists():
+            image_uri = Path(image_path_text).resolve().as_uri()
+            image_html += (
+                f'<div class="imgwrap"><div class="meta">Screenshot: {_escape_html(image_name or Path(image_path_text).name)}</div>'
+                f'<img src="{_escape_html(image_uri)}" alt="prompt checkpoint" /></div>'
+            )
+
+        req_rows = []
+        for row in _build_prompt_requirement_assessments(prompt):
+            req_rows.append(
+                "<tr>"
+                f"<td>{_escape_html(row.get('requirement'))}</td>"
+                f"<td>{_escape_html(row.get('answer'))}</td>"
+                f"<td>{_escape_html(row.get('evidence'))}</td>"
+                f"<td>{_escape_html(row.get('justification'))}</td>"
+                "</tr>"
+            )
+        req_table = (
+            "<table><thead><tr><th>Requirement line</th><th>Answer</th><th>Evidence</th><th>Justification</th></tr></thead>"
+            f"<tbody>{''.join(req_rows) or '<tr><td colspan=\"4\">No requirement lines found</td></tr>'}</tbody></table>"
+        )
+
+        sections.append(
+            "<section class=\"card\">"
+            f"<h2>Prompt #{_escape_html(prompt_id)}</h2>"
+            f"<div class=\"meta\"><strong>Question</strong><br/>{question or '-'}</div>"
+            f"<div class=\"meta\"><strong>Options</strong><br/>{options_html}</div>"
+            f"<div class=\"meta\"><strong>Selected response</strong>: {_escape_html(prompt.get('response') or '-')}"
+            f" ({_escape_html(prompt.get('response_source') or '-')})</div>"
+            f"<div class=\"meta\"><strong>AI suggestion</strong>: {_escape_html(prompt.get('ai_suggestion') or '-')}"
+            f" ({_escape_html(prompt.get('ai_source') or '-')})</div>"
+            f"{image_html}"
+            f"{req_table}"
+            "</section>"
+        )
+
+    revalidation = list(state.get("revalidation") or [])
+    revalidation_rows: List[str] = []
+    for item in revalidation:
+        evidence_name = _escape_html(item.get("evidence_image_name") or "-")
+        revalidation_rows.append(
+            "<tr>"
+            f"<td>{_escape_html(item.get('condition_id'))}</td>"
+            f"<td>{_escape_html(item.get('condition'))}</td>"
+            f"<td>{_escape_html(item.get('verdict'))}</td>"
+            f"<td>{_escape_html(item.get('confidence'))}</td>"
+            f"<td>{_escape_html(item.get('reason'))}</td>"
+            f"<td>{_escape_html(item.get('observed'))}</td>"
+            f"<td>{evidence_name}</td>"
+            "</tr>"
+        )
+    revalidation_html = (
+        "<section class=\"card\">"
+        "<h2>Post-run Gemini Revalidation</h2>"
+        f"<div class=\"meta\"><strong>Revalidated at:</strong> {_escape_html(state.get('revalidated_at') or '-')}</div>"
+        "<table><thead><tr><th>#</th><th>Condition</th><th>Verdict</th><th>Confidence</th><th>Reason</th><th>Observed</th><th>Evidence image</th></tr></thead>"
+        f"<tbody>{''.join(revalidation_rows) if revalidation_rows else '<tr><td colspan=\"7\">No post-run revalidation results</td></tr>'}</tbody></table>"
+        "</section>"
+    )
+
+    html = (
+        "<!doctype html><html><head><meta charset=\"utf-8\"/>"
+        "<title>YTS AI Validation Report</title>"
+        "<style>"
+        "body{font-family:Arial,Helvetica,sans-serif;background:#0b1020;color:#e5e7eb;margin:0;padding:24px;}"
+        ".card{background:#121a30;border:1px solid #24324f;border-radius:10px;padding:16px;margin-bottom:16px;}"
+        "h1,h2{margin:0 0 10px 0;color:#f8fafc;}"
+        ".meta{margin:8px 0;line-height:1.4;word-break:break-word;white-space:pre-wrap;}"
+        "table{width:100%;border-collapse:collapse;margin-top:10px;font-size:13px;}"
+        "th,td{border:1px solid #334155;padding:8px;vertical-align:top;word-break:break-word;}"
+        "th{background:#1e293b;color:#f8fafc;text-align:left;}"
+        ".imgwrap img{max-width:100%;max-height:420px;border:1px solid #334155;border-radius:6px;margin-top:6px;}"
+        "</style></head><body>"
+        "<h1>YTS AI Validation Report</h1>"
+        f"<div class=\"card\"><div class=\"meta\"><strong>Command ID:</strong> {_escape_html(state.get('command_id'))}</div>"
+        f"<div class=\"meta\"><strong>Command:</strong> {_escape_html(state.get('command'))}</div>"
+        f"<div class=\"meta\"><strong>Status:</strong> {_escape_html(state.get('status'))} | <strong>Return code:</strong> {_escape_html(state.get('returncode'))}</div>"
+        f"<div class=\"meta\"><strong>Created:</strong> {_escape_html(state.get('created_at'))} | <strong>Updated:</strong> {_escape_html(state.get('updated_at'))}</div></div>"
+        f"{''.join(sections) if sections else '<section class=\"card\"><div class=\"meta\">No interactive prompts captured.</div></section>'}"
+        f"{revalidation_html}"
+        "</body></html>"
+    )
+
+    try:
+        html_path.write_text(html, encoding="utf-8")
+        state["report_html_path"] = str(html_path)
+        state["report_html_name"] = html_path.name
+        return html_path
+    except Exception as exc:
+        logger.warning("Unable to generate YTS HTML report: %s", exc)
+        return None
+
+
+def _generate_minimal_pdf_bytes(lines: List[str]) -> bytes:
+    def _escape_pdf_text(value: str) -> str:
+        return str(value or "").replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+    normalized_lines = [str(line or "") for line in (lines or [])]
+    if not normalized_lines:
+        normalized_lines = ["YTS AI Validation Report", "No report content available."]
+
+    content_parts = ["BT", "/F1 10 Tf", "40 800 Td"]
+    first = True
+    for line in normalized_lines[:220]:
+        escaped = _escape_pdf_text(line)
+        if first:
+            content_parts.append(f"({escaped}) Tj")
+            first = False
+        else:
+            content_parts.append("0 -14 Td")
+            content_parts.append(f"({escaped}) Tj")
+    content_parts.append("ET")
+    content = "\n".join(content_parts).encode("latin-1", errors="replace")
+
+    objects: List[bytes] = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Count 1 /Kids [3 0 R] >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Length " + str(len(content)).encode("ascii") + b" >>\nstream\n" + content + b"\nendstream",
+    ]
+
+    out = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+    xref_offsets = [0]
+    for idx, obj in enumerate(objects, start=1):
+        xref_offsets.append(len(out))
+        out.extend(f"{idx} 0 obj\n".encode("ascii"))
+        out.extend(obj)
+        out.extend(b"\nendobj\n")
+
+    xref_pos = len(out)
+    out.extend(f"xref\n0 {len(objects) + 1}\n".encode("ascii"))
+    out.extend(b"0000000000 65535 f \n")
+    for offset in xref_offsets[1:]:
+        out.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
+    out.extend(
+        (
+            f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
+            f"startxref\n{xref_pos}\n%%EOF\n"
+        ).encode("ascii")
+    )
+    return bytes(out)
+
+
+def _generate_minimal_yts_pdf_report_artifact(state: Dict[str, Any], report_path: Path) -> Optional[Path]:
+    lines: List[str] = [
+        "YTS AI Validation Report",
+        f"Command ID: {state.get('command_id')}",
+        f"Command: {state.get('command')}",
+        f"Status: {state.get('status')} | Return code: {state.get('returncode')}",
+        f"Created: {state.get('created_at')} | Updated: {state.get('updated_at')}",
+        "",
+    ]
+    prompts = list(state.get("prompts") or [])
+    if not prompts:
+        lines.append("No interactive prompts captured.")
+    for prompt in prompts:
+        lines.append(f"Prompt #{prompt.get('id')}")
+        lines.append(f"Question: {prompt.get('text')}")
+        options = list(prompt.get("options") or [])
+        if options:
+            lines.append(f"Options: {', '.join(options)}")
+        lines.append(f"Answered: {bool(prompt.get('answered'))}")
+        lines.append(f"Response: {prompt.get('response') or '-'} ({prompt.get('response_source') or '-'})")
+        lines.append(f"AI Suggestion: {prompt.get('ai_suggestion') or '-'} ({prompt.get('ai_source') or '-'})")
+        lines.append(f"Justification: {_build_yts_prompt_justification(prompt)}")
+        checkpoint = prompt.get("checkpoint") if isinstance(prompt.get("checkpoint"), dict) else {}
+        image_name = str(checkpoint.get("image_name") or "").strip()
+        if image_name:
+            lines.append(f"Checkpoint screenshot: {image_name}")
+        lines.append("")
+    try:
+        report_path.write_bytes(_generate_minimal_pdf_bytes(lines))
+        state["report_pdf_path"] = str(report_path)
+        state["report_pdf_name"] = report_path.name
+        return report_path
+    except Exception as exc:
+        logger.warning("Unable to generate fallback YTS PDF report: %s", exc)
+        return None
+
+
+def _generate_yts_pdf_report_artifact(state: Dict[str, Any]) -> Optional[Path]:
+    _generate_yts_html_report_artifact(state)
+    report_path_raw = str(state.get("report_pdf_path") or "").strip()
+    if not report_path_raw:
+        artifacts_dir = Path(str(state.get("artifacts_dir") or _get_yts_live_artifacts_dir(str(state.get("command_id") or "report"))))
+        report_path_raw = str(artifacts_dir / f"yts-report-{state.get('command_id')}.pdf")
+        state["report_pdf_path"] = report_path_raw
+        state["report_pdf_name"] = Path(report_path_raw).name
+    report_path = Path(report_path_raw)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.units import inch
+        from reportlab.pdfgen import canvas
+    except Exception as exc:
+        logger.warning("Unable to generate YTS PDF report via reportlab (%s); using minimal fallback", exc)
+        return _generate_minimal_yts_pdf_report_artifact(state, report_path)
+
+    c = canvas.Canvas(str(report_path), pagesize=A4)
+    page_width, page_height = A4
+    x_margin = 40
+    y = page_height - 40
+    line_h = 14
+
+    def _new_page():
+        nonlocal y
+        c.showPage()
+        y = page_height - 40
+
+    def _write_line(text: str, indent: int = 0, font: str = "Helvetica", size: int = 10):
+        nonlocal y
+        if y < 70:
+            _new_page()
+        c.setFont(font, size)
+        c.drawString(x_margin + indent, y, str(text or ""))
+        y -= line_h
+
+    def _write_wrapped(text: str, indent: int = 0, font: str = "Helvetica", size: int = 10, max_chars: int = 110):
+        payload = str(text or "")
+        chunks = [payload[i : i + max_chars] for i in range(0, len(payload), max_chars)] or [""]
+        for chunk in chunks:
+            _write_line(chunk, indent=indent, font=font, size=size)
+
+    _write_line("YTS AI Validation Report", font="Helvetica-Bold", size=14)
+    _write_line("Source: HTML report artifact", size=9)
+    _write_line(f"Command ID: {state.get('command_id')}")
+    _write_wrapped(f"Command: {state.get('command')}")
+    _write_line(f"Status: {state.get('status')} | Return code: {state.get('returncode')}")
+    _write_line(f"Created: {state.get('created_at')} | Updated: {state.get('updated_at')}")
+    _write_line("")
+
+    prompts = list(state.get("prompts") or [])
+    if not prompts:
+        _write_line("No interactive prompts captured.")
+    for prompt in prompts:
+        prompt_id = prompt.get("id")
+        _write_line(f"Prompt #{prompt_id}", font="Helvetica-Bold", size=12)
+        _write_wrapped(f"Question: {prompt.get('text')}", indent=8)
+        options = list(prompt.get("options") or [])
+        if options:
+            _write_line(f"Options: {', '.join(options)}", indent=8)
+        _write_line(f"Answered: {bool(prompt.get('answered'))}", indent=8)
+        _write_line(f"Response: {prompt.get('response') or '-'} ({prompt.get('response_source') or '-'})", indent=8)
+        _write_line(f"AI Suggestion: {prompt.get('ai_suggestion') or '-'} ({prompt.get('ai_source') or '-'})", indent=8)
+        _write_wrapped(f"Justification: {_build_yts_prompt_justification(prompt)}", indent=8)
+
+        checkpoint = prompt.get("checkpoint") if isinstance(prompt.get("checkpoint"), dict) else {}
+        ai_evidence = prompt.get("ai_evidence") if isinstance(prompt.get("ai_evidence"), dict) else {}
+        ai_image_path_text = str(ai_evidence.get("image_path") or "").strip()
+        if ai_image_path_text and Path(ai_image_path_text).exists():
+            ai_img_path = Path(ai_image_path_text)
+            _write_line(f"Gemini evidence screenshot: {ai_img_path.name}", indent=8)
+            available_w = page_width - (x_margin * 2)
+            draw_w = min(available_w, 5.8 * inch)
+            draw_h = 3.2 * inch
+            if y - draw_h < 60:
+                _new_page()
+            try:
+                c.drawImage(str(ai_img_path), x_margin + 8, y - draw_h, width=draw_w, height=draw_h, preserveAspectRatio=True, anchor='sw')
+                y -= (draw_h + 8)
+            except Exception:
+                _write_line("(Unable to embed Gemini evidence screenshot)", indent=8)
+        image_path_text = str(checkpoint.get("image_path") or "").strip()
+        if image_path_text and Path(image_path_text).exists():
+            img_path = Path(image_path_text)
+            _write_line(f"Checkpoint screenshot: {img_path.name}", indent=8)
+            available_w = page_width - (x_margin * 2)
+            draw_w = min(available_w, 5.8 * inch)
+            draw_h = 3.2 * inch
+            if y - draw_h < 60:
+                _new_page()
+            try:
+                c.drawImage(str(img_path), x_margin + 8, y - draw_h, width=draw_w, height=draw_h, preserveAspectRatio=True, anchor='sw')
+                y -= (draw_h + 8)
+            except Exception:
+                _write_line("(Unable to embed checkpoint screenshot)", indent=8)
+        _write_line("")
+
+    revalidation = list(state.get("revalidation") or [])
+    _write_line("Post-run Gemini Revalidation", font="Helvetica-Bold", size=12)
+    _write_line(f"Revalidated at: {state.get('revalidated_at') or '-'}", indent=8)
+    if not revalidation:
+        _write_line("No post-run revalidation results.", indent=8)
+    for item in revalidation:
+        _write_wrapped(
+            f"#{item.get('condition_id')} {item.get('condition')} => {item.get('verdict')} (confidence={item.get('confidence')})",
+            indent=8,
+        )
+        _write_wrapped(f"Reason: {item.get('reason') or '-'}", indent=12)
+        _write_wrapped(f"Observed: {item.get('observed') or '-'}", indent=12)
+        evidence_path_text = str(item.get("evidence_image_path") or "").strip()
+        if evidence_path_text and Path(evidence_path_text).exists():
+            evidence_path = Path(evidence_path_text)
+            _write_line(f"Evidence image: {evidence_path.name}", indent=12)
+            available_w = page_width - (x_margin * 2)
+            draw_w = min(available_w, 5.4 * inch)
+            draw_h = 2.8 * inch
+            if y - draw_h < 60:
+                _new_page()
+            try:
+                c.drawImage(str(evidence_path), x_margin + 12, y - draw_h, width=draw_w, height=draw_h, preserveAspectRatio=True, anchor='sw')
+                y -= (draw_h + 8)
+            except Exception:
+                _write_line("(Unable to embed revalidation evidence image)", indent=12)
+        _write_line("")
+
+    c.save()
+    state["report_pdf_path"] = str(report_path)
+    state["report_pdf_name"] = report_path.name
+    return report_path
+
+
+def _extract_yts_condition_lines_from_text(text: str) -> List[str]:
+    lines = [
+        _strip_terminal_ansi(line)
+        for line in str(text or "").splitlines()
+    ]
+    conditions: List[str] = []
+    current = ""
+    for raw in lines:
+        line = str(raw or "").rstrip()
+        line = re.sub(r"^\[[^\]]+\]\s*", "", line)
+        if not line.strip():
+            if current:
+                conditions.append(current.strip())
+                current = ""
+            continue
+        if re.match(r"^\s*\d+\)\s+", line):
+            if current:
+                conditions.append(current.strip())
+            current = re.sub(r"^\s*\d+\)\s+", "", line).strip()
+            continue
+        if current:
+            bare = line.strip()
+            if re.match(r"^[1-9][:.)-]\s+", bare):
+                continue
+            if bare.lower().startswith(("please select", "responses:", "prompt ")):
+                continue
+            current = f"{current} {bare}".strip()
+    if current:
+        conditions.append(current.strip())
+    return [item for item in conditions if item]
+
+
+def _collect_yts_revalidation_conditions(state: Dict[str, Any]) -> List[str]:
+    prompts = list(state.get("prompts") or [])
+    extracted: List[str] = []
+    for prompt in prompts:
+        extracted.extend(_extract_yts_condition_lines_from_text(str(prompt.get("text") or "")))
+    log_conditions = _extract_yts_condition_lines_from_text(_render_yts_terminal_log(state))
+    combined = [*extracted, *log_conditions]
+    if not combined:
+        combined = []
+    deduped: List[str] = []
+    seen: set[str] = set()
+    for item in combined:
+        key = item.lower().strip()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    filtered: List[str] = []
+    lowered = [entry.lower().strip() for entry in deduped]
+    for idx, entry in enumerate(deduped):
+        current = lowered[idx]
+        if any(other != current and other.startswith(current) for other in lowered):
+            continue
+        filtered.append(entry)
+    filtered = filtered[:10]
+    if filtered:
+        return filtered
+
+    guided_context = _build_yts_guided_prompt_context(state)
+    guided_conditions: List[str] = []
+    for raw in str(guided_context or "").splitlines():
+        line = str(raw or "").strip()
+        if not line or ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        k = key.strip().lower()
+        v = value.strip()
+        if not v:
+            continue
+        if k in {"expected_result", "expected_outcome", "objective", "description", "guidance", "instructions"}:
+            guided_conditions.append(v)
+            continue
+        if k in {"steps", "guide_steps"}:
+            try:
+                parsed = json.loads(v)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, list):
+                for step in parsed[:3]:
+                    step_text = str(step or "").strip()
+                    if step_text:
+                        guided_conditions.append(step_text)
+
+    if guided_conditions:
+        deduped_guided: List[str] = []
+        seen_guided: set[str] = set()
+        for item in guided_conditions:
+            key = item.lower().strip()
+            if not key or key in seen_guided:
+                continue
+            seen_guided.add(key)
+            deduped_guided.append(item)
+        if deduped_guided:
+            return deduped_guided[:10]
+
+    test_name = str(state.get("test_id") or _extract_yts_test_id_from_command(str(state.get("command") or "")) or "this run").strip()
+    return [f"Validate overall expected outcome for {test_name} using recorded video evidence."]
+
+
+async def _ensure_yts_post_revalidation_if_missing(state: Dict[str, Any]) -> bool:
+    if not isinstance(state, dict):
+        return False
+    if str(state.get("status") or "") != "completed":
+        return False
+    if state.get("revalidation"):
+        return False
+    raw_returncode = state.get("returncode")
+    try:
+        returncode = int(raw_returncode) if raw_returncode is not None else None
+    except Exception:
+        returncode = None
+    if returncode != 0:
+        return False
+
+    await _run_yts_post_revalidation(state)
+    return bool(state.get("revalidation") or state.get("revalidated_at"))
+
+
+def _extract_revalidation_frames(video_path: Path, artifacts_dir: Path, max_frames: int = 4) -> List[Path]:
+    if not ffmpeg_available() or not video_path.exists():
+        return []
+    target_dir = artifacts_dir / "revalidation_frames"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for file in target_dir.glob("frame-*.jpg"):
+        with contextlib.suppress(Exception):
+            file.unlink()
+    output_pattern = target_dir / "frame-%03d.jpg"
+    try:
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(video_path),
+                "-vf",
+                "fps=1/5",
+                "-frames:v",
+                str(max(1, int(max_frames))),
+                str(output_pattern),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return []
+    return sorted(target_dir.glob("frame-*.jpg"))[: max(1, int(max_frames))]
+
+
+async def _run_yts_post_revalidation(state: Dict[str, Any]) -> None:
+    if not isinstance(state, dict):
+        return
+    raw_returncode = state.get("returncode")
+    try:
+        returncode = int(raw_returncode) if raw_returncode is not None else None
+    except Exception:
+        returncode = None
+    if str(state.get("status") or "") != "completed" or returncode != 0:
+        return
+
+    command_id = str(state.get("command_id") or "").strip()
+    if not command_id:
+        return
+
+    conditions = _collect_yts_revalidation_conditions(state)
+    if not conditions:
+        return
+
+    video_path_raw = str(state.get("video_file_path") or "").strip()
+    video_path = Path(video_path_raw) if video_path_raw else None
+    if not video_path or not video_path.exists():
+        state["revalidation"] = [
+            {
+                "condition_id": idx,
+                "condition": condition,
+                "verdict": "UNCERTAIN",
+                "confidence": 0.0,
+                "reason": "Recorded video artifact not available for post-run revalidation.",
+                "observed": "",
+                "evidence_image_name": None,
+                "evidence_image_path": None,
+            }
+            for idx, condition in enumerate(conditions, start=1)
+        ]
+        state["revalidated_at"] = _utc_now_iso()
+        state["logs"].append({"stream": "ai", "message": "Skipped post-run revalidation: video not available", "raw_message": "{}"})
+        return
+
+    client = get_vertex_text_client()
+
+    artifacts_dir = Path(str(state.get("artifacts_dir") or _get_yts_live_artifacts_dir(command_id)))
+    frame_paths = await asyncio.to_thread(_extract_revalidation_frames, video_path, artifacts_dir, 4)
+    if not frame_paths:
+        state["revalidation"] = [
+            {
+                "condition_id": idx,
+                "condition": condition,
+                "verdict": "UNCERTAIN",
+                "confidence": 0.0,
+                "reason": "Could not extract validation frames from recorded video.",
+                "observed": "",
+                "evidence_image_name": None,
+                "evidence_image_path": None,
+            }
+            for idx, condition in enumerate(conditions, start=1)
+        ]
+        state["revalidated_at"] = _utc_now_iso()
+        state["logs"].append({"stream": "ai", "message": "Skipped post-run revalidation: no extracted frames", "raw_message": "{}"})
+        return
+
+    full_log_text = _render_yts_terminal_log(state)
+    if len(full_log_text) > 180000:
+        full_log_text = full_log_text[-180000:]
+    test_name = str(state.get("test_id") or _extract_yts_test_id_from_command(str(state.get("command") or "")) or "unknown")
+
+    state["logs"].append(
+        {
+            "stream": "ai",
+            "message": "Started post-run Gemini revalidation",
+            "raw_message": json.dumps({"test": test_name, "conditions": len(conditions), "frames": len(frame_paths)}, ensure_ascii=False),
+        }
+    )
+
+    if client is None:
+        state["revalidation"] = [
+            {
+                "condition_id": idx,
+                "condition": condition,
+                "verdict": "UNCERTAIN",
+                "confidence": 0.0,
+                "reason": "Gemini client unavailable for post-run revalidation.",
+                "observed": "",
+                "evidence_image_name": frame_paths[min(idx - 1, len(frame_paths) - 1)].name if frame_paths else None,
+                "evidence_image_path": str(frame_paths[min(idx - 1, len(frame_paths) - 1)]) if frame_paths else None,
+            }
+            for idx, condition in enumerate(conditions, start=1)
+        ]
+        state["revalidated_at"] = _utc_now_iso()
+        state["logs"].append({"stream": "ai", "message": "Skipped Gemini post-run revalidation: client unavailable", "raw_message": "{}"})
+        return
+
+    results: List[Dict[str, Any]] = []
+    for idx, condition in enumerate(conditions, start=1):
+        best: Optional[Dict[str, Any]] = None
+        last_error: Optional[str] = None
+        for frame in frame_paths:
+            image_b64 = base64.b64encode(frame.read_bytes()).decode("ascii")
+            prompt = "\n\n".join(
+                [
+                    _shared_ai_prompt_preamble(),
+                    "Task: re-validate a completed YTS visual condition using the attached frame from the recorded run.",
+                    "Return strict JSON: {\"verdict\":\"PASS|FAIL|UNCERTAIN\",\"confidence\":0..1,\"reason\":\"...\",\"observed\":\"...\"}",
+                    f"Test name/id: {test_name}",
+                    f"Condition: {condition}",
+                    f"Execution log:\n{full_log_text}",
+                ]
+            )
+            try:
+                response = await client.generate_content(
+                    prompt,
+                    screenshot_b64=image_b64,
+                    session_id=f"yts-post-reval-{command_id}-{idx}",
+                )
+            except Exception as exc:
+                last_error = str(exc)
+                continue
+            parsed = _extract_json_object(str(response or "")) or {}
+            verdict = str(parsed.get("verdict") or "UNCERTAIN").strip().upper()
+            try:
+                conf = float(parsed.get("confidence") or 0.0)
+            except Exception:
+                conf = 0.0
+            candidate = {
+                "condition_id": idx,
+                "condition": condition,
+                "verdict": verdict if verdict in {"PASS", "FAIL", "UNCERTAIN"} else "UNCERTAIN",
+                "confidence": max(0.0, min(1.0, conf)),
+                "reason": str(parsed.get("reason") or "").strip(),
+                "observed": str(parsed.get("observed") or "").strip(),
+                "evidence_image_name": frame.name,
+                "evidence_image_path": str(frame),
+            }
+            if best is None or float(candidate["confidence"]) > float(best.get("confidence") or 0.0):
+                best = candidate
+            if candidate["verdict"] == "PASS" and float(candidate["confidence"]) >= 0.85:
+                best = candidate
+                break
+        if best is None:
+            fallback_frame = frame_paths[min(idx - 1, len(frame_paths) - 1)] if frame_paths else None
+            best = {
+                "condition_id": idx,
+                "condition": condition,
+                "verdict": "UNCERTAIN",
+                "confidence": 0.0,
+                "reason": (
+                    f"Gemini revalidation unavailable for this condition: {_sanitize_error_text(last_error)}"
+                    if last_error
+                    else "Gemini revalidation unavailable for this condition."
+                ),
+                "observed": "",
+                "evidence_image_name": (fallback_frame.name if fallback_frame else None),
+                "evidence_image_path": (str(fallback_frame) if fallback_frame else None),
+            }
+        results.append(best)
+
+    state["revalidation"] = results
+    state["revalidated_at"] = _utc_now_iso()
+    state["logs"].append(
+        {
+            "stream": "ai",
+            "message": "Completed post-run Gemini revalidation",
+            "raw_message": json.dumps({"results": results}, ensure_ascii=False),
+        }
+    )
 
 
 def _resolve_yts_recording_device() -> Optional[str]:
@@ -1985,6 +2849,8 @@ def _summarize_yts_live_state(state: Dict[str, Any]) -> Dict[str, Any]:
         "audio_recording_status": normalized.get("audio_recording_status"),
         "video_file_name": normalized.get("video_file_name"),
         "result_file_name": normalized.get("result_file_name"),
+        "report_html_name": normalized.get("report_html_name"),
+        "report_pdf_name": normalized.get("report_pdf_name"),
         "awaiting_input": normalized.get("awaiting_input"),
         "updated_at": normalized.get("updated_at"),
         "created_at": normalized.get("created_at"),
@@ -2491,15 +3357,29 @@ def _extract_yts_setup_instruction(prompt_text: str, log_text: str) -> Optional[
     if "open settings" in lowered:
         return "open settings"
 
+    if "navigator.language" in lowered:
+        language_value = _extract_language_setting_value(combined)
+        if language_value:
+            return f"set language to {language_value}"
+
+    if "navigator.language" in lowered and "change" in lowered:
+        return "set language to en-US"
+
+    if "navigator.timezone" in lowered and "change" in lowered:
+        timezone_value = _extract_setting_value(combined, r"navigator\.timezone|time\s*zone|timezone")
+        if timezone_value:
+            return f"set time zone to {timezone_value}"
+
     return None
 
 
-async def _maybe_execute_yts_setup_actions(command_id: str, prompt_text: str, log_text: str) -> List[Dict[str, Any]]:
+async def _maybe_execute_yts_setup_actions(command_id: str, prompt_text: str, log_text: str, guided_context: str = "") -> List[Dict[str, Any]]:
     state = _get_yts_live_state(command_id)
     if not state:
         return []
 
-    instruction = _extract_yts_setup_instruction(prompt_text, log_text)
+    combined_context = "\n".join(part for part in [log_text, guided_context] if str(part or "").strip())
+    instruction = _extract_yts_setup_instruction(prompt_text, combined_context)
     if not instruction:
         return []
 
@@ -2655,6 +3535,211 @@ def _normalize_yts_ai_suggestion(prompt_text: str, options: List[str], suggestio
     return normalized_suggestion
 
 
+def _looks_like_terminal_action_token(value: str) -> bool:
+    token = str(value or "").strip().upper()
+    if not token:
+        return False
+    return bool(
+        re.match(
+            r"^(PRESS_[A-Z0-9_]+|KEY_[A-Z0-9_]+|KEYCODE_[A-Z0-9_]+|LAUNCH_APP|EXIT_APP|SET_SETTING|GET_SETTING|WAIT|LONG_KEY_PRESS|OPERATIONS_LIST|APPLICATIONS_LIST|SETTINGS_LIST|VOICE_LIST)\b",
+            token,
+        )
+    )
+
+
+def _is_safe_yts_terminal_response(prompt_text: str, options: List[str], suggestion: str) -> bool:
+    value = str(suggestion or "").strip()
+    if not value:
+        return False
+    if "\n" in value:
+        return False
+    if len(value) > 64:
+        return False
+    if _looks_like_terminal_action_token(value):
+        return False
+
+    normalized_options = [str(option or "").strip() for option in (options or []) if str(option or "").strip()]
+    if normalized_options:
+        lowered = value.lower()
+        if any(lowered == option.lower() for option in normalized_options):
+            return True
+        # If options are present, avoid free-form tokens that are not explicit options.
+        return False
+
+    lowered_prompt = str(prompt_text or "").lower()
+    lowered_value = value.lower()
+    if any(marker in lowered_prompt for marker in ("yes/no", "(y/n)", "type yes", "type no")):
+        return lowered_value in {"yes", "no", "y", "n"}
+    if _yts_prompt_requires_numeric_response(prompt_text, []):
+        return lowered_value.isdigit()
+    return lowered_value in {"yes", "no", "y", "n"} or lowered_value.isdigit()
+
+
+def _is_yts_pass_fail_prompt(prompt_text: str) -> bool:
+    labels = _extract_yts_prompt_option_labels(prompt_text)
+    if not labels:
+        return False
+    has_pass = any("pass" in str(label) for label in labels.values())
+    has_fail = any("fail" in str(label) for label in labels.values())
+    return has_pass and has_fail
+
+
+def _apply_yts_validation_response_guard(
+    prompt_text: str,
+    options: List[str],
+    suggestion: str,
+    visual_context: Dict[str, Any],
+) -> str:
+    proposed = str(suggestion or "").strip()
+    if not proposed:
+        return proposed
+
+    labels = _extract_yts_prompt_option_labels(prompt_text)
+    normalized_options = [str(option or "").strip() for option in (options or []) if str(option or "").strip()]
+
+    def _find_option_by_label_fragment(fragment: str) -> Optional[str]:
+        for option, label in labels.items():
+            if fragment in str(label or ""):
+                return option
+        for option in normalized_options:
+            if fragment in option.lower():
+                return option
+        return None
+
+    pass_option = _find_option_by_label_fragment("pass")
+    fail_option = _find_option_by_label_fragment("fail")
+    skip_option = _find_option_by_label_fragment("skip")
+    yes_option = _find_option_by_label_fragment("yes") or next((o for o in normalized_options if o.lower() in {"yes", "y"}), None)
+    no_option = _find_option_by_label_fragment("no") or next((o for o in normalized_options if o.lower() in {"no", "n"}), None)
+
+    analysis = dict(visual_context.get("analysis") or {})
+    summary = str(analysis.get("summary") or visual_context.get("summary") or "").strip().lower()
+    confidence = float(analysis.get("confidence") or 0.0)
+    playback_visible = bool(analysis.get("playback_visible"))
+    analysis_has_signal = bool(analysis)
+
+    blocked_patterns = (
+        r"\bads?\b",
+        r"\badvert(?:isement|ising)?\b",
+        r"\bskip\s+ad\b",
+        r"\breference\s+image\b",
+        r"\breference\s+frame\b",
+        r"\bloading\b",
+        r"\bbuffer(?:ing)?\b",
+        r"\bspinner\b",
+        r"\bunable\b",
+        r"\bno\s+screenshot\b",
+        r"\bcould\s+not\s+capture\b",
+    )
+    blocked = any(re.search(pattern, summary) for pattern in blocked_patterns)
+
+    insufficient_evidence = bool(blocked) or bool(analysis_has_signal and (confidence < 0.8 or not playback_visible))
+
+    is_pass_fail_prompt = _is_yts_pass_fail_prompt(prompt_text)
+    is_yes_no_prompt = bool(yes_option and no_option)
+    validation_prompt = bool(
+        re.search(
+            r"\b(validate|validation|render|correct(?:ly)?|reference\s+image|expected\s+image|pass|fail|match)\b",
+            str(prompt_text or "").lower(),
+        )
+    )
+
+    if is_pass_fail_prompt and pass_option and proposed == pass_option and insufficient_evidence:
+        # Conservative fallback: prefer SKIP when available; otherwise FAIL.
+        if skip_option:
+            return skip_option
+        if fail_option:
+            return fail_option
+        return proposed
+
+    if is_yes_no_prompt and validation_prompt and yes_option and proposed.lower() in {yes_option.lower(), "yes", "y"} and insufficient_evidence:
+        if no_option:
+            return no_option
+        return proposed
+
+    return proposed
+
+
+def _extract_yts_test_id_from_command(command_text: str) -> Optional[str]:
+    raw = str(command_text or "").strip()
+    if not raw:
+        return None
+    try:
+        tokens = shlex.split(raw)
+    except Exception:
+        tokens = raw.split()
+    if not tokens:
+        return None
+    for idx, token in enumerate(tokens):
+        if str(token).lower() != "test":
+            continue
+        if idx + 2 < len(tokens):
+            test_id = str(tokens[idx + 2]).strip()
+            return test_id or None
+        break
+    return None
+
+
+def _load_yts_guided_test_context(test_id: str) -> str:
+    tid = str(test_id or "").strip()
+    if not tid:
+        return ""
+    try:
+        tests = _read_yts_test_catalog(_YTS_GUIDED_TESTLIST_PATH)
+    except Exception:
+        return ""
+    if not tests:
+        return ""
+    record = next((item for item in tests if str((item or {}).get("test_id") or "").strip() == tid), None)
+    if not isinstance(record, dict):
+        return ""
+
+    scalar_keys = [
+        "test_id",
+        "test_title",
+        "test_suite",
+        "test_category",
+        "description",
+        "objective",
+        "expected_result",
+        "expected_outcome",
+        "guidance",
+        "instructions",
+    ]
+    lines: List[str] = []
+    for key in scalar_keys:
+        value = str(record.get(key) or "").strip()
+        if value:
+            lines.append(f"{key}: {value}")
+
+    for list_key in ("steps", "guide_steps", "actions", "prerequisites"):
+        value = record.get(list_key)
+        if isinstance(value, list) and value:
+            compact = [str(item).strip() for item in value if str(item).strip()]
+            if compact:
+                lines.append(f"{list_key}: {json.dumps(compact[:20], ensure_ascii=False)}")
+
+    for dict_key in ("settings", "expected", "metadata"):
+        value = record.get(dict_key)
+        if isinstance(value, dict) and value:
+            lines.append(f"{dict_key}: {json.dumps(value, ensure_ascii=False)}")
+
+    if not lines:
+        return ""
+    return "\n".join(lines)
+
+
+def _build_yts_guided_prompt_context(state: Dict[str, Any]) -> str:
+    test_id = str(state.get("test_id") or "").strip()
+    if not test_id:
+        test_id = str(state.get("requested_test_id") or "").strip()
+    if not test_id:
+        test_id = str(_extract_yts_test_id_from_command(str(state.get("command") or "")) or "").strip()
+    if not test_id:
+        return ""
+    return _load_yts_guided_test_context(test_id)
+
+
 def _update_yts_prompt_entry(command_id: str, prompt_id: int, **updates: Any) -> Optional[Dict[str, Any]]:
     state = _get_yts_live_state(command_id)
     if not state:
@@ -2740,9 +3825,9 @@ def _heuristic_yts_prompt_response(prompt_text: str, options: Optional[List[str]
     return "yes"
 
 
-async def _capture_yts_visual_context(command_id: str) -> Dict[str, Any]:
+async def _capture_yts_visual_context(command_id: str, force_fresh: bool = False) -> Dict[str, Any]:
     state = _get_yts_live_state(command_id) or {}
-    cached = _get_cached_yts_visual_context(command_id)
+    cached = None if force_fresh else _get_cached_yts_visual_context(command_id)
     if cached:
         visual_context = {
             "summary": cached.get("summary") or "Using latest Gemini live visual analysis.",
@@ -2770,10 +3855,12 @@ async def _capture_yts_visual_context(command_id: str) -> Dict[str, Any]:
     source = "unknown"
     observations: List[Dict[str, Any]] = []
     use_live_stream_only = False
+    mismatch_detected = False
 
     try:
         capture = get_screen_capture()
         capture_status = capture.capture_source_status()
+        mismatch_detected = _is_hdmi_capture_device_mismatch(capture_status)
         use_live_stream_only = bool(capture_status.get("hdmi_available")) and str(capture_status.get("configured_source") or "").lower() != "dab"
         for attempt in range(_YTS_INTERACTIVE_CAPTURE_ATTEMPTS):
             if use_live_stream_only and hasattr(capture, "capture_live_stream_frame"):
@@ -2782,6 +3869,11 @@ async def _capture_yts_visual_context(command_id: str) -> Dict[str, Any]:
                 result = await capture.capture()
             source = str(result.source or capture_status.get("configured_source") or "unknown")
             image_b64 = result.image_b64
+            latest_status = capture.capture_source_status()
+            mismatch_now = _is_hdmi_capture_device_mismatch(latest_status)
+            mismatch_detected = mismatch_detected or mismatch_now
+            if mismatch_now:
+                image_b64 = None
             if image_b64:
                 screenshot_b64 = image_b64
             observations.append(
@@ -2789,6 +3881,7 @@ async def _capture_yts_visual_context(command_id: str) -> Dict[str, Any]:
                     "attempt": attempt + 1,
                     "source": source,
                     "has_screenshot": bool(image_b64),
+                    "device_mismatch": bool(mismatch_now),
                 }
             )
             if attempt < (_YTS_INTERACTIVE_CAPTURE_ATTEMPTS - 1):
@@ -2797,7 +3890,12 @@ async def _capture_yts_visual_context(command_id: str) -> Dict[str, Any]:
         capture_count = len(observations)
         screenshot_count = sum(1 for item in observations if item.get("has_screenshot"))
 
-        if screenshot_b64:
+        if mismatch_detected and not screenshot_b64:
+            summary = (
+                "Capture device mismatch detected: selected HDMI device does not match active capture session. "
+                "Gemini screenshot analysis was blocked to prevent wrong-screen justification."
+            )
+        elif screenshot_b64:
             summary = (
                 f"Captured {capture_count} TV frame(s) from {source}; "
                 f"{screenshot_count} frame(s) included screenshots. "
@@ -2821,8 +3919,10 @@ async def _capture_yts_visual_context(command_id: str) -> Dict[str, Any]:
         "capture_status": {
             "configured_source": capture_status.get("configured_source"),
             "selected_video_device": capture_status.get("selected_video_device"),
+            "hdmi_device": capture_status.get("hdmi_device"),
             "hdmi_available": capture_status.get("hdmi_available"),
             "live_stream_only": use_live_stream_only,
+            "device_mismatch": mismatch_detected,
         },
     }
     if state:
@@ -2920,6 +4020,20 @@ def get_vertex_live_visual_client() -> Optional[VertexPlannerClient]:
 async def _capture_yts_live_monitor_frame(command_id: str) -> Dict[str, Any]:
     capture = get_screen_capture()
     capture_status = capture.capture_source_status()
+    if _is_hdmi_capture_device_mismatch(capture_status):
+        return {
+            "source": "capture-mismatch",
+            "screenshot_b64": None,
+            "observations": [{"attempt": 1, "source": "capture-mismatch", "has_screenshot": False, "device_mismatch": True}],
+            "capture_status": {
+                "configured_source": capture_status.get("configured_source"),
+                "selected_video_device": capture_status.get("selected_video_device"),
+                "hdmi_device": capture_status.get("hdmi_device"),
+                "hdmi_available": capture_status.get("hdmi_available"),
+                "live_stream_only": False,
+                "device_mismatch": True,
+            },
+        }
     use_live_stream_only = bool(capture_status.get("hdmi_available")) and str(capture_status.get("configured_source") or "").lower() != "dab"
     if use_live_stream_only and hasattr(capture, "capture_live_stream_frame"):
         result = await capture.capture_live_stream_frame()
@@ -2933,8 +4047,10 @@ async def _capture_yts_live_monitor_frame(command_id: str) -> Dict[str, Any]:
         "capture_status": {
             "configured_source": capture_status.get("configured_source"),
             "selected_video_device": capture_status.get("selected_video_device"),
+            "hdmi_device": capture_status.get("hdmi_device"),
             "hdmi_available": capture_status.get("hdmi_available"),
             "live_stream_only": use_live_stream_only,
+            "device_mismatch": False,
         },
     }
 
@@ -3075,12 +4191,16 @@ async def _run_yts_live_visual_monitor(command_id: str) -> None:
         _yts_live_visual_cache.pop(command_id, None)
 
 
-async def _suggest_yts_prompt_response(command_id: str, prompt_text: str, options: Optional[List[str]] = None) -> dict:
+async def _suggest_yts_prompt_response(command_id: str, prompt_text: str, options: Optional[List[str]] = None, prompt_id: Optional[int] = None) -> dict:
     options = options or []
     state = _get_yts_live_state(command_id) or {}
     active_test_log_text = _build_yts_prompt_log_context(state, prompt_text)
     recent_log_text = _recent_yts_terminal_log_text(state, limit=140)
+    full_log_text = _render_yts_terminal_log(state)
+    if len(full_log_text) > 200000:
+        full_log_text = full_log_text[-200000:]
     log_text = active_test_log_text or recent_log_text
+    guided_test_context = _build_yts_guided_prompt_context(state)
     numeric_response_required = _yts_prompt_requires_numeric_response(prompt_text, options)
     fallback = _heuristic_yts_prompt_response(prompt_text, options)
     if state:
@@ -3088,16 +4208,68 @@ async def _suggest_yts_prompt_response(command_id: str, prompt_text: str, option
         state["ai_status_message"] = "Gemini is watching the TV stream and reading the terminal guide..."
         _persist_yts_live_state(state)
 
+    def _log_ai(message: str, payload: Optional[Dict[str, Any]] = None) -> None:
+        if not state:
+            return
+        raw = json.dumps(payload or {}, ensure_ascii=False)
+        state.setdefault("logs", []).append(
+            {
+                "stream": "ai",
+                "message": str(message or ""),
+                "raw_message": raw,
+            }
+        )
+
     try:
-        setup_actions = await _maybe_execute_yts_setup_actions(command_id, prompt_text, log_text)
-        visual_context = await _capture_yts_visual_context(command_id)
-        client = get_vertex_text_client()
-        if client is None:
+        setup_actions = await _maybe_execute_yts_setup_actions(command_id, prompt_text, log_text, guided_test_context)
+        try:
+            visual_context = await _capture_yts_visual_context(command_id, force_fresh=True)
+        except TypeError:
+            visual_context = await _capture_yts_visual_context(command_id)
+        ai_evidence = _persist_yts_ai_evidence_image(command_id, prompt_id, str(visual_context.get("screenshot_b64") or ""))
+        _log_ai(
+            "Captured visual context for prompt suggestion",
+            {
+                "prompt_id": prompt_id,
+                "visual_source": visual_context.get("source"),
+                "visual_summary": visual_context.get("summary"),
+                "analysis": visual_context.get("analysis"),
+                "evidence_image": (ai_evidence or {}).get("image_name"),
+            },
+        )
+        if not str(visual_context.get("screenshot_b64") or "").strip():
+            _log_ai(
+                "Deferred AI response due to missing screenshot",
+                {
+                    "prompt_id": prompt_id,
+                    "reason": "No fresh TV screenshot available",
+                },
+            )
             return {
-                "response": fallback,
-                "source": "heuristic",
+                "response": None,
+                "source": "deferred-no-visual",
+                "deferred_reason": "No fresh TV screenshot available. AI response deferred to avoid blind input.",
                 "visual_summary": visual_context.get("summary"),
                 "visual_source": visual_context.get("source"),
+                "ai_evidence": ai_evidence,
+                "setup_actions": setup_actions,
+            }
+        client = get_vertex_text_client()
+        if client is None:
+            _log_ai(
+                "Deferred AI response because Gemini client is unavailable",
+                {
+                    "prompt_id": prompt_id,
+                    "reason": "Gemini client unavailable",
+                },
+            )
+            return {
+                "response": None,
+                "source": "deferred-no-model",
+                "deferred_reason": "Gemini client unavailable. AI response deferred instead of sending blind input.",
+                "visual_summary": visual_context.get("summary"),
+                "visual_source": visual_context.get("source"),
+                "ai_evidence": ai_evidence,
                 "setup_actions": setup_actions,
             }
 
@@ -3114,8 +4286,11 @@ async def _suggest_yts_prompt_response(command_id: str, prompt_text: str, option
                 f"Interactive prompt: {prompt_text}",
                 f"Allowed options: {', '.join(options) if options else 'infer from prompt'}",
                 "Rules: attached screenshot is the primary visual context; prefer non-destructive option when uncertain; if UI path is unclear, favor response that allows a UI navigation checkpoint first; return only the response token.",
+                "Never return remote-control or planner actions (examples: PRESS_DOWN, KEYCODE_DPAD_DOWN, SET_SETTING, LAUNCH_APP). Return only terminal input token.",
                 f"Active test terminal context:\n{active_test_log_text or '(active test context unavailable)'}",
+                f"Guided test metadata:\n{guided_test_context or '(guided metadata unavailable)'}",
                 f"Recent terminal logs:\n{recent_log_text or '(no recent logs)'}",
+                f"Full terminal execution log (current run):\n{full_log_text or '(no logs)'}",
                 f"Executed DAB setup actions before answering: {json.dumps(setup_actions, ensure_ascii=False)}",
                 f"TV visual context source: {visual_context.get('source', 'unknown')}",
                 f"TV observation sequence: {json.dumps(visual_context.get('observations') or [], ensure_ascii=False)}",
@@ -3133,23 +4308,55 @@ async def _suggest_yts_prompt_response(command_id: str, prompt_text: str, option
             suggestion = str(response or "").strip().splitlines()[0].strip()
             if not suggestion:
                 suggestion = fallback
+            raw_suggestion = suggestion
             suggestion = _normalize_yts_ai_suggestion(prompt_text, options, suggestion)
+            normalized_suggestion = suggestion
+            if not _is_safe_yts_terminal_response(prompt_text, options, suggestion):
+                suggestion = _normalize_yts_ai_suggestion(prompt_text, options, fallback)
+            safe_suggestion = suggestion
+            suggestion = _apply_yts_validation_response_guard(prompt_text, options, suggestion, visual_context)
+            guarded_suggestion = suggestion
             if numeric_response_required and (suggestion not in options or not str(suggestion).isdigit()):
                 suggestion = fallback
+            final_suggestion = suggestion
+            _log_ai(
+                "Gemini suggestion decision trace",
+                {
+                    "prompt_id": prompt_id,
+                    "raw_suggestion": raw_suggestion,
+                    "normalized": normalized_suggestion,
+                    "safe_checked": safe_suggestion,
+                    "guarded": guarded_suggestion,
+                    "final": final_suggestion,
+                    "numeric_required": numeric_response_required,
+                    "allowed_options": options,
+                    "visual_analysis": visual_context.get("analysis"),
+                },
+            )
             return {
                 "response": suggestion,
                 "source": "gemini",
                 "visual_summary": visual_context.get("summary"),
                 "visual_source": visual_context.get("source"),
+                "ai_evidence": ai_evidence,
                 "setup_actions": setup_actions,
             }
         except Exception as exc:
             logger.warning("Gemini prompt suggestion failed for YTS command %s: %s", command_id, exc)
+            _log_ai(
+                "Deferred AI response due to Gemini exception",
+                {
+                    "prompt_id": prompt_id,
+                    "error": _sanitize_error_text(exc),
+                },
+            )
             return {
-                "response": fallback,
-                "source": "heuristic",
+                "response": None,
+                "source": "deferred-error",
+                "deferred_reason": f"Gemini suggestion failed: {_sanitize_error_text(exc)}",
                 "visual_summary": visual_context.get("summary"),
                 "visual_source": visual_context.get("source"),
+                "ai_evidence": ai_evidence,
                 "setup_actions": setup_actions,
             }
     finally:
@@ -3196,6 +4403,9 @@ async def _append_yts_stream_output(command_id: str, stream_name: str, stream) -
                 state["prompts"].append(prompt_entry)
                 state["pending_prompt"] = prompt_entry
                 state["awaiting_input"] = True
+                checkpoint = await _capture_yts_prompt_checkpoint(command_id, int(prompt_entry.get("id") or len(state["prompts"])))
+                if checkpoint:
+                    prompt_entry["checkpoint"] = checkpoint
 
             _merge_yts_prompt_entry(prompt_entry, stripped, stream_name)
             _persist_yts_live_state(state)
@@ -3203,7 +4413,19 @@ async def _append_yts_stream_output(command_id: str, stream_name: str, stream) -
             if state.get("interactive_ai") and _prompt_ready_for_ai_response(prompt_entry) and not prompt_entry.get("answered") and not prompt_entry.get("ai_suggestion"):
                 prompt_id = int(prompt_entry["id"])
                 try:
-                    suggestion = await _suggest_yts_prompt_response(command_id, prompt_entry.get("text", ""), prompt_entry.get("options") or [])
+                    try:
+                        suggestion = await _suggest_yts_prompt_response(
+                            command_id,
+                            prompt_entry.get("text", ""),
+                            prompt_entry.get("options") or [],
+                            prompt_id=prompt_id,
+                        )
+                    except TypeError:
+                        suggestion = await _suggest_yts_prompt_response(
+                            command_id,
+                            prompt_entry.get("text", ""),
+                            prompt_entry.get("options") or [],
+                        )
                     _update_yts_prompt_entry(
                         command_id,
                         prompt_id,
@@ -3211,7 +4433,9 @@ async def _append_yts_stream_output(command_id: str, stream_name: str, stream) -
                         ai_source=suggestion.get("source"),
                         ai_visual_summary=suggestion.get("visual_summary"),
                         ai_visual_source=suggestion.get("visual_source"),
-                        ai_error=None,
+                        ai_evidence=suggestion.get("ai_evidence"),
+                        setup_actions=suggestion.get("setup_actions") or [],
+                        ai_error=suggestion.get("deferred_reason"),
                     )
                     if suggestion.get("response"):
                         current_state = _get_yts_live_state(command_id) or {}
@@ -3268,6 +4492,8 @@ async def _run_yts_command_live(command_id: str, request: "YtsCommandRequest") -
             if state.get("record_audio") and state.get("audio_recording_status") == "recording":
                 state["audio_recording_status"] = "stopped"
         await asyncio.to_thread(_write_yts_terminal_log_artifact, state)
+        await asyncio.to_thread(_generate_yts_html_report_artifact, state)
+        await asyncio.to_thread(_generate_yts_pdf_report_artifact, state)
         _persist_yts_live_state(state)
         return
 
@@ -3305,7 +4531,10 @@ async def _run_yts_command_live(command_id: str, request: "YtsCommandRequest") -
                 state["video_recording_status"] = "stopped"
                 if state.get("record_audio") and state.get("audio_recording_status") == "recording":
                     state["audio_recording_status"] = "stopped"
+        await _run_yts_post_revalidation(state)
         await asyncio.to_thread(_write_yts_terminal_log_artifact, state)
+        await asyncio.to_thread(_generate_yts_html_report_artifact, state)
+        await asyncio.to_thread(_generate_yts_pdf_report_artifact, state)
         _persist_yts_live_state(state)
     except asyncio.CancelledError:
         if process.returncode is None:
@@ -3327,6 +4556,8 @@ async def _run_yts_command_live(command_id: str, request: "YtsCommandRequest") -
                 if state.get("record_audio") and state.get("audio_recording_status") == "recording":
                     state["audio_recording_status"] = "stopped"
         await asyncio.to_thread(_write_yts_terminal_log_artifact, state)
+        await asyncio.to_thread(_generate_yts_html_report_artifact, state)
+        await asyncio.to_thread(_generate_yts_pdf_report_artifact, state)
         _persist_yts_live_state(state)
         raise
     finally:
@@ -4846,6 +6077,10 @@ async def yts_live_command(request: YtsCommandRequest) -> dict:
     state["record_audio"] = bool(request.record_video and request.record_audio)
     state["video_recording_status"] = "pending" if request.record_video else "disabled"
     state["audio_recording_status"] = "pending" if bool(request.record_video and request.record_audio) else "disabled"
+    if str(request.command or "").strip().lower() == "test":
+        params = list(request.params or [])
+        if len(params) >= 2:
+            state["test_id"] = str(params[1]).strip()
     _yts_live_commands[command_id] = state
     _write_yts_terminal_log_artifact(state)
     _persist_yts_live_state(state)
@@ -4885,6 +6120,64 @@ async def download_yts_video_recording(command_id: str) -> FileResponse:
     if path is None or not path.exists():
         raise HTTPException(status_code=404, detail="Recorded video not available")
     return FileResponse(str(path), media_type="video/mp4", filename=path.name)
+
+
+@app.get("/yts/command/live/{command_id}/report-html")
+async def download_yts_html_report(command_id: str) -> FileResponse:
+    state = _get_yts_live_state(command_id)
+    if not state:
+        raise HTTPException(status_code=404, detail=f"YTS command {command_id!r} not found")
+
+    refreshed = await _ensure_yts_post_revalidation_if_missing(state)
+    path_raw = str(state.get("report_html_path") or "").strip()
+    path = Path(path_raw) if path_raw else None
+    if refreshed or path is None or not path.exists() or path.stat().st_size <= 0:
+        generated = await asyncio.to_thread(_generate_yts_html_report_artifact, state)
+        if generated is None or not generated.exists():
+            raise HTTPException(status_code=500, detail="Unable to generate YTS HTML report")
+        _persist_yts_live_state(state)
+        path = generated
+
+    return FileResponse(str(path), media_type="text/html", filename=path.name)
+
+
+@app.get("/yts/command/live/{command_id}/report-view")
+async def view_yts_html_report(command_id: str) -> Response:
+    state = _get_yts_live_state(command_id)
+    if not state:
+        raise HTTPException(status_code=404, detail=f"YTS command {command_id!r} not found")
+
+    refreshed = await _ensure_yts_post_revalidation_if_missing(state)
+    path_raw = str(state.get("report_html_path") or "").strip()
+    path = Path(path_raw) if path_raw else None
+    if refreshed or path is None or not path.exists() or path.stat().st_size <= 0:
+        generated = await asyncio.to_thread(_generate_yts_html_report_artifact, state)
+        if generated is None or not generated.exists():
+            raise HTTPException(status_code=500, detail="Unable to generate YTS HTML report")
+        _persist_yts_live_state(state)
+        path = generated
+
+    html = path.read_text(encoding="utf-8")
+    return Response(content=html, media_type="text/html")
+
+
+@app.get("/yts/command/live/{command_id}/report")
+async def download_yts_pdf_report(command_id: str) -> FileResponse:
+    state = _get_yts_live_state(command_id)
+    if not state:
+        raise HTTPException(status_code=404, detail=f"YTS command {command_id!r} not found")
+
+    refreshed = await _ensure_yts_post_revalidation_if_missing(state)
+    path_raw = str(state.get("report_pdf_path") or "").strip()
+    path = Path(path_raw) if path_raw else None
+    if refreshed or path is None or not path.exists() or path.stat().st_size <= 0:
+        generated = await asyncio.to_thread(_generate_yts_pdf_report_artifact, state)
+        if generated is None or not generated.exists():
+            raise HTTPException(status_code=500, detail="Unable to generate YTS PDF report")
+        _persist_yts_live_state(state)
+        path = generated
+
+    return FileResponse(str(path), media_type="application/pdf", filename=path.name)
 
 
 @app.get("/yts/command/live/{command_id}/result")
@@ -4977,7 +6270,19 @@ async def suggest_yts_live_command_response(command_id: str, request: YtsInterac
         raise HTTPException(status_code=409, detail="YTS prompt is still collecting the full question/options")
     prompt_id = int(prompt_entry["id"])
 
-    suggestion = await _suggest_yts_prompt_response(command_id, prompt_entry.get("text", ""), prompt_entry.get("options") or [])
+    try:
+        suggestion = await _suggest_yts_prompt_response(
+            command_id,
+            prompt_entry.get("text", ""),
+            prompt_entry.get("options") or [],
+            prompt_id=prompt_id,
+        )
+    except TypeError:
+        suggestion = await _suggest_yts_prompt_response(
+            command_id,
+            prompt_entry.get("text", ""),
+            prompt_entry.get("options") or [],
+        )
     _update_yts_prompt_entry(
         command_id,
         prompt_id,
@@ -4985,9 +6290,12 @@ async def suggest_yts_live_command_response(command_id: str, request: YtsInterac
         ai_source=suggestion["source"],
         ai_visual_summary=suggestion.get("visual_summary"),
         ai_visual_source=suggestion.get("visual_source"),
-        ai_error=None,
+        ai_evidence=suggestion.get("ai_evidence"),
+        ai_error=suggestion.get("deferred_reason"),
     )
     if request.send_response:
+        if not str(suggestion.get("response") or "").strip():
+            raise HTTPException(status_code=409, detail=str(suggestion.get("deferred_reason") or "AI response deferred"))
         await _send_yts_command_input(command_id, suggestion["response"], source=suggestion["source"])
         _update_yts_prompt_entry(
             command_id,
@@ -5001,6 +6309,7 @@ async def suggest_yts_live_command_response(command_id: str, request: YtsInterac
         "command_id": command_id,
         "suggestion": suggestion["response"],
         "source": suggestion["source"],
+        "deferred_reason": suggestion.get("deferred_reason"),
         "sent": bool(request.send_response),
     }
 

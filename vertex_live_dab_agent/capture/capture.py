@@ -308,39 +308,32 @@ class ScreenCapture:
 
         configured = (self._selected_video_device or self._config.hdmi_capture_device or "").strip()
         kind_pref = self._effective_kind_preference()
+        explicit_device_requested = bool(configured)
 
         candidates = []
         if configured:
             candidates.append(configured)
 
-        if kind_pref in {"auto", "hdmi"}:
-            adt4_path = get_camera_path("adt4")
-            if adt4_path:
-                candidates.append(adt4_path)
-        if kind_pref in {"auto", "camera"}:
-            sony_path = get_camera_path("sonytv")
-            kirkwood_path = get_camera_path("kirkwood")
-            if sony_path:
-                candidates.append(sony_path)
-            if kirkwood_path:
-                candidates.append(kirkwood_path)
+        # If an explicit device is configured (UI/env), do not silently fall back
+        # to another camera/capture card. This prevents Gemini from receiving
+        # screenshots from the wrong physical source.
+        if not explicit_device_requested:
+            device_details = self._list_video_device_details()
+            if self._image_source == "hdmi-capture":
+                device_details = [d for d in device_details if str(d.get("kind")) != "camera"]
+            elif self._image_source == "camera-capture":
+                device_details = [d for d in device_details if str(d.get("kind")) != "hdmi"]
 
-        device_details = self._list_video_device_details()
-        if self._image_source == "hdmi-capture":
-            device_details = [d for d in device_details if str(d.get("kind")) != "camera"]
-        elif self._image_source == "camera-capture":
-            device_details = [d for d in device_details if str(d.get("kind")) != "hdmi"]
-
-        device_details = [
-            d for d in device_details
-            if self._is_kind_enabled(str(d.get("kind") or "unknown"))
-        ]
-        devs = [d["device"] for d in device_details]
-        if kind_pref in {"hdmi", "camera"}:
-            preferred = [d["device"] for d in device_details if d.get("kind") == kind_pref]
-            others = [d for d in devs if d not in preferred]
-            devs = preferred + others
-        candidates.extend([d for d in devs if d not in candidates])
+            device_details = [
+                d for d in device_details
+                if self._is_kind_enabled(str(d.get("kind") or "unknown"))
+            ]
+            devs = [d["device"] for d in device_details]
+            if kind_pref in {"hdmi", "camera"}:
+                preferred = [d["device"] for d in device_details if d.get("kind") == kind_pref]
+                others = [d for d in devs if d not in preferred]
+                devs = preferred + others
+            candidates.extend([d for d in devs if d not in candidates])
 
         candidate_errors = []
         for device in candidates:
@@ -405,6 +398,11 @@ class ScreenCapture:
                 logger.info("No HDMI capture device detected; using DAB screenshot fallback")
             else:
                 logger.info("No HDMI capture device detected")
+            if explicit_device_requested:
+                logger.warning(
+                    "Configured capture device could not be opened; refusing fallback to a different device: %s",
+                    configured,
+                )
             if video_devices and unreadable:
                 logger.warning(
                     "HDMI permission issue: detected video nodes but unreadable: %s",

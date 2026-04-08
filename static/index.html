@@ -320,6 +320,10 @@
     .yts-download-link { display:inline-flex; align-items:center; justify-content:center; padding:0.55rem 0.9rem; border-radius:0.55rem; border:1px solid #334155; background:#2563eb; color:#fff; text-decoration:none; font-size:0.82rem; }
     .yts-download-link.secondary { background:#132744; color:#bae6fd; }
     .yts-download-link:hover { filter:brightness(1.08); }
+    .yts-report-viewer-wrap { margin-top:0.85rem; border:1px solid #334155; border-radius:0.55rem; background:#0b1222; overflow:hidden; }
+    .yts-report-viewer-header { display:flex; align-items:center; justify-content:space-between; gap:0.6rem; padding:0.55rem 0.75rem; border-bottom:1px solid #334155; background:#111b31; }
+    .yts-report-viewer-frame { width:100%; min-height:620px; border:0; background:#fff; }
+    .yts-report-empty { padding:0.75rem; color:#94a3b8; font-size:0.8rem; }
 
 
     @media (max-width: 980px) {
@@ -743,6 +747,10 @@
           <label style="margin-top:1rem;">Interactive / Gemini Log</label>
           <div class="yts-result-box" id="yts-interaction-log">Gemini suggestions, prompt history, and manual terminal responses will appear here.</div>
           <div id="yts-download-container" style="margin-top:0.75rem;"></div>
+          <label style="margin-top:1rem;">Validation Report (In-App)</label>
+          <div id="yts-report-viewer" class="yts-report-viewer-wrap">
+            <div class="yts-report-empty">Open or run a YTS job to render its HTML report here.</div>
+          </div>
         </div>
       </div>
       <div class="yts-runner-panel">
@@ -3701,8 +3709,11 @@
 
     const prompts = Array.isArray(data.prompts) ? data.prompts : [];
     const responses = Array.isArray(data.responses) ? data.responses : [];
+    const aiTraceLogs = Array.isArray(data.logs)
+      ? data.logs.filter(entry => String(entry?.stream || '').toLowerCase() === 'ai')
+      : [];
 
-    if (!prompts.length && !responses.length) {
+    if (!prompts.length && !responses.length && !aiTraceLogs.length) {
       box.textContent = 'No interactive prompts or Gemini responses recorded for this job yet.';
       return;
     }
@@ -3722,6 +3733,17 @@
       lines.push('Responses:');
       responses.forEach((response, index) => {
         lines.push(`  ${index + 1}. [${response.source || 'manual'}] ${response.message || ''}`);
+      });
+    }
+
+    if (aiTraceLogs.length) {
+      lines.push('');
+      lines.push('AI Movement Trace:');
+      aiTraceLogs.forEach((entry, index) => {
+        lines.push(`  ${index + 1}. ${entry.message || ''}`);
+        if (entry.raw_message) {
+          lines.push(`     ↳ ${entry.raw_message}`);
+        }
       });
     }
 
@@ -3746,14 +3768,18 @@
       const artifactBits = [];
       artifactBits.push('terminal-log');
       if (item.result_file_name) artifactBits.push(`result:${item.result_file_name}`);
+      if (item.report_html_name) artifactBits.push(`html:${item.report_html_name}`);
+      if (item.report_pdf_name) artifactBits.push(`report:${item.report_pdf_name}`);
       if (item.record_video) artifactBits.push(`video:${item.video_recording_status || 'pending'}`);
       const links = [];
       links.push(`<a class="yts-download-link secondary" href="${apiOrigin}/yts/command/live/${encodeURIComponent(commandId)}/terminal-log" target="_blank" rel="noopener" download onclick="event.stopPropagation()">Terminal Log</a>`);
       if (item.result_file_name) {
         links.push(`<a class="yts-download-link secondary" href="${apiOrigin}/yts/command/live/${encodeURIComponent(commandId)}/result" target="_blank" rel="noopener" download="${escHtml(item.result_file_name)}" onclick="event.stopPropagation()">Saved Result</a>`);
       }
+      links.push(`<a class="yts-download-link secondary" href="${apiOrigin}/yts/command/live/${encodeURIComponent(commandId)}/report-view" target="_blank" rel="noopener" onclick="event.stopPropagation()">HTML Report</a>`);
+      links.push(`<a class="yts-download-link secondary" href="${apiOrigin}/yts/command/live/${encodeURIComponent(commandId)}/report" download onclick="event.stopPropagation()">PDF Report</a>`);
       if (item.video_file_name && (item.video_recording_status || '') !== 'unavailable' && (item.video_recording_status || '') !== 'failed') {
-        links.push(`<a class="yts-download-link secondary" href="${apiOrigin}/yts/command/live/${encodeURIComponent(commandId)}/video" target="_blank" rel="noopener" download="${escHtml(item.video_file_name)}" onclick="event.stopPropagation()">Video</a>`);
+        links.push(`<a class="yts-download-link secondary" href="${apiOrigin}/yts/command/live/${encodeURIComponent(commandId)}/video" download="${escHtml(item.video_file_name)}" onclick="event.stopPropagation()">Video</a>`);
       }
       return `
         <div class="yts-job-item ${isActive ? 'active' : ''}" onclick="openYtsCommandHistoryItem(${JSON.stringify(commandId)})">
@@ -3819,6 +3845,7 @@
     const statusEl = document.getElementById('yts-command-status');
     const outputEl = document.getElementById('yts-command-output');
     const downloadContainer = document.getElementById('yts-download-container');
+    const reportViewer = document.getElementById('yts-report-viewer');
     const stopBtn = document.getElementById('yts-command-stop-btn');
     const promptBox = document.getElementById('yts-interactive-prompt');
     const isRunning = data.status === 'running';
@@ -3902,12 +3929,29 @@
     if (data.result_file_name) {
       downloadButtons.push(`<a class="yts-download-link secondary" href="${apiOrigin}/yts/command/live/${encodeURIComponent(data.command_id)}/result" target="_blank" rel="noopener" download="${escHtml(data.result_file_name)}">⬇ Saved Result File</a>`);
     }
+    if (data.command_id) {
+      downloadButtons.push(`<a class="yts-download-link secondary" href="${apiOrigin}/yts/command/live/${encodeURIComponent(data.command_id)}/report-view" target="_blank" rel="noopener">👁 HTML Report</a>`);
+    }
+    if (data.command_id) {
+      downloadButtons.push(`<a class="yts-download-link secondary" href="${apiOrigin}/yts/command/live/${encodeURIComponent(data.command_id)}/report" download="${escHtml(data.report_pdf_name || `yts-report-${data.command_id}.pdf`)}">⬇ PDF Report</a>`);
+    }
     if (data.video_file_name && (data.video_recording_status || '') === 'completed') {
-      downloadButtons.push(`<a class="yts-download-link" href="${apiOrigin}/yts/command/live/${encodeURIComponent(data.command_id)}/video" target="_blank" rel="noopener" download="${escHtml(data.video_file_name)}">⬇ ${escHtml(data.video_file_name)}</a>`);
+      downloadButtons.push(`<a class="yts-download-link" href="${apiOrigin}/yts/command/live/${encodeURIComponent(data.command_id)}/video" download="${escHtml(data.video_file_name)}">⬇ ${escHtml(data.video_file_name)}</a>`);
     } else if (data.record_video) {
       downloadButtons.push(`<span class="yts-subtle">Video status: ${escHtml(data.video_recording_status || 'pending')}</span>`);
     }
     downloadContainer.innerHTML = downloadButtons.join(' ');
+
+    if (reportViewer && data.command_id) {
+      const reportUrl = `${apiOrigin}/yts/command/live/${encodeURIComponent(data.command_id)}/report-view?t=${encodeURIComponent(data.updated_at || Date.now())}`;
+      reportViewer.innerHTML = `
+        <div class="yts-report-viewer-header">
+          <div class="yts-subtle">HTML report for ${escHtml(data.command_id)}</div>
+          <a class="yts-download-link secondary" href="${apiOrigin}/yts/command/live/${encodeURIComponent(data.command_id)}/report-view" target="_blank" rel="noopener">Open in new tab</a>
+        </div>
+        <iframe class="yts-report-viewer-frame" src="${reportUrl}" title="YTS HTML report"></iframe>
+      `;
+    }
   }
 
   async function pollLiveYtsCommand(commandId) {
@@ -4272,6 +4316,10 @@
     document.getElementById('yts-command-status').innerHTML = `<span style="color:#38bdf8;">▌ Starting ${command}...</span>`;
     document.getElementById('yts-command-output').textContent = '';
     document.getElementById('yts-download-container').innerHTML = '';
+    const reportViewer = document.getElementById('yts-report-viewer');
+    if (reportViewer) {
+      reportViewer.innerHTML = '<div class="yts-report-empty">Waiting for report generation...</div>';
+    }
     document.getElementById('yts-command-stop-btn').style.display = '';
 
     const details = ytsCommands[command];
