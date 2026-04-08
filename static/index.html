@@ -144,6 +144,11 @@
     #audio-stream-player { width: 100%; margin-top: 0.6rem; }
     .remote-layout { display: grid; grid-template-columns: 1.1fr 1fr; gap: 1rem; align-items: start; }
     .remote-panel { background: #0f172a; border: 1px solid #334155; border-radius: 0.6rem; padding: 0.8rem; }
+    .remote-mode-toolbar { display:flex; gap:0.5rem; align-items:end; flex-wrap:wrap; margin-bottom:0.75rem; }
+    .remote-mode-toolbar > div { flex:1 1 180px; }
+    .remote-meta { display:grid; grid-template-columns: repeat(2, minmax(160px, 1fr)); gap:0.4rem; margin-bottom:0.75rem; }
+    .remote-meta-chip { background:#111827; border:1px solid #334155; border-radius:0.45rem; padding:0.45rem 0.55rem; font-size:0.75rem; color:#cbd5e1; }
+    .ir-panel { border:1px dashed #334155; border-radius:0.6rem; padding:0.7rem; margin-bottom:0.75rem; background:#0b1325; }
     .remote-grid { display: grid; grid-template-columns: repeat(4, minmax(58px, 1fr)); gap: 0.4rem; }
     .key-btn { padding: 0.45rem 0.35rem; font-size: 0.75rem; }
     .dpad-wrap { max-width: 260px; margin-bottom: 0.8rem; }
@@ -233,6 +238,33 @@
     .kpi { background: rgba(2, 6, 23, 0.52); border:1px solid #284268; border-radius:0.65rem; padding:0.65rem; }
     .kpi .k { color:#93c5fd; font-size:0.7rem; }
     .kpi .v { font-size:1rem; font-weight:700; margin-top:0.2rem; }
+    .perf-card { grid-column: 1 / -1; }
+    .perf-header { display:flex; justify-content:space-between; align-items:center; gap:0.75rem; margin-bottom:0.75rem; flex-wrap:wrap; }
+    .perf-stats { display:flex; gap:0.55rem; flex-wrap:wrap; }
+    .perf-chip { border:1px solid #2d476b; border-radius:999px; padding:0.3rem 0.6rem; background:#0b1730; font-size:0.78rem; color:#c7d2fe; }
+    .perf-chip strong { color:#f8fafc; }
+    .perf-canvas-wrap {
+      position: relative;
+      border: 1px solid #223f68;
+      border-radius: 0.8rem;
+      background: linear-gradient(180deg, rgba(2,6,23,0.65), rgba(2,6,23,0.92));
+      overflow: hidden;
+      min-height: 210px;
+    }
+    .perf-canvas-wrap::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background-image: linear-gradient(rgba(96,165,250,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(96,165,250,0.06) 1px, transparent 1px);
+      background-size: 28px 28px;
+    }
+    #perf-canvas { width:100%; height:220px; display:block; position:relative; z-index:1; }
+    .perf-legend { margin-top:0.55rem; display:flex; gap:0.75rem; flex-wrap:wrap; font-size:0.76rem; color:#93c5fd; }
+    .perf-dot { width:10px; height:10px; border-radius:999px; display:inline-block; margin-right:0.35rem; vertical-align:middle; }
+    .perf-dot.cpu { background:#22d3ee; box-shadow:0 0 8px rgba(34,211,238,0.65); }
+    .perf-dot.ram { background:#f472b6; box-shadow:0 0 8px rgba(244,114,182,0.65); }
+    .perf-dot.temp { background:#fb923c; box-shadow:0 0 8px rgba(251,146,60,0.65); }
     .quick-nav { grid-column:1 / -1; display:flex; gap:0.5rem; flex-wrap:wrap; }
     .quick-nav button { background:#132744; border:1px solid #27466f; color:#bae6fd; }
     .quick-nav button:hover { background:#1b365c; }
@@ -288,6 +320,10 @@
     .yts-download-link { display:inline-flex; align-items:center; justify-content:center; padding:0.55rem 0.9rem; border-radius:0.55rem; border:1px solid #334155; background:#2563eb; color:#fff; text-decoration:none; font-size:0.82rem; }
     .yts-download-link.secondary { background:#132744; color:#bae6fd; }
     .yts-download-link:hover { filter:brightness(1.08); }
+    .yts-report-viewer-wrap { margin-top:0.85rem; border:1px solid #334155; border-radius:0.55rem; background:#0b1222; overflow:hidden; }
+    .yts-report-viewer-header { display:flex; align-items:center; justify-content:space-between; gap:0.6rem; padding:0.55rem 0.75rem; border-bottom:1px solid #334155; background:#111b31; }
+    .yts-report-viewer-frame { width:100%; min-height:620px; border:0; background:#fff; }
+    .yts-report-empty { padding:0.75rem; color:#94a3b8; font-size:0.8rem; }
 
 
     @media (max-width: 980px) {
@@ -342,6 +378,30 @@
         <div class="kpi"><div class="k">Active Run</div><div class="v" id="kpi-run">None</div></div>
         <div class="kpi"><div class="k">Run Status</div><div class="v" id="kpi-status">--</div></div>
       </div>
+    </div>
+  </div>
+
+  <div class="card perf-card" id="perf-card">
+    <div class="perf-header">
+      <div>
+        <h2>Host Performance</h2>
+        <div class="subtitle">Live CPU and RAM usage graph</div>
+      </div>
+      <div class="perf-stats">
+        <span class="perf-chip">CPU <strong id="perf-cpu-value">--%</strong></span>
+        <span class="perf-chip">RAM <strong id="perf-ram-value">--%</strong></span>
+        <span class="perf-chip">CPU Temp <strong id="perf-temp-value">--°C</strong></span>
+        <span class="perf-chip">Load(1m) <strong id="perf-load1-value">--</strong></span>
+      </div>
+    </div>
+    <div class="perf-canvas-wrap">
+      <canvas id="perf-canvas" width="1200" height="220"></canvas>
+    </div>
+    <div class="perf-legend">
+      <span><span class="perf-dot cpu"></span>CPU usage %</span>
+      <span><span class="perf-dot ram"></span>RAM usage %</span>
+      <span><span class="perf-dot temp"></span>CPU temp °C</span>
+      <span id="perf-updated">Updated: --</span>
     </div>
   </div>
 
@@ -541,6 +601,39 @@
       </div>
 
       <div class="remote-panel">
+        <div class="remote-mode-toolbar">
+          <div>
+            <label for="remote-mode-select" style="margin-bottom:0.25rem;">Remote Mode</label>
+            <select id="remote-mode-select" onchange="onRemoteModeChanged()">
+              <option value="DAB">DAB</option>
+              <option value="IR">IR</option>
+            </select>
+          </div>
+          <div>
+            <label for="ir-device-select" style="margin-bottom:0.25rem;">IR Device (Samsung)</label>
+            <select id="ir-device-select" onchange="onIrDeviceChanged()">
+              <option value="samsung_tv_default">Samsung TV (Default)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="remote-meta">
+          <div class="remote-meta-chip" id="remote-mode-status">Mode: DAB</div>
+          <div class="remote-meta-chip" id="ir-selected-device-status">IR device: samsung_tv_default</div>
+          <div class="remote-meta-chip" id="ir-last-trained-status">Last trained key: --</div>
+          <div class="remote-meta-chip" id="ir-last-send-status">Last send result: --</div>
+        </div>
+
+        <div id="ir-control-panel" class="ir-panel" style="display:none;">
+          <label for="ir-key-select" style="margin-bottom:0.25rem;">IR Key</label>
+          <select id="ir-key-select"></select>
+          <div class="btn-row" style="margin-top:0.55rem; margin-bottom:0.25rem;">
+            <button class="secondary" onclick="trainSelectedIrKey()">Read / Train</button>
+            <button onclick="sendSelectedIrKey()">Send Stored Key</button>
+          </div>
+          <div id="ir-debug-status" class="yts-subtle">IR mode uses Raspberry Pi serial -> NodeMCU -> Samsung sender D2/GPIO4.</div>
+        </div>
+
         <label style="margin-bottom:0.5rem;">Navigation</label>
         <div class="key-grid dpad-wrap">
           <div></div>
@@ -654,6 +747,10 @@
           <label style="margin-top:1rem;">Interactive / Gemini Log</label>
           <div class="yts-result-box" id="yts-interaction-log">Gemini suggestions, prompt history, and manual terminal responses will appear here.</div>
           <div id="yts-download-container" style="margin-top:0.75rem;"></div>
+          <label style="margin-top:1rem;">Validation Report (In-App)</label>
+          <div id="yts-report-viewer" class="yts-report-viewer-wrap">
+            <div class="yts-report-empty">Open or run a YTS job to render its HTML report here.</div>
+          </div>
         </div>
       </div>
       <div class="yts-runner-panel">
@@ -793,11 +890,14 @@
 <script>
   const API_STORAGE_KEY = 'dab_api_base';
   const DAB_DEVICE_STORAGE_KEY = 'dab_selected_device_id';
+  const REMOTE_MODE_STORAGE_KEY = 'dab_remote_mode';
+  const IR_DEVICE_STORAGE_KEY = 'dab_ir_device_id';
   let apiBase = '';
   let selectedRunId = null;
   let pollInterval = null;
   let hdmiStreamRunning = false;
   let hdmiAudioRunning = false;
+  let hdmiAudioLatencyTimer = null;
   let captureSelectionBusy = false;
   let hdmiStreamTransitionToken = 0;
   let lastNarrationIdx = -1;
@@ -806,6 +906,12 @@
   let ytsCommandPollInterval = null;
   const YTS_COMMAND_STORAGE_KEY = 'dab_yts_live_command_id';
   let ytsCommandHistory = [];
+  let selectedRemoteMode = (localStorage.getItem(REMOTE_MODE_STORAGE_KEY) || 'DAB').toUpperCase();
+  let selectedIrDeviceId = localStorage.getItem(IR_DEVICE_STORAGE_KEY) || 'samsung_tv_default';
+  let irDeviceList = [];
+  let irStatusSnapshot = null;
+  let lastTrainedIrKey = '--';
+  let lastIrSendResult = '--';
   let selectedDabDeviceId = '';
   let discoveredDabDevices = [];
   let dabDeviceSettingsSnapshot = [];
@@ -815,6 +921,8 @@
   let dabOperationCards = [];
   let settingsValueRefreshTimer = null;
   let settingsValueRefreshDebounceTimer = null;
+  const perfHistoryMaxPoints = 120;
+  const perfHistory = { cpu: [], ram: [], temp: [] };
 
   function normalizeApiBase(v) {
     const s = (v || '').trim();
@@ -873,6 +981,8 @@
       setApiBase(qsApi);
       checkHealth();
       loadDabDevices();
+      loadIrStatus();
+      loadIrDevices(selectedIrDeviceId);
       loadCaptureSource();
       refreshCaptureDevices();
       loadRuns();
@@ -885,6 +995,8 @@
     setApiBase(shouldPreferSameOrigin ? '' : (storedApi || cfgApi || ''));
     checkHealth();
     loadDabDevices();
+    loadIrStatus();
+    loadIrDevices(selectedIrDeviceId);
     loadCaptureSource();
     refreshCaptureDevices();
     loadRuns();
@@ -897,6 +1009,8 @@
     setApiBase(v);
     checkHealth();
     loadDabDevices();
+    loadIrStatus();
+    loadIrDevices(selectedIrDeviceId);
     loadCaptureSource();
     refreshCaptureDevices();
     loadRuns();
@@ -1881,6 +1995,207 @@
     }
   }
 
+  const defaultIrKeys = [
+    'POWER','HOME','MENU','RETURN','ENTER','UP','DOWN','LEFT','RIGHT','VOL_UP','VOL_DOWN','MUTE','CH_UP','CH_DOWN',
+    'PLAY_PAUSE','PLAY','PAUSE','STOP','REWIND','FAST_FORWARD','NUM_0','NUM_1','NUM_2','NUM_3','NUM_4','NUM_5','NUM_6','NUM_7','NUM_8','NUM_9',
+    'RED','GREEN','YELLOW','BLUE','GUIDE','INFO','EXIT'
+  ];
+
+  function normalizeRemoteMode(mode) {
+    return String(mode || 'DAB').trim().toUpperCase() === 'IR' ? 'IR' : 'DAB';
+  }
+
+  function getRemoteMode() {
+    return normalizeRemoteMode(selectedRemoteMode);
+  }
+
+  function updateRemoteModeStatusBanner() {
+    const modeEl = document.getElementById('remote-mode-status');
+    if (modeEl) modeEl.textContent = `Mode: ${getRemoteMode()}`;
+    const devEl = document.getElementById('ir-selected-device-status');
+    if (devEl) devEl.textContent = `IR device: ${selectedIrDeviceId || '--'}`;
+    const trainEl = document.getElementById('ir-last-trained-status');
+    if (trainEl) trainEl.textContent = `Last trained key: ${lastTrainedIrKey || '--'}`;
+    const sendEl = document.getElementById('ir-last-send-status');
+    if (sendEl) sendEl.textContent = `Last send result: ${lastIrSendResult || '--'}`;
+  }
+
+  function populateIrKeyOptions(keys = []) {
+    const select = document.getElementById('ir-key-select');
+    if (!select) return;
+    const merged = Array.from(new Set([...(Array.isArray(keys) ? keys : []), ...defaultIrKeys]))
+      .map(v => String(v || '').trim().toUpperCase())
+      .filter(Boolean)
+      .sort();
+    select.innerHTML = '';
+    for (const key of merged) {
+      const option = document.createElement('option');
+      option.value = key;
+      option.textContent = key;
+      select.appendChild(option);
+    }
+  }
+
+  function setRemoteMode(mode, persist = true) {
+    selectedRemoteMode = normalizeRemoteMode(mode);
+    const select = document.getElementById('remote-mode-select');
+    if (select && select.value !== selectedRemoteMode) select.value = selectedRemoteMode;
+    const irPanel = document.getElementById('ir-control-panel');
+    if (irPanel) irPanel.style.display = selectedRemoteMode === 'IR' ? '' : 'none';
+    const debugEl = document.getElementById('ir-debug-status');
+    if (debugEl && selectedRemoteMode === 'DAB') {
+      debugEl.textContent = 'IR mode uses Raspberry Pi serial -> NodeMCU -> Samsung sender D2/GPIO4.';
+    }
+    if (persist) localStorage.setItem(REMOTE_MODE_STORAGE_KEY, selectedRemoteMode);
+    updateRemoteModeStatusBanner();
+  }
+
+  async function onRemoteModeChanged() {
+    const select = document.getElementById('remote-mode-select');
+    const next = select ? select.value : 'DAB';
+    setRemoteMode(next, true);
+    if (getRemoteMode() === 'IR') {
+      await Promise.allSettled([loadIrStatus(), loadIrDevices(selectedIrDeviceId)]);
+    }
+  }
+
+  async function loadIrStatus() {
+    const el = document.getElementById('ir-debug-status');
+    if (!el) return;
+    try {
+      const data = await api('/ir/status');
+      irStatusSnapshot = data;
+      const serialPort = String(data.serial_port || '').trim() || 'not configured';
+      el.textContent = `IR endpoint ready · serial=${serialPort} · sender=${data.sender_channel || 'D2'} · dataset=${data.dataset_path || '--'}`;
+      el.style.color = '#93c5fd';
+    } catch (e) {
+      el.textContent = `IR status unavailable: ${e.message}`;
+      el.style.color = '#f87171';
+    }
+  }
+
+  async function loadIrDevices(preferredDeviceId = null) {
+    const select = document.getElementById('ir-device-select');
+    if (!select) return;
+    try {
+      const data = await api('/ir/devices');
+      irDeviceList = Array.isArray(data.devices) ? data.devices : [];
+      select.innerHTML = '';
+      if (!irDeviceList.length) {
+        const fallback = document.createElement('option');
+        fallback.value = 'samsung_tv_default';
+        fallback.textContent = 'Samsung TV (Default)';
+        select.appendChild(fallback);
+        selectedIrDeviceId = 'samsung_tv_default';
+      } else {
+        for (const item of irDeviceList) {
+          const id = String(item.device_id || '').trim();
+          if (!id) continue;
+          const option = document.createElement('option');
+          option.value = id;
+          option.textContent = `${item.model || id} (${item.key_count || 0} keys)`;
+          select.appendChild(option);
+        }
+        const preferred = String(preferredDeviceId || selectedIrDeviceId || localStorage.getItem(IR_DEVICE_STORAGE_KEY) || '').trim();
+        const exists = irDeviceList.some(item => String(item.device_id || '').trim() === preferred);
+        if (exists) {
+          selectedIrDeviceId = preferred;
+        } else {
+          const samsungCandidate = irDeviceList.find(item => {
+            const deviceId = String(item.device_id || '').trim().toLowerCase();
+            const brand = String(item.brand || '').trim().toLowerCase();
+            return deviceId.includes('samsung') || brand.includes('samsung');
+          });
+          selectedIrDeviceId = String((samsungCandidate && samsungCandidate.device_id) || irDeviceList[0].device_id || 'samsung_tv_default');
+        }
+      }
+      select.value = selectedIrDeviceId;
+      localStorage.setItem(IR_DEVICE_STORAGE_KEY, selectedIrDeviceId);
+      await loadIrDeviceKeys(selectedIrDeviceId);
+      updateRemoteModeStatusBanner();
+    } catch (e) {
+      const debugEl = document.getElementById('ir-debug-status');
+      if (debugEl) {
+        debugEl.textContent = `Failed to load IR devices: ${e.message}`;
+        debugEl.style.color = '#f87171';
+      }
+      populateIrKeyOptions(defaultIrKeys);
+    }
+  }
+
+  async function loadIrDeviceKeys(deviceId) {
+    try {
+      const payload = await api(`/ir/device/${encodeURIComponent(deviceId)}/keys`);
+      populateIrKeyOptions(payload.keys || []);
+    } catch (_) {
+      populateIrKeyOptions(defaultIrKeys);
+    }
+  }
+
+  async function onIrDeviceChanged() {
+    const select = document.getElementById('ir-device-select');
+    selectedIrDeviceId = String(select?.value || 'samsung_tv_default').trim() || 'samsung_tv_default';
+    localStorage.setItem(IR_DEVICE_STORAGE_KEY, selectedIrDeviceId);
+    await loadIrDeviceKeys(selectedIrDeviceId);
+    updateRemoteModeStatusBanner();
+  }
+
+  async function trainSelectedIrKey() {
+    const keySel = document.getElementById('ir-key-select');
+    const keyName = String(keySel?.value || '').trim();
+    const debugEl = document.getElementById('ir-debug-status');
+    if (!keyName) return;
+    try {
+      if (debugEl) {
+        debugEl.textContent = `Training ${keyName}... point Samsung remote at IR receiver.`;
+        debugEl.style.color = '#93c5fd';
+      }
+      const result = await api('/ir/train', 'POST', { device_id: selectedIrDeviceId, key_name: keyName });
+      lastTrainedIrKey = `${result.key_name || keyName} ✓`;
+      if (debugEl) {
+        const captured = (result && result.stored_payload) || (result && result.raw && result.raw.payload) || {};
+        const protocol = String((captured && captured.protocol) || '').trim();
+        const code = String((captured && captured.code) || '').trim();
+        const bits = (captured && captured.bits) != null ? String(captured.bits) : '';
+        const details = [protocol, code, bits ? `${bits}b` : ''].filter(Boolean).join(' · ');
+        debugEl.textContent = details
+          ? `Trained ${result.key_name || keyName} for ${result.device_id || selectedIrDeviceId} → ${details}`
+          : `Trained ${result.key_name || keyName} for ${result.device_id || selectedIrDeviceId}.`;
+        debugEl.style.color = '#4ade80';
+      }
+      await loadIrDevices(selectedIrDeviceId);
+      updateRemoteModeStatusBanner();
+    } catch (e) {
+      if (debugEl) {
+        debugEl.textContent = `Train failed: ${e.message}`;
+        debugEl.style.color = '#f87171';
+      }
+    }
+  }
+
+  async function sendSelectedIrKey() {
+    const keySel = document.getElementById('ir-key-select');
+    const keyName = String(keySel?.value || '').trim();
+    const debugEl = document.getElementById('ir-debug-status');
+    if (!keyName) return;
+    try {
+      const result = await api('/ir/send', 'POST', { device_id: selectedIrDeviceId, key_name: keyName });
+      lastIrSendResult = `${result.key_name || keyName} ✓`;
+      if (debugEl) {
+        debugEl.textContent = `Sent ${result.key_name || keyName} on ${result.sender_channel || 'D2'}.`;
+        debugEl.style.color = '#4ade80';
+      }
+      updateRemoteModeStatusBanner();
+    } catch (e) {
+      lastIrSendResult = `${keyName} ✗`;
+      if (debugEl) {
+        debugEl.textContent = `Send failed: ${e.message}`;
+        debugEl.style.color = '#f87171';
+      }
+      updateRemoteModeStatusBanner();
+    }
+  }
+
   function getSelectedDabDeviceId() {
     return (selectedDabDeviceId || '').trim();
   }
@@ -2393,6 +2708,125 @@
     setHdmiStreamOverlay('');
   }
 
+  function _pushPerfPoint(seriesName, value) {
+    const series = perfHistory[seriesName];
+    if (!Array.isArray(series)) return;
+    series.push(Number.isFinite(value) ? Number(value) : null);
+    if (series.length > perfHistoryMaxPoints) series.shift();
+  }
+
+  function _drawPerfLine(ctx, points, color, width, height) {
+    if (!Array.isArray(points) || points.length < 2) return;
+
+    const stepX = width / Math.max(1, perfHistoryMaxPoints - 1);
+    let started = false;
+    ctx.beginPath();
+    ctx.lineWidth = 2.6;
+    ctx.strokeStyle = color;
+
+    for (let i = 0; i < points.length; i += 1) {
+      const v = points[i];
+      if (!Number.isFinite(v)) {
+        started = false;
+        continue;
+      }
+      const x = i * stepX;
+      const y = height - (Math.max(0, Math.min(100, v)) / 100) * height;
+      if (!started) {
+        ctx.moveTo(x, y);
+        started = true;
+      } else {
+        ctx.lineTo(x, y);
+      }
+    }
+    ctx.stroke();
+  }
+
+  function _drawPerfGrid(ctx, width, height) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(125, 211, 252, 0.16)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 4; i += 1) {
+      const y = (i / 4) * height;
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(width, y);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawPerfGraph() {
+    const canvas = document.getElementById('perf-canvas');
+    if (!canvas) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const cssWidth = Math.max(320, Math.floor(canvas.clientWidth || 1200));
+    const cssHeight = Math.max(180, Math.floor(canvas.clientHeight || 220));
+    const targetWidth = Math.floor(cssWidth * dpr);
+    const targetHeight = Math.floor(cssHeight * dpr);
+    if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+      canvas.width = targetWidth;
+      canvas.height = targetHeight;
+    }
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.scale(dpr, dpr);
+
+    const width = cssWidth;
+    const height = cssHeight;
+    const bg = ctx.createLinearGradient(0, 0, 0, height);
+    bg.addColorStop(0, 'rgba(2, 6, 23, 0.20)');
+    bg.addColorStop(1, 'rgba(2, 6, 23, 0.52)');
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, width, height);
+
+    _drawPerfGrid(ctx, width, height);
+    _drawPerfLine(ctx, perfHistory.cpu, '#22d3ee', width, height);
+    _drawPerfLine(ctx, perfHistory.ram, '#f472b6', width, height);
+    _drawPerfLine(ctx, perfHistory.temp, '#fb923c', width, height);
+  }
+
+  async function refreshSystemMetrics() {
+    try {
+      const data = await api('/system/metrics');
+      const cpu = Number(data.cpu_percent);
+      const ram = Number(data.ram_percent);
+      const temp = Number(data.cpu_temp_c);
+
+      _pushPerfPoint('cpu', Number.isFinite(cpu) ? cpu : null);
+      _pushPerfPoint('ram', Number.isFinite(ram) ? ram : null);
+      _pushPerfPoint('temp', Number.isFinite(temp) ? temp : null);
+
+      const cpuEl = document.getElementById('perf-cpu-value');
+      const ramEl = document.getElementById('perf-ram-value');
+      const tempEl = document.getElementById('perf-temp-value');
+      const loadEl = document.getElementById('perf-load1-value');
+      const updatedEl = document.getElementById('perf-updated');
+      if (cpuEl) cpuEl.textContent = Number.isFinite(cpu) ? `${cpu.toFixed(1)}%` : '--%';
+      if (ramEl) ramEl.textContent = Number.isFinite(ram) ? `${ram.toFixed(1)}%` : '--%';
+      if (tempEl) tempEl.textContent = Number.isFinite(temp) ? `${temp.toFixed(1)}°C` : '--°C';
+      if (loadEl) {
+        const load = Number(data.load_1m);
+        loadEl.textContent = Number.isFinite(load) ? load.toFixed(2) : '--';
+      }
+      if (updatedEl) {
+        const ts = data.timestamp ? new Date(data.timestamp) : null;
+        updatedEl.textContent = `Updated: ${ts && !Number.isNaN(ts.getTime()) ? ts.toLocaleTimeString() : '--'}`;
+      }
+
+      drawPerfGraph();
+    } catch (_) {
+      _pushPerfPoint('cpu', null);
+      _pushPerfPoint('ram', null);
+      _pushPerfPoint('temp', null);
+      drawPerfGraph();
+    }
+  }
+
   async function toggleAudioStream() {
     if (hdmiAudioRunning) stopAudioStream();
     else await startAudioStream();
@@ -2424,6 +2858,7 @@
       `<audio id="audio-stream-player" controls autoplay playsinline src="${url}"></audio>`;
     const p = document.getElementById('audio-stream-player');
     if (p) {
+      p.preload = 'none';
       p.addEventListener('error', () => {
         stopAudioStream();
         if (resultEl) {
@@ -2431,6 +2866,22 @@
           resultEl.style.color = '#f87171';
         }
       });
+      if (hdmiAudioLatencyTimer) {
+        clearInterval(hdmiAudioLatencyTimer);
+        hdmiAudioLatencyTimer = null;
+      }
+      hdmiAudioLatencyTimer = setInterval(() => {
+        try {
+          if (!p || p.paused || !p.seekable || p.seekable.length === 0) return;
+          const liveEdge = p.seekable.end(p.seekable.length - 1);
+          const drift = liveEdge - p.currentTime;
+          if (Number.isFinite(drift) && drift > 0.45) {
+            p.currentTime = Math.max(0, liveEdge - 0.08);
+          }
+        } catch (_) {
+          // ignore browsers that do not expose seekable ranges for this stream
+        }
+      }, 300);
       try {
         await p.play();
       } catch (_) {
@@ -2447,6 +2898,10 @@
   }
 
   function stopAudioStream() {
+    if (hdmiAudioLatencyTimer) {
+      clearInterval(hdmiAudioLatencyTimer);
+      hdmiAudioLatencyTimer = null;
+    }
     const p = document.getElementById('audio-stream-player');
     if (p) {
       try { p.pause(); } catch (_) {}
@@ -3104,13 +3559,60 @@
 
   async function sendKey(action) {
     const el = document.getElementById('manual-result');
-    try {
-      const data = await api('/action', 'POST', { action });
-      el.textContent = `✓ ${action}: ${JSON.stringify(data.result)}`;
+    const mode = getRemoteMode();
+    const executeOnce = async (singleAction) => {
+      let body = { action: singleAction, control_mode: mode };
+      if (mode === 'IR') {
+        body.ir_device_id = selectedIrDeviceId || 'samsung_tv_default';
+      } else {
+        const deviceId = requireSelectedDabDevice('manual-result', 'Select a DAB device before sending remote actions.');
+        if (!deviceId) return;
+        body.device_id = deviceId;
+      }
+      const data = await api('/action', 'POST', body);
+      if (mode === 'IR') {
+        lastIrSendResult = `${(data.result && data.result.key_name) || singleAction} ✓`;
+        updateRemoteModeStatusBanner();
+      }
+      el.textContent = `✓ [${mode}] ${singleAction}`;
       el.style.color = '#4ade80';
-    } catch (e) {
-      el.textContent = `✗ ${e.message}`;
-      el.style.color = '#f87171';
+    };
+
+    if (mode !== 'IR') {
+      try {
+        await executeOnce(action);
+      } catch (e) {
+        el.textContent = `✗ ${e.message}`;
+        el.style.color = '#f87171';
+      }
+      return;
+    }
+
+    const state = window.__irSendState || { inFlight: false, pending: null };
+    window.__irSendState = state;
+    if (state.inFlight) {
+      state.pending = action;
+      return;
+    }
+    state.inFlight = true;
+    let nextAction = action;
+    try {
+      while (nextAction) {
+        const current = nextAction;
+        state.pending = null;
+        try {
+          await executeOnce(current);
+        } catch (e) {
+          lastIrSendResult = `${current} ✗`;
+          updateRemoteModeStatusBanner();
+          el.textContent = `✗ ${e.message}`;
+          el.style.color = '#f87171';
+        }
+        nextAction = state.pending;
+      }
+    } finally {
+      state.inFlight = false;
+      state.pending = null;
     }
   }
 
@@ -3207,8 +3709,11 @@
 
     const prompts = Array.isArray(data.prompts) ? data.prompts : [];
     const responses = Array.isArray(data.responses) ? data.responses : [];
+    const aiTraceLogs = Array.isArray(data.logs)
+      ? data.logs.filter(entry => String(entry?.stream || '').toLowerCase() === 'ai')
+      : [];
 
-    if (!prompts.length && !responses.length) {
+    if (!prompts.length && !responses.length && !aiTraceLogs.length) {
       box.textContent = 'No interactive prompts or Gemini responses recorded for this job yet.';
       return;
     }
@@ -3228,6 +3733,17 @@
       lines.push('Responses:');
       responses.forEach((response, index) => {
         lines.push(`  ${index + 1}. [${response.source || 'manual'}] ${response.message || ''}`);
+      });
+    }
+
+    if (aiTraceLogs.length) {
+      lines.push('');
+      lines.push('AI Movement Trace:');
+      aiTraceLogs.forEach((entry, index) => {
+        lines.push(`  ${index + 1}. ${entry.message || ''}`);
+        if (entry.raw_message) {
+          lines.push(`     ↳ ${entry.raw_message}`);
+        }
       });
     }
 
@@ -3252,14 +3768,18 @@
       const artifactBits = [];
       artifactBits.push('terminal-log');
       if (item.result_file_name) artifactBits.push(`result:${item.result_file_name}`);
+      if (item.report_html_name) artifactBits.push(`html:${item.report_html_name}`);
+      if (item.report_pdf_name) artifactBits.push(`report:${item.report_pdf_name}`);
       if (item.record_video) artifactBits.push(`video:${item.video_recording_status || 'pending'}`);
       const links = [];
       links.push(`<a class="yts-download-link secondary" href="${apiOrigin}/yts/command/live/${encodeURIComponent(commandId)}/terminal-log" target="_blank" rel="noopener" download onclick="event.stopPropagation()">Terminal Log</a>`);
       if (item.result_file_name) {
         links.push(`<a class="yts-download-link secondary" href="${apiOrigin}/yts/command/live/${encodeURIComponent(commandId)}/result" target="_blank" rel="noopener" download="${escHtml(item.result_file_name)}" onclick="event.stopPropagation()">Saved Result</a>`);
       }
+      links.push(`<a class="yts-download-link secondary" href="${apiOrigin}/yts/command/live/${encodeURIComponent(commandId)}/report-view" target="_blank" rel="noopener" onclick="event.stopPropagation()">HTML Report</a>`);
+      links.push(`<a class="yts-download-link secondary" href="${apiOrigin}/yts/command/live/${encodeURIComponent(commandId)}/report" download onclick="event.stopPropagation()">PDF Report</a>`);
       if (item.video_file_name && (item.video_recording_status || '') !== 'unavailable' && (item.video_recording_status || '') !== 'failed') {
-        links.push(`<a class="yts-download-link secondary" href="${apiOrigin}/yts/command/live/${encodeURIComponent(commandId)}/video" target="_blank" rel="noopener" download="${escHtml(item.video_file_name)}" onclick="event.stopPropagation()">Video</a>`);
+        links.push(`<a class="yts-download-link secondary" href="${apiOrigin}/yts/command/live/${encodeURIComponent(commandId)}/video" download="${escHtml(item.video_file_name)}" onclick="event.stopPropagation()">Video</a>`);
       }
       return `
         <div class="yts-job-item ${isActive ? 'active' : ''}" onclick="openYtsCommandHistoryItem(${JSON.stringify(commandId)})">
@@ -3325,6 +3845,7 @@
     const statusEl = document.getElementById('yts-command-status');
     const outputEl = document.getElementById('yts-command-output');
     const downloadContainer = document.getElementById('yts-download-container');
+    const reportViewer = document.getElementById('yts-report-viewer');
     const stopBtn = document.getElementById('yts-command-stop-btn');
     const promptBox = document.getElementById('yts-interactive-prompt');
     const isRunning = data.status === 'running';
@@ -3349,6 +3870,7 @@
     output += `<strong>Last Updated:</strong> ${escHtml(data.updated_at || '(unknown)')}\n\n`;
     if (data.record_video) {
       output += `<strong>Video Recording:</strong> ${escHtml(data.video_recording_status || 'pending')}\n`;
+      output += `<strong>Audio Recording:</strong> ${escHtml(data.audio_recording_status || 'disabled')}\n`;
       if (data.video_file_name) {
         output += `<strong>Video Artifact:</strong> ${escHtml(data.video_file_name)}\n`;
       }
@@ -3407,12 +3929,29 @@
     if (data.result_file_name) {
       downloadButtons.push(`<a class="yts-download-link secondary" href="${apiOrigin}/yts/command/live/${encodeURIComponent(data.command_id)}/result" target="_blank" rel="noopener" download="${escHtml(data.result_file_name)}">⬇ Saved Result File</a>`);
     }
-    if (data.video_file_name && (data.video_recording_status || '') !== 'unavailable') {
-      downloadButtons.push(`<a class="yts-download-link" href="${apiOrigin}/yts/command/live/${encodeURIComponent(data.command_id)}/video" target="_blank" rel="noopener" download="${escHtml(data.video_file_name)}">⬇ ${escHtml(data.video_file_name)}</a>`);
+    if (data.command_id) {
+      downloadButtons.push(`<a class="yts-download-link secondary" href="${apiOrigin}/yts/command/live/${encodeURIComponent(data.command_id)}/report-view" target="_blank" rel="noopener">👁 HTML Report</a>`);
+    }
+    if (data.command_id) {
+      downloadButtons.push(`<a class="yts-download-link secondary" href="${apiOrigin}/yts/command/live/${encodeURIComponent(data.command_id)}/report" download="${escHtml(data.report_pdf_name || `yts-report-${data.command_id}.pdf`)}">⬇ PDF Report</a>`);
+    }
+    if (data.video_file_name && (data.video_recording_status || '') === 'completed') {
+      downloadButtons.push(`<a class="yts-download-link" href="${apiOrigin}/yts/command/live/${encodeURIComponent(data.command_id)}/video" download="${escHtml(data.video_file_name)}">⬇ ${escHtml(data.video_file_name)}</a>`);
     } else if (data.record_video) {
       downloadButtons.push(`<span class="yts-subtle">Video status: ${escHtml(data.video_recording_status || 'pending')}</span>`);
     }
     downloadContainer.innerHTML = downloadButtons.join(' ');
+
+    if (reportViewer && data.command_id) {
+      const reportUrl = `${apiOrigin}/yts/command/live/${encodeURIComponent(data.command_id)}/report-view?t=${encodeURIComponent(data.updated_at || Date.now())}`;
+      reportViewer.innerHTML = `
+        <div class="yts-report-viewer-header">
+          <div class="yts-subtle">HTML report for ${escHtml(data.command_id)}</div>
+          <a class="yts-download-link secondary" href="${apiOrigin}/yts/command/live/${encodeURIComponent(data.command_id)}/report-view" target="_blank" rel="noopener">Open in new tab</a>
+        </div>
+        <iframe class="yts-report-viewer-frame" src="${reportUrl}" title="YTS HTML report"></iframe>
+      `;
+    }
   }
 
   async function pollLiveYtsCommand(commandId) {
@@ -3685,6 +4224,9 @@
       <label style="margin-top:1rem;"><input type="checkbox" id="yts-arg-test-record-video" style="width:auto; margin-right:0.45rem;"> Record TV video while this YTS job runs</label>
       <div class="yts-hint">Stores a per-job video artifact when the active capture source supports recording. The terminal transcript is also saved and can be downloaded after the run.</div>
 
+      <label style="margin-top:0.65rem;"><input type="checkbox" id="yts-arg-test-record-audio" style="width:auto; margin-right:0.45rem;" checked> Include HDMI audio in recorded video</label>
+      <div class="yts-hint">When enabled, recording tries to include ALSA/Pulse audio in the same MP4 artifact.</div>
+
       <label style="margin-top:1rem;"><input type="checkbox" id="yts-arg-test-ui-navigation-allowed" style="width:auto; margin-right:0.45rem;"> Allow UI navigation fallback</label>
       <div class="yts-hint">Use UI navigation fallback when direct operations are unavailable.</div>
 
@@ -3774,6 +4316,10 @@
     document.getElementById('yts-command-status').innerHTML = `<span style="color:#38bdf8;">▌ Starting ${command}...</span>`;
     document.getElementById('yts-command-output').textContent = '';
     document.getElementById('yts-download-container').innerHTML = '';
+    const reportViewer = document.getElementById('yts-report-viewer');
+    if (reportViewer) {
+      reportViewer.innerHTML = '<div class="yts-report-empty">Waiting for report generation...</div>';
+    }
     document.getElementById('yts-command-stop-btn').style.display = '';
 
     const details = ytsCommands[command];
@@ -3820,6 +4366,7 @@
       const jsonOutput = document.getElementById('yts-arg-test-json-output').value.trim();
       body.interactive_ai = document.getElementById('yts-arg-test-interactive-ai').checked;
       body.record_video = document.getElementById('yts-arg-test-record-video').checked;
+      body.record_audio = document.getElementById('yts-arg-test-record-audio')?.checked !== false;
       body.ui_navigation_allowed = !!document.getElementById('yts-arg-test-ui-navigation-allowed')?.checked;
 
       if (!resolvedIds.length && !filterTokens.length && !guided && !extraArgs.length) {
@@ -4488,16 +5035,60 @@
 
   async function sendKey(action) {
     const el = document.getElementById('manual-result');
-    const deviceId = requireSelectedDabDevice('manual-result', 'Select a DAB device before sending remote actions.');
-    if (!deviceId) return;
-    try {
-      const body = { action, device_id: deviceId };
+    const mode = getRemoteMode();
+    const executeOnce = async (singleAction) => {
+      const body = { action: singleAction, control_mode: mode };
+      if (mode === 'IR') {
+        body.ir_device_id = selectedIrDeviceId || 'samsung_tv_default';
+      } else {
+        const deviceId = requireSelectedDabDevice('manual-result', 'Select a DAB device before sending remote actions.');
+        if (!deviceId) return;
+        body.device_id = deviceId;
+      }
       const data = await api('/action', 'POST', body);
-      el.textContent = `✓ ${action}: ${JSON.stringify(data.result)}`;
+      if (mode === 'IR') {
+        lastIrSendResult = `${(data.result && data.result.key_name) || singleAction} ✓`;
+        updateRemoteModeStatusBanner();
+      }
+      el.textContent = `✓ [${mode}] ${singleAction}`;
       el.style.color = '#4ade80';
-    } catch (e) {
-      el.textContent = `✗ ${e.message}`;
-      el.style.color = '#f87171';
+    };
+
+    if (mode !== 'IR') {
+      try {
+        await executeOnce(action);
+      } catch (e) {
+        el.textContent = `✗ ${e.message}`;
+        el.style.color = '#f87171';
+      }
+      return;
+    }
+
+    const state = window.__irSendState || { inFlight: false, pending: null };
+    window.__irSendState = state;
+    if (state.inFlight) {
+      state.pending = action;
+      return;
+    }
+    state.inFlight = true;
+    let nextAction = action;
+    try {
+      while (nextAction) {
+        const current = nextAction;
+        state.pending = null;
+        try {
+          await executeOnce(current);
+        } catch (e) {
+          lastIrSendResult = `${current} ✗`;
+          updateRemoteModeStatusBanner();
+          el.textContent = `✗ ${e.message}`;
+          el.style.color = '#f87171';
+        }
+        nextAction = state.pending;
+      }
+    } finally {
+      state.inFlight = false;
+      state.pending = null;
     }
   }
 
@@ -4527,14 +5118,19 @@
     initApiBase();
     initDetailTabs();
     initYtsControlCenter();
+    populateIrKeyOptions(defaultIrKeys);
+    setRemoteMode(selectedRemoteMode || 'DAB', false);
     await Promise.allSettled([
       checkHealth(),
       loadAiModels(),
       loadDabDevices(),
+      loadIrStatus(),
+      loadIrDevices(selectedIrDeviceId),
       loadRuns(),
       loadCaptureSource(),
       refreshCaptureDevices(),
       refreshStreamDiagnostics(),
+      refreshSystemMetrics(),
       loadYtsTestCatalog(),
     ]);
     await loadYtsCommandHistory();
@@ -4549,6 +5145,8 @@
   setInterval(loadCaptureSource, 10000);
   setInterval(refreshCaptureDevices, 15000);
   setInterval(refreshStreamDiagnostics, 20000);
+  setInterval(refreshSystemMetrics, 1000);
+  window.addEventListener('resize', drawPerfGraph);
 </script>
 </body>
 </html>

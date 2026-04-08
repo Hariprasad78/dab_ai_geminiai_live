@@ -158,8 +158,30 @@ class HdmiAudioStreamSession:
             "-nostdin",
             "-loglevel",
             "error",
+            "-fflags",
+            "nobuffer",
+            "-flags",
+            "low_delay",
+            "-probesize",
+            "32",
+            "-analyzeduration",
+            "0",
             "-f",
             self.input_format,
+        ]
+
+        if self.input_format == "alsa":
+            cmd.extend(
+                [
+                    "-channels",
+                    str(self.channels),
+                    "-sample_rate",
+                    str(self.sample_rate),
+                ]
+            )
+
+        cmd.extend(
+            [
             "-i",
             self.device,
             "-ac",
@@ -170,10 +192,15 @@ class HdmiAudioStreamSession:
             "libmp3lame",
             "-b:a",
             self.bitrate,
+            "-flush_packets",
+            "1",
+            "-write_xing",
+            "0",
             "-f",
             "mp3",
             "pipe:1",
-        ]
+            ]
+        )
 
         try:
             self._proc = subprocess.Popen(
@@ -216,6 +243,14 @@ class HdmiAudioStreamSession:
             "-nostdin",
             "-loglevel",
             "error",
+            "-fflags",
+            "nobuffer",
+            "-flags",
+            "low_delay",
+            "-probesize",
+            "32",
+            "-analyzeduration",
+            "0",
             "-f",
             "s16le",
             "-ac",
@@ -228,6 +263,10 @@ class HdmiAudioStreamSession:
             "libmp3lame",
             "-b:a",
             self.bitrate,
+            "-flush_packets",
+            "1",
+            "-write_xing",
+            "0",
             "-f",
             "mp3",
             "pipe:1",

@@ -65,9 +65,10 @@ _APP_NAME_HINTS: Dict[str, str] = {
 # ---------------------------------------------------------------------------
 # System prompt — navigation phases + batching
 # ---------------------------------------------------------------------------
-_DEFAULT_PLANNER_SYSTEM_PROMPT = """You are a TV UI navigation planner.
-Always use current execution state and session history to choose the next grounded step.
-For uncertain UI navigation, request a UI checkpoint capture before any commit/select action.
+_DEFAULT_PLANNER_SYSTEM_PROMPT = """You are a TV UI navigation agent.
+Choose the next smallest safe step from live context.
+Prefer direct supported operations over blind navigation.
+If the destination is uncertain, request a screenshot checkpoint before any commit/select action.
 Return exactly one JSON object that matches the NavigationPlan schema.
 Never return markdown.
 """
@@ -398,55 +399,58 @@ class Planner:
         retry_count: int,
         execution_state: Optional[Dict[str, Any]],
     ) -> str:
-        """Build an adaptive model prompt from live state and capabilities."""
+        """Build a compact model prompt from live state and capabilities."""
         state = execution_state or {}
         target_op = str(state.get("target_operation") or "").strip()
         current_subgoal = str(state.get("current_subgoal") or "").strip()
         target_screen = str(state.get("target_screen") or "").strip()
         is_settings_goal = self._is_settings_task(goal) or "SETTING" in target_op.upper()
 
-        dynamic_rules: List[str] = [
-            "Choose one execution_mode first, then low-level actions.",
-            "Use capability snapshot as source of truth and avoid unsupported operations.",
-            "Never mix blind directional moves with commit actions in one uncertain batch.",
-            "If confidence is low or destination is ambiguous, request a checkpoint action first.",
-            "Use recent action history to avoid repeated no-progress loops.",
+        def _limit(values: List[str], max_items: int = 20) -> str:
+            cleaned = [str(value).strip() for value in values if str(value).strip()]
+            if not cleaned:
+                return "unknown"
+            return ", ".join(cleaned[:max_items])
+
+        capability_snapshot = state.get("capability_snapshot") if isinstance(state.get("capability_snapshot"), dict) else {}
+        supported_ops = state.get("supported_operations")
+        if not isinstance(supported_ops, list):
+            supported_ops = capability_snapshot.get("supported_operations") if isinstance(capability_snapshot.get("supported_operations"), list) else []
+        supported_keys = state.get("supported_keys")
+        if not isinstance(supported_keys, list):
+            supported_keys = capability_snapshot.get("supported_keys") if isinstance(capability_snapshot.get("supported_keys"), list) else []
+
+        supported_settings_raw = state.get("supported_settings")
+        if supported_settings_raw is None:
+            supported_settings_raw = capability_snapshot.get("supported_settings")
+        supported_setting_names: List[str] = []
+        if isinstance(supported_settings_raw, list):
+            for item in supported_settings_raw:
+                if isinstance(item, dict):
+                    supported_setting_names.append(str(item.get("key") or item.get("friendlyName") or "").strip())
+                else:
+                    supported_setting_names.append(str(item).strip())
+        elif isinstance(supported_settings_raw, dict):
+            supported_setting_names.extend(str(key).strip() for key in supported_settings_raw.keys())
+
+        app_catalog = state.get("app_catalog")
+        app_names: List[str] = []
+        if isinstance(app_catalog, list):
+            app_names = [str((a or {}).get("name") or (a or {}).get("app_name") or "").strip() for a in app_catalog]
+
+        decision_rules: List[str] = [
+            "Choose one execution_mode first, then one short action_batch.",
+            "Prefer direct supported operations over UI navigation.",
+            "Do not combine blind directional moves with PRESS_OK in the same uncertain batch.",
+            "If the destination is unclear, request CAPTURE_SCREENSHOT or NEED_BETTER_VIEW before commit.",
+            "Avoid repeating recent no-progress actions.",
         ]
         if is_settings_goal:
-            dynamic_rules.extend(
-                [
-                    "This is a settings task; prefer direct GET_SETTING/SET_SETTING if supported.",
-                    "Avoid unrelated app detours during settings tasks.",
-                ]
-            )
+            decision_rules.append("For settings goals, prefer GET_SETTING or SET_SETTING when supported.")
         if retry_count >= 1:
-            dynamic_rules.append("Prioritize shortest safe recovery path based on recent failures.")
+            decision_rules.append("Use the shortest safe recovery path.")
         if current_app:
-            dynamic_rules.append(
-                f"Current app hint is {current_app}; continue in-app only if it aligns with the active subgoal."
-            )
-
-        capability_lines: List[str] = []
-        supported_ops = state.get("supported_operations")
-        if isinstance(supported_ops, list) and supported_ops:
-            capability_lines.append(f"supported_operations: {', '.join(str(o) for o in supported_ops[:80])}")
-        supported_keys = state.get("supported_keys")
-        if isinstance(supported_keys, list) and supported_keys:
-            capability_lines.append(f"supported_keys: {', '.join(str(k) for k in supported_keys[:80])}")
-        supported_settings = state.get("supported_settings")
-        if isinstance(supported_settings, list) and supported_settings:
-            capability_lines.append(f"supported_settings: {', '.join(str(s) for s in supported_settings[:80])}")
-        app_catalog = state.get("app_catalog")
-        if isinstance(app_catalog, list) and app_catalog:
-            app_names = [str((a or {}).get("name") or (a or {}).get("app_name") or "").strip() for a in app_catalog[:40]]
-            app_names = [name for name in app_names if name]
-            if app_names:
-                capability_lines.append(f"app_catalog_names: {', '.join(app_names)}")
-        capability_snapshot = state.get("capability_snapshot")
-        if isinstance(capability_snapshot, dict) and capability_snapshot:
-            capability_lines.append(
-                f"capability_snapshot: {json.dumps(capability_snapshot, ensure_ascii=False)[:1200]}"
-            )
+            decision_rules.append(f"Stay in {current_app} only if it clearly matches the current subgoal.")
 
         output_fields = [
             "phase", "intent", "subgoal", "execution_mode", "strategy", "target_app_name",
@@ -459,40 +463,35 @@ class Planner:
         sections = [
             self._planner_system_prompt.strip(),
             "",
-            "Goal decomposition:",
-            f"- overall_goal: {goal}",
-            f"- active_subgoal: {current_subgoal or 'infer from screen evidence and goal'}",
+            "Planner input:",
+            f"- goal: {goal}",
+            f"- active_subgoal: {current_subgoal or 'infer from live context'}",
+            f"- current_app: {current_app or 'unknown'}",
+            f"- target_operation: {target_op or 'unknown'}",
             f"- target_screen: {target_screen or 'unknown'}",
-            "- success_condition: pick one grounded, safe next step",
-            "- forbidden_detours: unsupported operations, ambiguous commit actions, repeated no-progress loops",
+            f"- retry_count: {retry_count}",
+            "",
+            "Capabilities:",
+            f"- supported_operations: {_limit(list(supported_ops or []), 30)}",
+            f"- supported_settings: {_limit(supported_setting_names, 20)}",
+            f"- supported_keys: {_limit(list(supported_keys or []), 20)}",
+            f"- known_apps: {_limit(app_names, 20)}",
+            "",
+            "Decision rules:",
+            *[f"- {rule}" for rule in decision_rules],
             "",
             "Allowed execution modes:",
-            "- DIRECT_DAB_OPERATION",
-            "- DIRECT_SETTING_OPERATION",
-            "- DIRECT_APP_LAUNCH",
-            "- DIRECT_APP_LAUNCH_WITH_PARAMS",
-            "- DIRECT_CONTENT_OPEN",
-            "- CONTINUE_IN_CURRENT_APP",
-            "- GO_HOME_AND_RECOVER",
-            "- GO_HOME_THEN_LAUNCH",
-            "- UI_NAVIGATION_ONLY",
-            "- RELAUNCH_TARGET_APP",
-            "- RECOVERY_RELAUNCH",
-            "- FAIL_WITH_GROUNDED_REASON",
+            "- DIRECT_DAB_OPERATION, DIRECT_SETTING_OPERATION, DIRECT_APP_LAUNCH, DIRECT_APP_LAUNCH_WITH_PARAMS",
+            "- DIRECT_CONTENT_OPEN, CONTINUE_IN_CURRENT_APP, GO_HOME_AND_RECOVER, GO_HOME_THEN_LAUNCH",
+            "- UI_NAVIGATION_ONLY, RELAUNCH_TARGET_APP, RECOVERY_RELAUNCH, FAIL_WITH_GROUNDED_REASON",
             "",
-            "Dynamic rules:",
-            *[f"- {rule}" for rule in dynamic_rules],
+            "Response JSON:",
+            f"- Use exactly these fields: {', '.join(output_fields)}.",
+            "- action_batch must be an array of {\"action\": string, \"params\": object}.",
+            "- fallback_if_failed must be null or one {\"action\": string, \"params\": object}.",
+            "- Keep evidence_used short and grounded in visible context, capability support, or recent actions.",
             "",
-            "Capability evidence:",
-            *([f"- {line}" for line in capability_lines] if capability_lines else ["- capability details unavailable; be conservative"]),
-            "",
-            "Output contract:",
-            "- Return a single JSON object only (no markdown).",
-            f"- Use fields exactly: {', '.join(output_fields)}.",
-            "- action_batch must be array of {\"action\": string, \"params\": object}.",
-            "- fallback_if_failed must be null or {\"action\": string, \"params\": object}.",
-            "",
-            "Current situation:",
+            "Live context:",
             context,
         ]
         if last_actions:

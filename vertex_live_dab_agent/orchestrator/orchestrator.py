@@ -915,6 +915,8 @@ class Orchestrator:
         return directional_count >= 1 and has_commit
 
     async def _run_stuck_diagnosis_if_needed(self, state: RunState, step: int) -> list[dict]:
+        if self._is_open_app_goal(state.goal) and self._is_app_goal_verified(state):
+            return []
         if not self._is_stuck_navigation(state):
             return []
 
@@ -1459,6 +1461,10 @@ class Orchestrator:
     async def _select_execution_strategy(self, state: RunState) -> list[dict]:
         if state.pending_subplan:
             return []
+
+        if self._is_open_app_goal(state.goal) and self._is_app_goal_verified(state):
+            state.strategy_selected = "DIRECT_APP_LAUNCH"
+            return [{"action": ActionType.DONE.value, "params": {}}]
 
         preplan = state.task_preplan or self._build_task_preplan(state).model_dump()
         step_type = self._normalize_step_type(preplan.get("step_type", "MENU_NAVIGATION"))
@@ -2553,6 +2559,16 @@ class Orchestrator:
         if self._is_settings_goal(goal):
             return "Settings"
 
+        for token, canonical in (
+            ("youtube", str(getattr(self._config, "youtube_app_id", "youtube") or "youtube")),
+            ("netflix", "netflix"),
+            ("prime video", "prime video"),
+            ("amazon prime", "prime video"),
+            ("settings", "settings"),
+        ):
+            if token in g:
+                return canonical
+
         open_words = ("open", "launch", "start")
         if not any(w in g for w in open_words):
             return None
@@ -2638,12 +2654,39 @@ class Orchestrator:
         named_app_intent = any(name in g for name in ("youtube", "netflix", "prime video", "settings"))
         return explicit_app_intent or named_app_intent
 
-    @staticmethod
-    def _is_app_goal_verified(state: RunState) -> bool:
+    def _is_app_goal_verified(self, state: RunState) -> bool:
         app_state = str(state.current_app_state or "").upper()
         if app_state != "FOREGROUND":
             return False
-        return bool(state.current_app_id or state.current_app or state.last_verified_foreground_app)
+
+        current_candidates = {
+            str(state.current_app_id or "").strip().lower(),
+            str(state.current_app or "").strip().lower(),
+            str(state.last_verified_foreground_app or "").strip().lower(),
+        }
+        current_candidates = {value for value in current_candidates if value}
+        if not current_candidates:
+            return False
+
+        target_name = str(
+            state.target_app_name
+            or self._infer_target_app_name_from_goal(state.goal, state.app_catalog or [])
+            or ""
+        ).strip().lower()
+        if not target_name:
+            return True
+
+        target_candidates = {target_name}
+        if target_name == "prime video":
+            target_candidates.add("amazon prime video")
+        if target_name == str(getattr(self._config, "youtube_app_id", "youtube") or "youtube").strip().lower():
+            target_candidates.add("youtube")
+
+        return any(
+            current == target or current in target or target in current
+            for current in current_candidates
+            for target in target_candidates
+        )
 
     async def _normalize_navigation_batch(
         self,

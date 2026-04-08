@@ -73,10 +73,11 @@ class Config:
         default_factory=lambda: os.environ.get("ENABLE_CAMERA_CAPTURE", "true").lower() == "true"
     )
     hdmi_capture_device: str = field(default_factory=lambda: os.environ.get("HDMI_CAPTURE_DEVICE", ""))
-    hdmi_capture_width: int = field(default_factory=lambda: int(os.environ.get("HDMI_CAPTURE_WIDTH", "1920")))
-    hdmi_capture_height: int = field(default_factory=lambda: int(os.environ.get("HDMI_CAPTURE_HEIGHT", "1080")))
+    hdmi_capture_width: int = field(default_factory=lambda: int(os.environ.get("HDMI_CAPTURE_WIDTH", "1280")))
+    hdmi_capture_height: int = field(default_factory=lambda: int(os.environ.get("HDMI_CAPTURE_HEIGHT", "720")))
     hdmi_capture_fps: float = field(default_factory=lambda: float(os.environ.get("HDMI_CAPTURE_FPS", "30.0")))
     hdmi_capture_fourcc: str = field(default_factory=lambda: os.environ.get("HDMI_CAPTURE_FOURCC", "MJPG"))
+    hdmi_capture_rotation: int = field(default_factory=lambda: int(os.environ.get("HDMI_CAPTURE_ROTATION", "0")))
     hdmi_stream_jpeg_quality: int = field(default_factory=lambda: int(os.environ.get("HDMI_STREAM_JPEG_QUALITY", "80")))
     hdmi_audio_enabled: bool = field(default_factory=lambda: os.environ.get("HDMI_AUDIO_ENABLED", "false").lower() == "true")
     hdmi_audio_input_format: str = field(default_factory=lambda: os.environ.get("HDMI_AUDIO_INPUT_FORMAT", "auto"))

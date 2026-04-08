@@ -147,8 +147,8 @@ def main() -> int:
         default=None,
         help="V4L2 device path (e.g. /dev/adt4_cam). Auto-detected when omitted.",
     )
-    ap.add_argument("--width", type=int, default=1920, help="Requested capture width  (default 1920).")
-    ap.add_argument("--height", type=int, default=1080, help="Requested capture height (default 1080).")
+    ap.add_argument("--width", type=int, default=1280, help="Requested capture width  (default 1280).")
+    ap.add_argument("--height", type=int, default=720, help="Requested capture height (default 720).")
     ap.add_argument("--fps", type=float, default=30.0, help="Requested capture FPS    (default 30).")
     ap.add_argument("--fourcc", default="MJPG", help="FOURCC codec: MJPG (default) or YUYV.")
     args = ap.parse_args()
