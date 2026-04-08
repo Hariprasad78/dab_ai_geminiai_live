@@ -78,6 +78,7 @@ from vertex_live_dab_agent.orchestrator.orchestrator import Orchestrator
 from vertex_live_dab_agent.orchestrator.run_state import RunState, RunStatus
 from vertex_live_dab_agent.planner.planner import Planner
 from vertex_live_dab_agent.planner.vertex_client import VertexPlannerClient
+from vertex_live_dab_agent.ir.service import SamsungIrService
 from vertex_live_dab_agent.system_ops.routing import (
     has_android_adb_fallback,
     operation_supported_by_dab,
@@ -88,6 +89,7 @@ from vertex_live_dab_agent.system_ops.device_detection import get_device_platfor
 logger = logging.getLogger(__name__)
 
 _ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
+_JPEG_WARNING_PREFIX = "Corrupt JPEG data:"
 
 # Path to the bundled static frontend
 _STATIC_DIR = Path(__file__).parent.parent.parent / "static"
@@ -130,6 +132,7 @@ _livekit_task: Optional[asyncio.Task] = None
 _tts_service: Optional[GoogleTTSService] = None
 _vertex_text_client: Optional[VertexPlannerClient] = None
 _vertex_live_visual_client: Optional[VertexPlannerClient] = None
+_ir_service: Optional[SamsungIrService] = None
 _runtime_vertex_planner_model_override: Optional[str] = None
 _yts_live_commands: Dict[str, Dict[str, Any]] = {}
 _yts_live_tasks: Dict[str, asyncio.Task] = {}
@@ -315,6 +318,50 @@ def _device_context_path() -> Path:
     root = Path(base_dir) if base_dir else Path("/home/harry/youtube/ai_tool/artifacts")
     root.mkdir(parents=True, exist_ok=True)
     return root / "device_context.json"
+
+
+def _artifacts_root_path() -> Path:
+    base_dir = os.getenv("ARTIFACTS_BASE_DIR")
+    root = Path(base_dir).expanduser() if base_dir else Path(get_config().artifacts_base_dir).expanduser()
+    root = root.resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _ir_dataset_path() -> Path:
+    explicit = str(os.getenv("IR_DATASET_PATH", "")).strip()
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    return _artifacts_root_path() / "ir_samsung_dataset.json"
+
+
+def _get_ir_service() -> SamsungIrService:
+    global _ir_service
+    if _ir_service is None:
+        cfg = get_config()
+        serial_port = str(os.getenv("IR_SERIAL_PORT", "/dev/ttyUSB0") or "").strip()
+        baudrate = int(os.getenv("IR_SERIAL_BAUDRATE", "115200"))
+        timeout_seconds = float(os.getenv("IR_SERIAL_TIMEOUT_SECONDS", "3.0"))
+        sender_channel = str(os.getenv("IR_SAMSUNG_SENDER_CHANNEL", "D2") or "D2").strip() or "D2"
+        _ir_service = SamsungIrService(
+            dataset_path=_ir_dataset_path(),
+            serial_port=serial_port,
+            baudrate=baudrate,
+            timeout_seconds=timeout_seconds,
+            sender_channel=sender_channel,
+        )
+    return _ir_service
+
+
+class IrTrainRequest(BaseModel):
+    device_id: str = "samsung_tv_default"
+    key_name: str
+    timeout_ms: int = Field(default=8000, ge=1000, le=30000)
+
+
+class IrSendRequest(BaseModel):
+    device_id: str = "samsung_tv_default"
+    key_name: str
 
 
 def _device_capabilities_cache_path() -> Path:
@@ -1315,14 +1362,16 @@ async def _refresh_discovered_device_capabilities_cache(
 
 def _get_yts_live_db_path() -> Path:
     base_dir = os.getenv("ARTIFACTS_BASE_DIR")
-    root = Path(base_dir) if base_dir else Path("/home/harry/youtube/ai_tool/artifacts")
+    root = Path(base_dir).expanduser() if base_dir else Path(get_config().artifacts_base_dir).expanduser()
+    root = root.resolve()
     root.mkdir(parents=True, exist_ok=True)
     return root / "yts_live_commands.sqlite3"
 
 
 def _get_yts_live_artifacts_root() -> Path:
     base_dir = os.getenv("ARTIFACTS_BASE_DIR")
-    root = Path(base_dir) if base_dir else Path("/home/harry/youtube/ai_tool/artifacts")
+    root = Path(base_dir).expanduser() if base_dir else Path(get_config().artifacts_base_dir).expanduser()
+    root = root.resolve()
     path = root / "yts_live"
     path.mkdir(parents=True, exist_ok=True)
     return path
@@ -1450,6 +1499,13 @@ def _normalize_yts_live_state(state: Dict[str, Any]) -> Dict[str, Any]:
             if normalized.get("status") != "running":
                 normalized["video_recording_status"] = "completed"
         elif normalized.get("status") != "running" and normalized.get("record_video"):
+            normalized["video_file_path"] = None
+            normalized["video_file_name"] = None
+            normalized["video_recording_status"] = "failed"
+    elif normalized.get("status") != "running" and normalized.get("record_video"):
+        normalized["video_file_path"] = None
+        normalized["video_file_name"] = None
+        if normalized.get("video_recording_status") in {None, "pending", "recording", "stopped"}:
             normalized["video_recording_status"] = "failed"
     normalized["created_at"] = str(normalized.get("created_at") or _utc_now_iso())
     normalized["updated_at"] = str(normalized.get("updated_at") or normalized["created_at"])
@@ -1618,6 +1674,7 @@ async def _capture_yts_recording_stderr(command_id: str, stream) -> None:
     state = _get_yts_live_state(command_id)
     if not state or stream is None:
         return
+    suppressed_jpeg_warning_count = 0
     while True:
         chunk = await stream.readline()
         if not chunk:
@@ -1625,7 +1682,17 @@ async def _capture_yts_recording_stderr(command_id: str, stream) -> None:
         message = chunk.decode(errors="replace").strip()
         if not message:
             continue
+        if message.startswith(_JPEG_WARNING_PREFIX):
+            suppressed_jpeg_warning_count += 1
+            continue
         state["logs"].append({"stream": "recording", "message": message, "raw_message": message})
+        _persist_yts_live_state(state)
+    if suppressed_jpeg_warning_count:
+        summary = (
+            f"Suppressed {suppressed_jpeg_warning_count} non-fatal MJPEG decoder warnings "
+            f"from the HDMI capture source"
+        )
+        state["logs"].append({"stream": "recording", "message": summary, "raw_message": summary})
         _persist_yts_live_state(state)
 
 
@@ -5404,12 +5471,37 @@ async def stream_audio() -> StreamingResponse:
 
 @app.post("/action", response_model=ManualActionResponse)
 async def manual_action(request: ManualActionRequest) -> ManualActionResponse:
-    """Execute a manual action directly against the DAB client."""
+    """Execute a manual action against DAB or IR transport (mode-selectable)."""
     try:
-        await _ensure_selected_device_context(request.device_id, persist=bool(request.device_id))
-        dab = get_dab_client()
         action = request.action.upper()
         params = request.params or {}
+        control_mode = str(
+            request.control_mode
+            or params.get("control_mode")
+            or params.get("mode")
+            or "DAB"
+        ).strip().upper()
+
+        if control_mode == "IR":
+            ir_service = _get_ir_service()
+            ir_device_id = str(
+                request.ir_device_id
+                or params.get("ir_device_id")
+                or params.get("irDeviceId")
+                or params.get("device_id")
+                or "samsung_tv_default"
+            ).strip() or "samsung_tv_default"
+            result = await asyncio.to_thread(ir_service.send_dab_style_action, ir_device_id, action)
+            success = bool(result.get("success"))
+            return ManualActionResponse(
+                success=success,
+                action=action,
+                result=result,
+                error=None if success else str(result.get("error") or "IR action failed"),
+            )
+
+        await _ensure_selected_device_context(request.device_id, persist=bool(request.device_id))
+        dab = get_dab_client()
         if action in KEY_MAP:
             resp = await dab.key_press(KEY_MAP[action])
             return ManualActionResponse(success=resp.success, action=action, result=resp.data)
@@ -5722,6 +5814,59 @@ async def manual_action(request: ManualActionRequest) -> ManualActionResponse:
     except Exception as exc:
         logger.error("Manual action failed: action=%s error=%s", request.action, exc)
         return ManualActionResponse(success=False, action=request.action, error=str(exc))
+
+
+@app.get("/ir/status")
+async def ir_status() -> dict:
+    service = _get_ir_service()
+    return await asyncio.to_thread(service.status)
+
+
+@app.get("/ir/devices")
+async def ir_devices() -> dict:
+    service = _get_ir_service()
+    devices = await asyncio.to_thread(service.list_devices)
+    return {
+        "brand": "Samsung",
+        "devices": devices,
+    }
+
+
+@app.get("/ir/device/{device_id}/keys")
+async def ir_device_keys(device_id: str) -> dict:
+    service = _get_ir_service()
+    keys = await asyncio.to_thread(service.list_keys, str(device_id or "").strip())
+    return {
+        "device_id": str(device_id or "").strip(),
+        "keys": keys,
+    }
+
+
+@app.post("/ir/train")
+async def ir_train(request: IrTrainRequest) -> dict:
+    service = _get_ir_service()
+    result = await asyncio.to_thread(
+        service.train_key,
+        str(request.device_id or "samsung_tv_default").strip() or "samsung_tv_default",
+        str(request.key_name or "").strip(),
+        int(request.timeout_ms),
+    )
+    if not bool(result.get("success")):
+        raise HTTPException(status_code=400, detail=str(result.get("error") or "IR training failed"))
+    return result
+
+
+@app.post("/ir/send")
+async def ir_send(request: IrSendRequest) -> dict:
+    service = _get_ir_service()
+    result = await asyncio.to_thread(
+        service.send_key,
+        str(request.device_id or "samsung_tv_default").strip() or "samsung_tv_default",
+        str(request.key_name or "").strip(),
+    )
+    if not bool(result.get("success")):
+        raise HTTPException(status_code=400, detail=str(result.get("error") or "IR send failed"))
+    return result
 
 
 @app.post("/actions/batch", response_model=ManualActionBatchResponse)

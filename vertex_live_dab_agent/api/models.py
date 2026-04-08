@@ -165,6 +165,8 @@ class ManualActionRequest(BaseModel):
     action: str
     params: Optional[Dict[str, Any]] = None
     device_id: Optional[str] = None
+    control_mode: Optional[str] = None
+    ir_device_id: Optional[str] = None
 
 
 class ManualActionResponse(BaseModel):

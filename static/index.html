@@ -144,6 +144,11 @@
     #audio-stream-player { width: 100%; margin-top: 0.6rem; }
     .remote-layout { display: grid; grid-template-columns: 1.1fr 1fr; gap: 1rem; align-items: start; }
     .remote-panel { background: #0f172a; border: 1px solid #334155; border-radius: 0.6rem; padding: 0.8rem; }
+    .remote-mode-toolbar { display:flex; gap:0.5rem; align-items:end; flex-wrap:wrap; margin-bottom:0.75rem; }
+    .remote-mode-toolbar > div { flex:1 1 180px; }
+    .remote-meta { display:grid; grid-template-columns: repeat(2, minmax(160px, 1fr)); gap:0.4rem; margin-bottom:0.75rem; }
+    .remote-meta-chip { background:#111827; border:1px solid #334155; border-radius:0.45rem; padding:0.45rem 0.55rem; font-size:0.75rem; color:#cbd5e1; }
+    .ir-panel { border:1px dashed #334155; border-radius:0.6rem; padding:0.7rem; margin-bottom:0.75rem; background:#0b1325; }
     .remote-grid { display: grid; grid-template-columns: repeat(4, minmax(58px, 1fr)); gap: 0.4rem; }
     .key-btn { padding: 0.45rem 0.35rem; font-size: 0.75rem; }
     .dpad-wrap { max-width: 260px; margin-bottom: 0.8rem; }
@@ -592,6 +597,39 @@
       </div>
 
       <div class="remote-panel">
+        <div class="remote-mode-toolbar">
+          <div>
+            <label for="remote-mode-select" style="margin-bottom:0.25rem;">Remote Mode</label>
+            <select id="remote-mode-select" onchange="onRemoteModeChanged()">
+              <option value="DAB">DAB</option>
+              <option value="IR">IR</option>
+            </select>
+          </div>
+          <div>
+            <label for="ir-device-select" style="margin-bottom:0.25rem;">IR Device (Samsung)</label>
+            <select id="ir-device-select" onchange="onIrDeviceChanged()">
+              <option value="samsung_tv_default">Samsung TV (Default)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="remote-meta">
+          <div class="remote-meta-chip" id="remote-mode-status">Mode: DAB</div>
+          <div class="remote-meta-chip" id="ir-selected-device-status">IR device: samsung_tv_default</div>
+          <div class="remote-meta-chip" id="ir-last-trained-status">Last trained key: --</div>
+          <div class="remote-meta-chip" id="ir-last-send-status">Last send result: --</div>
+        </div>
+
+        <div id="ir-control-panel" class="ir-panel" style="display:none;">
+          <label for="ir-key-select" style="margin-bottom:0.25rem;">IR Key</label>
+          <select id="ir-key-select"></select>
+          <div class="btn-row" style="margin-top:0.55rem; margin-bottom:0.25rem;">
+            <button class="secondary" onclick="trainSelectedIrKey()">Read / Train</button>
+            <button onclick="sendSelectedIrKey()">Send Stored Key</button>
+          </div>
+          <div id="ir-debug-status" class="yts-subtle">IR mode uses Raspberry Pi serial -> NodeMCU -> Samsung sender D2/GPIO4.</div>
+        </div>
+
         <label style="margin-bottom:0.5rem;">Navigation</label>
         <div class="key-grid dpad-wrap">
           <div></div>
@@ -844,6 +882,8 @@
 <script>
   const API_STORAGE_KEY = 'dab_api_base';
   const DAB_DEVICE_STORAGE_KEY = 'dab_selected_device_id';
+  const REMOTE_MODE_STORAGE_KEY = 'dab_remote_mode';
+  const IR_DEVICE_STORAGE_KEY = 'dab_ir_device_id';
   let apiBase = '';
   let selectedRunId = null;
   let pollInterval = null;
@@ -858,6 +898,12 @@
   let ytsCommandPollInterval = null;
   const YTS_COMMAND_STORAGE_KEY = 'dab_yts_live_command_id';
   let ytsCommandHistory = [];
+  let selectedRemoteMode = (localStorage.getItem(REMOTE_MODE_STORAGE_KEY) || 'DAB').toUpperCase();
+  let selectedIrDeviceId = localStorage.getItem(IR_DEVICE_STORAGE_KEY) || 'samsung_tv_default';
+  let irDeviceList = [];
+  let irStatusSnapshot = null;
+  let lastTrainedIrKey = '--';
+  let lastIrSendResult = '--';
   let selectedDabDeviceId = '';
   let discoveredDabDevices = [];
   let dabDeviceSettingsSnapshot = [];
@@ -927,6 +973,8 @@
       setApiBase(qsApi);
       checkHealth();
       loadDabDevices();
+      loadIrStatus();
+      loadIrDevices(selectedIrDeviceId);
       loadCaptureSource();
       refreshCaptureDevices();
       loadRuns();
@@ -939,6 +987,8 @@
     setApiBase(shouldPreferSameOrigin ? '' : (storedApi || cfgApi || ''));
     checkHealth();
     loadDabDevices();
+    loadIrStatus();
+    loadIrDevices(selectedIrDeviceId);
     loadCaptureSource();
     refreshCaptureDevices();
     loadRuns();
@@ -951,6 +1001,8 @@
     setApiBase(v);
     checkHealth();
     loadDabDevices();
+    loadIrStatus();
+    loadIrDevices(selectedIrDeviceId);
     loadCaptureSource();
     refreshCaptureDevices();
     loadRuns();
@@ -1932,6 +1984,207 @@
     if (settingsValueRefreshTimer) {
       clearInterval(settingsValueRefreshTimer);
       settingsValueRefreshTimer = null;
+    }
+  }
+
+  const defaultIrKeys = [
+    'POWER','HOME','MENU','RETURN','ENTER','UP','DOWN','LEFT','RIGHT','VOL_UP','VOL_DOWN','MUTE','CH_UP','CH_DOWN',
+    'PLAY_PAUSE','PLAY','PAUSE','STOP','REWIND','FAST_FORWARD','NUM_0','NUM_1','NUM_2','NUM_3','NUM_4','NUM_5','NUM_6','NUM_7','NUM_8','NUM_9',
+    'RED','GREEN','YELLOW','BLUE','GUIDE','INFO','EXIT'
+  ];
+
+  function normalizeRemoteMode(mode) {
+    return String(mode || 'DAB').trim().toUpperCase() === 'IR' ? 'IR' : 'DAB';
+  }
+
+  function getRemoteMode() {
+    return normalizeRemoteMode(selectedRemoteMode);
+  }
+
+  function updateRemoteModeStatusBanner() {
+    const modeEl = document.getElementById('remote-mode-status');
+    if (modeEl) modeEl.textContent = `Mode: ${getRemoteMode()}`;
+    const devEl = document.getElementById('ir-selected-device-status');
+    if (devEl) devEl.textContent = `IR device: ${selectedIrDeviceId || '--'}`;
+    const trainEl = document.getElementById('ir-last-trained-status');
+    if (trainEl) trainEl.textContent = `Last trained key: ${lastTrainedIrKey || '--'}`;
+    const sendEl = document.getElementById('ir-last-send-status');
+    if (sendEl) sendEl.textContent = `Last send result: ${lastIrSendResult || '--'}`;
+  }
+
+  function populateIrKeyOptions(keys = []) {
+    const select = document.getElementById('ir-key-select');
+    if (!select) return;
+    const merged = Array.from(new Set([...(Array.isArray(keys) ? keys : []), ...defaultIrKeys]))
+      .map(v => String(v || '').trim().toUpperCase())
+      .filter(Boolean)
+      .sort();
+    select.innerHTML = '';
+    for (const key of merged) {
+      const option = document.createElement('option');
+      option.value = key;
+      option.textContent = key;
+      select.appendChild(option);
+    }
+  }
+
+  function setRemoteMode(mode, persist = true) {
+    selectedRemoteMode = normalizeRemoteMode(mode);
+    const select = document.getElementById('remote-mode-select');
+    if (select && select.value !== selectedRemoteMode) select.value = selectedRemoteMode;
+    const irPanel = document.getElementById('ir-control-panel');
+    if (irPanel) irPanel.style.display = selectedRemoteMode === 'IR' ? '' : 'none';
+    const debugEl = document.getElementById('ir-debug-status');
+    if (debugEl && selectedRemoteMode === 'DAB') {
+      debugEl.textContent = 'IR mode uses Raspberry Pi serial -> NodeMCU -> Samsung sender D2/GPIO4.';
+    }
+    if (persist) localStorage.setItem(REMOTE_MODE_STORAGE_KEY, selectedRemoteMode);
+    updateRemoteModeStatusBanner();
+  }
+
+  async function onRemoteModeChanged() {
+    const select = document.getElementById('remote-mode-select');
+    const next = select ? select.value : 'DAB';
+    setRemoteMode(next, true);
+    if (getRemoteMode() === 'IR') {
+      await Promise.allSettled([loadIrStatus(), loadIrDevices(selectedIrDeviceId)]);
+    }
+  }
+
+  async function loadIrStatus() {
+    const el = document.getElementById('ir-debug-status');
+    if (!el) return;
+    try {
+      const data = await api('/ir/status');
+      irStatusSnapshot = data;
+      const serialPort = String(data.serial_port || '').trim() || 'not configured';
+      el.textContent = `IR endpoint ready · serial=${serialPort} · sender=${data.sender_channel || 'D2'} · dataset=${data.dataset_path || '--'}`;
+      el.style.color = '#93c5fd';
+    } catch (e) {
+      el.textContent = `IR status unavailable: ${e.message}`;
+      el.style.color = '#f87171';
+    }
+  }
+
+  async function loadIrDevices(preferredDeviceId = null) {
+    const select = document.getElementById('ir-device-select');
+    if (!select) return;
+    try {
+      const data = await api('/ir/devices');
+      irDeviceList = Array.isArray(data.devices) ? data.devices : [];
+      select.innerHTML = '';
+      if (!irDeviceList.length) {
+        const fallback = document.createElement('option');
+        fallback.value = 'samsung_tv_default';
+        fallback.textContent = 'Samsung TV (Default)';
+        select.appendChild(fallback);
+        selectedIrDeviceId = 'samsung_tv_default';
+      } else {
+        for (const item of irDeviceList) {
+          const id = String(item.device_id || '').trim();
+          if (!id) continue;
+          const option = document.createElement('option');
+          option.value = id;
+          option.textContent = `${item.model || id} (${item.key_count || 0} keys)`;
+          select.appendChild(option);
+        }
+        const preferred = String(preferredDeviceId || selectedIrDeviceId || localStorage.getItem(IR_DEVICE_STORAGE_KEY) || '').trim();
+        const exists = irDeviceList.some(item => String(item.device_id || '').trim() === preferred);
+        if (exists) {
+          selectedIrDeviceId = preferred;
+        } else {
+          const samsungCandidate = irDeviceList.find(item => {
+            const deviceId = String(item.device_id || '').trim().toLowerCase();
+            const brand = String(item.brand || '').trim().toLowerCase();
+            return deviceId.includes('samsung') || brand.includes('samsung');
+          });
+          selectedIrDeviceId = String((samsungCandidate && samsungCandidate.device_id) || irDeviceList[0].device_id || 'samsung_tv_default');
+        }
+      }
+      select.value = selectedIrDeviceId;
+      localStorage.setItem(IR_DEVICE_STORAGE_KEY, selectedIrDeviceId);
+      await loadIrDeviceKeys(selectedIrDeviceId);
+      updateRemoteModeStatusBanner();
+    } catch (e) {
+      const debugEl = document.getElementById('ir-debug-status');
+      if (debugEl) {
+        debugEl.textContent = `Failed to load IR devices: ${e.message}`;
+        debugEl.style.color = '#f87171';
+      }
+      populateIrKeyOptions(defaultIrKeys);
+    }
+  }
+
+  async function loadIrDeviceKeys(deviceId) {
+    try {
+      const payload = await api(`/ir/device/${encodeURIComponent(deviceId)}/keys`);
+      populateIrKeyOptions(payload.keys || []);
+    } catch (_) {
+      populateIrKeyOptions(defaultIrKeys);
+    }
+  }
+
+  async function onIrDeviceChanged() {
+    const select = document.getElementById('ir-device-select');
+    selectedIrDeviceId = String(select?.value || 'samsung_tv_default').trim() || 'samsung_tv_default';
+    localStorage.setItem(IR_DEVICE_STORAGE_KEY, selectedIrDeviceId);
+    await loadIrDeviceKeys(selectedIrDeviceId);
+    updateRemoteModeStatusBanner();
+  }
+
+  async function trainSelectedIrKey() {
+    const keySel = document.getElementById('ir-key-select');
+    const keyName = String(keySel?.value || '').trim();
+    const debugEl = document.getElementById('ir-debug-status');
+    if (!keyName) return;
+    try {
+      if (debugEl) {
+        debugEl.textContent = `Training ${keyName}... point Samsung remote at IR receiver.`;
+        debugEl.style.color = '#93c5fd';
+      }
+      const result = await api('/ir/train', 'POST', { device_id: selectedIrDeviceId, key_name: keyName });
+      lastTrainedIrKey = `${result.key_name || keyName} ✓`;
+      if (debugEl) {
+        const captured = (result && result.stored_payload) || (result && result.raw && result.raw.payload) || {};
+        const protocol = String((captured && captured.protocol) || '').trim();
+        const code = String((captured && captured.code) || '').trim();
+        const bits = (captured && captured.bits) != null ? String(captured.bits) : '';
+        const details = [protocol, code, bits ? `${bits}b` : ''].filter(Boolean).join(' · ');
+        debugEl.textContent = details
+          ? `Trained ${result.key_name || keyName} for ${result.device_id || selectedIrDeviceId} → ${details}`
+          : `Trained ${result.key_name || keyName} for ${result.device_id || selectedIrDeviceId}.`;
+        debugEl.style.color = '#4ade80';
+      }
+      await loadIrDevices(selectedIrDeviceId);
+      updateRemoteModeStatusBanner();
+    } catch (e) {
+      if (debugEl) {
+        debugEl.textContent = `Train failed: ${e.message}`;
+        debugEl.style.color = '#f87171';
+      }
+    }
+  }
+
+  async function sendSelectedIrKey() {
+    const keySel = document.getElementById('ir-key-select');
+    const keyName = String(keySel?.value || '').trim();
+    const debugEl = document.getElementById('ir-debug-status');
+    if (!keyName) return;
+    try {
+      const result = await api('/ir/send', 'POST', { device_id: selectedIrDeviceId, key_name: keyName });
+      lastIrSendResult = `${result.key_name || keyName} ✓`;
+      if (debugEl) {
+        debugEl.textContent = `Sent ${result.key_name || keyName} on ${result.sender_channel || 'D2'}.`;
+        debugEl.style.color = '#4ade80';
+      }
+      updateRemoteModeStatusBanner();
+    } catch (e) {
+      lastIrSendResult = `${keyName} ✗`;
+      if (debugEl) {
+        debugEl.textContent = `Send failed: ${e.message}`;
+        debugEl.style.color = '#f87171';
+      }
+      updateRemoteModeStatusBanner();
     }
   }
 
@@ -3298,13 +3551,60 @@
 
   async function sendKey(action) {
     const el = document.getElementById('manual-result');
-    try {
-      const data = await api('/action', 'POST', { action });
-      el.textContent = `✓ ${action}: ${JSON.stringify(data.result)}`;
+    const mode = getRemoteMode();
+    const executeOnce = async (singleAction) => {
+      let body = { action: singleAction, control_mode: mode };
+      if (mode === 'IR') {
+        body.ir_device_id = selectedIrDeviceId || 'samsung_tv_default';
+      } else {
+        const deviceId = requireSelectedDabDevice('manual-result', 'Select a DAB device before sending remote actions.');
+        if (!deviceId) return;
+        body.device_id = deviceId;
+      }
+      const data = await api('/action', 'POST', body);
+      if (mode === 'IR') {
+        lastIrSendResult = `${(data.result && data.result.key_name) || singleAction} ✓`;
+        updateRemoteModeStatusBanner();
+      }
+      el.textContent = `✓ [${mode}] ${singleAction}`;
       el.style.color = '#4ade80';
-    } catch (e) {
-      el.textContent = `✗ ${e.message}`;
-      el.style.color = '#f87171';
+    };
+
+    if (mode !== 'IR') {
+      try {
+        await executeOnce(action);
+      } catch (e) {
+        el.textContent = `✗ ${e.message}`;
+        el.style.color = '#f87171';
+      }
+      return;
+    }
+
+    const state = window.__irSendState || { inFlight: false, pending: null };
+    window.__irSendState = state;
+    if (state.inFlight) {
+      state.pending = action;
+      return;
+    }
+    state.inFlight = true;
+    let nextAction = action;
+    try {
+      while (nextAction) {
+        const current = nextAction;
+        state.pending = null;
+        try {
+          await executeOnce(current);
+        } catch (e) {
+          lastIrSendResult = `${current} ✗`;
+          updateRemoteModeStatusBanner();
+          el.textContent = `✗ ${e.message}`;
+          el.style.color = '#f87171';
+        }
+        nextAction = state.pending;
+      }
+    } finally {
+      state.inFlight = false;
+      state.pending = null;
     }
   }
 
@@ -3602,7 +3902,7 @@
     if (data.result_file_name) {
       downloadButtons.push(`<a class="yts-download-link secondary" href="${apiOrigin}/yts/command/live/${encodeURIComponent(data.command_id)}/result" target="_blank" rel="noopener" download="${escHtml(data.result_file_name)}">⬇ Saved Result File</a>`);
     }
-    if (data.video_file_name && (data.video_recording_status || '') !== 'unavailable') {
+    if (data.video_file_name && (data.video_recording_status || '') === 'completed') {
       downloadButtons.push(`<a class="yts-download-link" href="${apiOrigin}/yts/command/live/${encodeURIComponent(data.command_id)}/video" target="_blank" rel="noopener" download="${escHtml(data.video_file_name)}">⬇ ${escHtml(data.video_file_name)}</a>`);
     } else if (data.record_video) {
       downloadButtons.push(`<span class="yts-subtle">Video status: ${escHtml(data.video_recording_status || 'pending')}</span>`);
@@ -4687,16 +4987,60 @@
 
   async function sendKey(action) {
     const el = document.getElementById('manual-result');
-    const deviceId = requireSelectedDabDevice('manual-result', 'Select a DAB device before sending remote actions.');
-    if (!deviceId) return;
-    try {
-      const body = { action, device_id: deviceId };
+    const mode = getRemoteMode();
+    const executeOnce = async (singleAction) => {
+      const body = { action: singleAction, control_mode: mode };
+      if (mode === 'IR') {
+        body.ir_device_id = selectedIrDeviceId || 'samsung_tv_default';
+      } else {
+        const deviceId = requireSelectedDabDevice('manual-result', 'Select a DAB device before sending remote actions.');
+        if (!deviceId) return;
+        body.device_id = deviceId;
+      }
       const data = await api('/action', 'POST', body);
-      el.textContent = `✓ ${action}: ${JSON.stringify(data.result)}`;
+      if (mode === 'IR') {
+        lastIrSendResult = `${(data.result && data.result.key_name) || singleAction} ✓`;
+        updateRemoteModeStatusBanner();
+      }
+      el.textContent = `✓ [${mode}] ${singleAction}`;
       el.style.color = '#4ade80';
-    } catch (e) {
-      el.textContent = `✗ ${e.message}`;
-      el.style.color = '#f87171';
+    };
+
+    if (mode !== 'IR') {
+      try {
+        await executeOnce(action);
+      } catch (e) {
+        el.textContent = `✗ ${e.message}`;
+        el.style.color = '#f87171';
+      }
+      return;
+    }
+
+    const state = window.__irSendState || { inFlight: false, pending: null };
+    window.__irSendState = state;
+    if (state.inFlight) {
+      state.pending = action;
+      return;
+    }
+    state.inFlight = true;
+    let nextAction = action;
+    try {
+      while (nextAction) {
+        const current = nextAction;
+        state.pending = null;
+        try {
+          await executeOnce(current);
+        } catch (e) {
+          lastIrSendResult = `${current} ✗`;
+          updateRemoteModeStatusBanner();
+          el.textContent = `✗ ${e.message}`;
+          el.style.color = '#f87171';
+        }
+        nextAction = state.pending;
+      }
+    } finally {
+      state.inFlight = false;
+      state.pending = null;
     }
   }
 
@@ -4726,10 +5070,14 @@
     initApiBase();
     initDetailTabs();
     initYtsControlCenter();
+    populateIrKeyOptions(defaultIrKeys);
+    setRemoteMode(selectedRemoteMode || 'DAB', false);
     await Promise.allSettled([
       checkHealth(),
       loadAiModels(),
       loadDabDevices(),
+      loadIrStatus(),
+      loadIrDevices(selectedIrDeviceId),
       loadRuns(),
       loadCaptureSource(),
       refreshCaptureDevices(),

@@ -121,12 +121,21 @@ async def test_open_app_goal_marks_done_when_already_foreground():
     state.current_app = "youtube"
     state.current_app_id = "youtube"
     state.current_app_state = "FOREGROUND"
-    state.normalized_intent = {
-        "action_type": "open_app",
-        "target_app": "youtube",
-        "target_setting": None,
-        "target_value": None,
-    }
 
     batch = await orch._select_execution_strategy(state)
     assert batch and batch[0]["action"] == "DONE"
+
+
+def test_open_app_goal_verification_requires_target_match():
+    orch = _orch()
+    state = RunState(goal="open youtube")
+    state.current_app = "netflix"
+    state.current_app_id = "netflix"
+    state.current_app_state = "FOREGROUND"
+
+    assert orch._is_app_goal_verified(state) is False
+
+
+def test_infer_target_app_name_from_goal_without_catalog_uses_goal_hint():
+    orch = _orch()
+    assert orch._infer_target_app_name_from_goal("open youtube", []) == "youtube"

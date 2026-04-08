@@ -256,6 +256,35 @@ def test_planner_build_context(planner):
     assert "Screen text (OCR):" not in context
 
 
+def test_compose_vertex_prompt_is_compact_and_handles_capability_dicts(planner):
+    prompt = planner._compose_vertex_prompt(
+        goal="open youtube",
+        context="Goal: open youtube\nCurrent app: youtube\nCurrent screen: FOREGROUND",
+        current_app="youtube",
+        last_actions=["LAUNCH_APP", "WAIT", "GET_STATE"],
+        retry_count=0,
+        execution_state={
+            "target_operation": "StepType.APP_LAUNCH",
+            "target_screen": "recover with deterministic local fallback",
+            "capability_snapshot": {
+                "supported_operations": ["applications/launch", "applications/get-state", "input/key-press"],
+                "supported_settings": {
+                    "timezone": {"key": "timezone", "supported": True},
+                    "language": {"key": "language", "supported": True},
+                },
+                "supported_keys": [],
+            },
+        },
+    )
+    assert "Planner input:" in prompt
+    assert "Capabilities:" in prompt
+    assert "Response JSON:" in prompt
+    assert "Goal decomposition:" not in prompt
+    assert "Dynamic rules:" not in prompt
+    assert "capability_snapshot:" not in prompt
+    assert "supported_settings: timezone, language" in prompt
+
+
 # ---------------------------------------------------------------------------
 # New tests: context fields
 # ---------------------------------------------------------------------------

@@ -1,6 +1,7 @@
 """Tests for the FastAPI backend."""
 import asyncio
 import json
+import pathlib
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -30,6 +31,7 @@ def reset_api_state(tmp_path, monkeypatch):
     api_mod._screen_capture = None
     api_mod._tts_service = None
     api_mod._vertex_live_visual_client = None
+    api_mod._ir_service = None
     monkeypatch.setenv("ARTIFACTS_BASE_DIR", str(tmp_path))
     monkeypatch.setenv("DAB_MOCK_MODE", "true")
     monkeypatch.setenv("IMAGE_SOURCE", "auto")
@@ -53,6 +55,7 @@ def reset_api_state(tmp_path, monkeypatch):
     api_mod._screen_capture = None
     api_mod._tts_service = None
     api_mod._vertex_live_visual_client = None
+    api_mod._ir_service = None
     api_mod._close_yts_live_db()
     cfg_mod.reset_config()
 
@@ -508,6 +511,50 @@ async def test_yts_live_command_record_video_flow(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_yts_video_recording_uses_absolute_output_path(monkeypatch, tmp_path):
+    monkeypatch.setenv("ARTIFACTS_BASE_DIR", str(tmp_path / "artifacts"))
+    api_mod._close_yts_live_db()
+    api_mod._yts_live_recording_processes.clear()
+    cfg_mod.reset_config()
+
+    command_id = "cmd-recording-absolute-path"
+    state = api_mod._new_yts_live_state(command_id)
+    state["record_video"] = True
+    state["record_audio"] = False
+    api_mod._yts_live_commands[command_id] = state
+
+    class FakeStream:
+        async def readline(self):
+            return b""
+
+    class FakeProcess:
+        def __init__(self):
+            self.stdin = None
+            self.stderr = FakeStream()
+            self.returncode = 0
+
+    captured = {}
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        captured["args"] = args
+        return FakeProcess()
+
+    monkeypatch.setattr(api_mod, "ffmpeg_available", lambda: True)
+    monkeypatch.setattr(
+        api_mod,
+        "get_screen_capture",
+        lambda: type("FakeCapture", (), {"capture_source_status": lambda self: {"hdmi_available": True}})(),
+    )
+    monkeypatch.setattr(api_mod.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    await api_mod._start_yts_video_recording(command_id)
+
+    output_path = pathlib.Path(captured["args"][-1])
+    assert output_path.is_absolute()
+    assert output_path.parent == api_mod._get_yts_live_artifacts_dir(command_id)
+
+
+@pytest.mark.asyncio
 async def test_yts_terminal_log_download(client):
     command_id = "cmd-terminal-log"
     state = api_mod._new_yts_live_state(command_id)
@@ -538,6 +585,114 @@ async def test_yts_video_download_returns_recorded_artifact(client):
     assert resp.status_code == 200
     assert resp.content == b"fake-video"
     assert resp.headers["content-type"].startswith("video/mp4")
+
+
+@pytest.mark.asyncio
+async def test_yts_live_state_clears_missing_video_artifact_after_reload(client):
+    command_id = "cmd-video-missing"
+    state = api_mod._new_yts_live_state(command_id)
+    missing_path = api_mod._get_yts_live_artifacts_dir(command_id) / "missing.mp4"
+    state["status"] = "completed"
+    state["returncode"] = 0
+    state["record_video"] = True
+    state["record_audio"] = True
+    state["video_file_name"] = missing_path.name
+    state["video_file_path"] = str(missing_path)
+    state["video_recording_status"] = "completed"
+    state["audio_recording_status"] = "completed"
+    api_mod._persist_yts_live_state(state)
+
+    api_mod._yts_live_commands.clear()
+
+    state_resp = await client.get(f"/yts/command/live/{command_id}")
+    assert state_resp.status_code == 200
+    payload = state_resp.json()
+    assert payload["video_recording_status"] == "failed"
+    assert payload["video_file_name"] is None
+    assert payload["video_file_path"] is None
+
+    video_resp = await client.get(f"/yts/command/live/{command_id}/video")
+    assert video_resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_yts_video_metadata_and_download_survive_db_reload(client):
+    command_id = "cmd-video-db-reload"
+    state = api_mod._new_yts_live_state(command_id)
+    video_path = api_mod._get_yts_live_artifacts_dir(command_id) / "session.mp4"
+    video_path.write_bytes(b"persisted-video")
+    state["status"] = "completed"
+    state["returncode"] = 0
+    state["record_video"] = True
+    state["record_audio"] = True
+    state["video_file_name"] = video_path.name
+    state["video_file_path"] = str(video_path)
+    state["video_recording_status"] = "completed"
+    state["audio_recording_status"] = "completed"
+    api_mod._persist_yts_live_state(state)
+
+    api_mod._yts_live_commands.clear()
+
+    state_resp = await client.get(f"/yts/command/live/{command_id}")
+    assert state_resp.status_code == 200
+    payload = state_resp.json()
+    assert payload["record_video"] is True
+    assert payload["record_audio"] is True
+    assert payload["video_recording_status"] == "completed"
+    assert payload["audio_recording_status"] == "completed"
+    assert payload["video_file_name"] == "session.mp4"
+
+    list_resp = await client.get("/yts/command/live")
+    assert list_resp.status_code == 200
+    summaries = list_resp.json()
+    matching = next(item for item in summaries if item["command_id"] == command_id)
+    assert matching["video_file_name"] == "session.mp4"
+    assert matching["video_recording_status"] == "completed"
+    assert matching["audio_recording_status"] == "completed"
+
+    video_resp = await client.get(f"/yts/command/live/{command_id}/video")
+    assert video_resp.status_code == 200
+    assert video_resp.content == b"persisted-video"
+    assert video_resp.headers["content-type"].startswith("video/mp4")
+
+
+@pytest.mark.asyncio
+async def test_yts_recording_stderr_suppresses_noisy_jpeg_warnings(monkeypatch):
+    command_id = "cmd-jpeg-warning"
+    state = api_mod._new_yts_live_state(command_id)
+    api_mod._yts_live_commands[command_id] = state
+
+    class FakeStream:
+        def __init__(self, lines):
+            self._lines = list(lines)
+
+        async def readline(self):
+            if self._lines:
+                return self._lines.pop(0)
+            return b""
+
+    persisted = []
+
+    def fake_persist(current_state):
+        persisted.append([entry["message"] for entry in current_state.get("logs", [])])
+        return current_state
+
+    monkeypatch.setattr(api_mod, "_persist_yts_live_state", fake_persist)
+
+    stream = FakeStream(
+        [
+            b"Corrupt JPEG data: 2 extraneous bytes before marker 0xd0\n",
+            b"Corrupt JPEG data: 3 extraneous bytes before marker 0xd3\n",
+            b"frame=   10 fps=5.0 q=-1.0 size=      64kB time=00:00:02.00 bitrate= 262.1kbits/s\n",
+        ]
+    )
+
+    await api_mod._capture_yts_recording_stderr(command_id, stream)
+
+    messages = [entry["message"] for entry in state["logs"]]
+    assert not any(message.startswith("Corrupt JPEG data:") for message in messages)
+    assert any(message.startswith("frame=") for message in messages)
+    assert any("Suppressed 2 non-fatal MJPEG decoder warnings" in message for message in messages)
 
 
 @pytest.mark.asyncio
@@ -1629,6 +1784,78 @@ async def test_manual_action_wait(client):
     data = resp.json()
     assert data["success"] is True
     assert data["result"]["seconds"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_manual_action_ir_mode_routes_without_dab_device(client, monkeypatch):
+    class FakeIrService:
+        def send_dab_style_action(self, device_id, action):
+            return {
+                "success": True,
+                "device_id": device_id,
+                "key_name": "POWER",
+                "raw": {"ok": True},
+                "action": action,
+            }
+
+    monkeypatch.setattr(api_mod, "_get_ir_service", lambda: FakeIrService())
+
+    resp = await client.post(
+        "/action",
+        json={"action": "PRESS_POWER", "control_mode": "IR", "ir_device_id": "samsung_tv_default"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["success"] is True
+    assert data["result"]["device_id"] == "samsung_tv_default"
+
+
+@pytest.mark.asyncio
+async def test_ir_train_and_send_endpoints(client, monkeypatch):
+    class FakeIrService:
+        def status(self):
+            return {
+                "available": True,
+                "serial_port": "/dev/ttyUSB0",
+                "dataset_path": "/tmp/ir.json",
+                "sender_channel": "D2",
+                "brand": "Samsung",
+                "devices": [{"device_id": "samsung_tv_default", "brand": "Samsung", "model": "Samsung TV", "sender_channel": "D2", "key_count": 1}],
+            }
+
+        def list_devices(self):
+            return [{"device_id": "samsung_tv_default", "brand": "Samsung", "model": "Samsung TV", "sender_channel": "D2", "key_count": 1}]
+
+        def list_keys(self, _device_id):
+            return ["POWER"]
+
+        def train_key(self, device_id, key_name, timeout_ms=8000):
+            return {"success": True, "device_id": device_id, "key_name": key_name, "timeout_ms": timeout_ms}
+
+        def send_key(self, device_id, key_name):
+            return {"success": True, "device_id": device_id, "key_name": key_name, "sender_channel": "D2"}
+
+    monkeypatch.setattr(api_mod, "_get_ir_service", lambda: FakeIrService())
+
+    status = await client.get("/ir/status")
+    assert status.status_code == 200
+    assert status.json()["brand"] == "Samsung"
+
+    devices = await client.get("/ir/devices")
+    assert devices.status_code == 200
+    assert devices.json()["devices"][0]["device_id"] == "samsung_tv_default"
+
+    keys = await client.get("/ir/device/samsung_tv_default/keys")
+    assert keys.status_code == 200
+    assert keys.json()["keys"] == ["POWER"]
+
+    train = await client.post("/ir/train", json={"device_id": "samsung_tv_default", "key_name": "POWER"})
+    assert train.status_code == 200
+    assert train.json()["success"] is True
+
+    send = await client.post("/ir/send", json={"device_id": "samsung_tv_default", "key_name": "POWER"})
+    assert send.status_code == 200
+    assert send.json()["success"] is True
 
 
 @pytest.mark.asyncio
