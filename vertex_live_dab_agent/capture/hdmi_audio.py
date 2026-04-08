@@ -10,6 +10,9 @@ import time
 from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+_FFMPEG_INPUT_FORMAT_CACHE: Dict[str, Tuple[float, bool]] = {}
+_ALSA_CAPTURE_DEVICE_CACHE: Tuple[float, List[Dict[str, str]]] = (0.0, [])
+_AUDIO_CACHE_TTL_SECONDS = 20.0
 
 
 def ffmpeg_available() -> bool:
@@ -24,6 +27,11 @@ def arecord_available() -> bool:
 
 def ffmpeg_has_input_format(name: str) -> bool:
     """Return True if ffmpeg supports input format (demuxer) `name`."""
+    key = str(name or "").strip().lower()
+    now = time.monotonic()
+    cached = _FFMPEG_INPUT_FORMAT_CACHE.get(key)
+    if cached and (now - cached[0]) <= _AUDIO_CACHE_TTL_SECONDS:
+        return bool(cached[1])
     if not ffmpeg_available():
         return False
     try:
@@ -35,15 +43,23 @@ def ffmpeg_has_input_format(name: str) -> bool:
             check=False,
         )
     except Exception:
+        _FFMPEG_INPUT_FORMAT_CACHE[key] = (now, False)
         return False
 
     out = (proc.stdout or "") + "\n" + (proc.stderr or "")
-    pattern = re.compile(rf"\b{name}\b", re.IGNORECASE)
-    return bool(pattern.search(out))
+    pattern = re.compile(rf"\b{re.escape(key)}\b", re.IGNORECASE)
+    result = bool(pattern.search(out))
+    _FFMPEG_INPUT_FORMAT_CACHE[key] = (now, result)
+    return result
 
 
 def list_alsa_capture_devices() -> List[Dict[str, str]]:
     """Return ALSA capture devices from `arecord -l` output."""
+    global _ALSA_CAPTURE_DEVICE_CACHE
+    cached_at, cached_devices = _ALSA_CAPTURE_DEVICE_CACHE
+    now = time.monotonic()
+    if cached_devices and (now - cached_at) <= _AUDIO_CACHE_TTL_SECONDS:
+        return [dict(item) for item in cached_devices]
     arecord = shutil.which("arecord")
     if not arecord:
         return []
@@ -87,6 +103,7 @@ def list_alsa_capture_devices() -> List[Dict[str, str]]:
             }
         )
 
+    _ALSA_CAPTURE_DEVICE_CACHE = (now, [dict(item) for item in devices])
     return devices
 
 

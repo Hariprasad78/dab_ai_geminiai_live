@@ -216,6 +216,15 @@ async def test_stream_audio_disabled_by_default(client):
     assert resp.status_code == 400
 
 
+@pytest.mark.asyncio
+async def test_stream_av_status_exposes_shared_av_transport(client):
+    resp = await client.get("/stream/av/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["transport"] == "websocket-fmp4"
+    assert "subscriber_count" in data
+
+
 def test_get_planner_auto_uses_vertex_when_project_available(monkeypatch):
     class FakeVertexPlannerClient:
         def __init__(self, *, project, location, model):
@@ -543,7 +552,18 @@ async def test_yts_video_recording_uses_absolute_output_path(monkeypatch, tmp_pa
     monkeypatch.setattr(
         api_mod,
         "get_screen_capture",
-        lambda: type("FakeCapture", (), {"capture_source_status": lambda self: {"hdmi_available": True}})(),
+        lambda: type(
+            "FakeCapture",
+            (),
+            {
+                "ensure_hdmi_session": lambda self, force=False: True,
+                "capture_source_status": lambda self: {
+                    "hdmi_available": True,
+                    "hdmi_device": "/dev/video9",
+                    "rotation_degrees": 0,
+                },
+            },
+        )(),
     )
     monkeypatch.setattr(api_mod.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
 
@@ -552,6 +572,7 @@ async def test_yts_video_recording_uses_absolute_output_path(monkeypatch, tmp_pa
     output_path = pathlib.Path(captured["args"][-1])
     assert output_path.is_absolute()
     assert output_path.parent == api_mod._get_yts_live_artifacts_dir(command_id)
+    assert "/dev/video9" in captured["args"]
 
 
 @pytest.mark.asyncio

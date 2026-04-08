@@ -5,66 +5,198 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Vertex Live DAB Agent</title>
   <style>
+    :root {
+      --bg-0: #06111f;
+      --bg-1: #0c1b2f;
+      --bg-2: #102640;
+      --panel: rgba(10, 19, 34, 0.82);
+      --panel-strong: rgba(12, 23, 40, 0.96);
+      --panel-soft: rgba(16, 31, 53, 0.78);
+      --border: rgba(123, 162, 213, 0.18);
+      --border-strong: rgba(124, 171, 225, 0.32);
+      --text: #e8f1fb;
+      --muted: #93a8c5;
+      --soft: #6f84a3;
+      --accent: #4fd1c5;
+      --accent-2: #69a8ff;
+      --accent-3: #ffd166;
+      --danger: #ff6b6b;
+      --shadow-lg: 0 24px 80px rgba(1, 6, 18, 0.48);
+      --shadow-md: 0 14px 34px rgba(2, 8, 23, 0.34);
+      --radius-xl: 1.35rem;
+      --radius-lg: 1rem;
+      --radius-md: 0.72rem;
+    }
+    body[data-theme="light"] {
+      --bg-0: #f4f8fc;
+      --bg-1: #e9f0f8;
+      --bg-2: #dfe9f6;
+      --panel: rgba(255, 255, 255, 0.82);
+      --panel-strong: rgba(249, 252, 255, 0.96);
+      --panel-soft: rgba(240, 246, 253, 0.84);
+      --border: rgba(41, 84, 128, 0.12);
+      --border-strong: rgba(53, 106, 163, 0.25);
+      --text: #10233a;
+      --muted: #4f6785;
+      --soft: #607795;
+      --accent: #0ea5a4;
+      --accent-2: #3b82f6;
+      --accent-3: #d97706;
+      --danger: #dc2626;
+      --shadow-lg: 0 24px 80px rgba(32, 68, 107, 0.12);
+      --shadow-md: 0 14px 34px rgba(32, 68, 107, 0.1);
+    }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: 'Segoe UI', system-ui, sans-serif;
-      background: radial-gradient(1200px 400px at 10% -10%, rgba(56, 189, 248, 0.16), transparent 60%),
-                  radial-gradient(1000px 460px at 100% 0%, rgba(59, 130, 246, 0.12), transparent 60%),
-                  #050b18;
-      color: #e2e8f0;
+      font-family: "Space Grotesk", "Segoe UI Variable", "Aptos", "Trebuchet MS", sans-serif;
+      background:
+        radial-gradient(1100px 620px at -10% -10%, rgba(79, 209, 197, 0.18), transparent 58%),
+        radial-gradient(1000px 640px at 110% -10%, rgba(105, 168, 255, 0.22), transparent 56%),
+        radial-gradient(900px 580px at 50% 120%, rgba(255, 209, 102, 0.09), transparent 58%),
+        linear-gradient(180deg, #07111d 0%, #091524 28%, #08121f 100%);
+      color: var(--text);
       min-height: 100vh;
       background-attachment: fixed;
+      overflow-x: hidden;
+      transition: background 240ms ease, color 180ms ease;
     }
     body::before {
       content: '';
       position: fixed;
       inset: 0;
       pointer-events: none;
-      background-image: linear-gradient(rgba(56, 189, 248, 0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(56, 189, 248, 0.04) 1px, transparent 1px);
-      background-size: 30px 30px;
-      mask-image: radial-gradient(circle at center, black, transparent 75%);
+      background:
+        linear-gradient(rgba(115, 149, 191, 0.05) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(115, 149, 191, 0.05) 1px, transparent 1px);
+      background-size: 42px 42px;
+      mask-image: radial-gradient(circle at center, black 20%, transparent 78%);
+    }
+    body::after {
+      content: '';
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background:
+        radial-gradient(circle at 20% 20%, rgba(255,255,255,0.06), transparent 0.7%),
+        radial-gradient(circle at 80% 30%, rgba(255,255,255,0.05), transparent 0.8%),
+        radial-gradient(circle at 60% 70%, rgba(255,255,255,0.04), transparent 0.7%);
+      opacity: 0.65;
     }
     header {
-      background: rgba(10, 18, 37, 0.85);
-      backdrop-filter: blur(10px);
-      padding: 1rem 2rem;
-      border-bottom: 1px solid #1f3b63;
+      background: linear-gradient(180deg, rgba(10, 18, 33, 0.86), rgba(9, 18, 31, 0.72));
+      backdrop-filter: blur(18px) saturate(140%);
+      padding: 1rem 1.5rem;
+      border-bottom: 1px solid var(--border);
       display: flex;
       align-items: center;
       gap: 1rem;
       position: sticky;
       top: 0;
       z-index: 30;
+      box-shadow: 0 10px 32px rgba(2, 8, 23, 0.24);
     }
-    header h1 { font-size: 1.25rem; font-weight: 700; color: #f8fafc; letter-spacing: 0.02em; }
-    .badge { background: linear-gradient(135deg, #06b6d4, #3b82f6); color: white; font-size: 0.7rem; padding: 0.2rem 0.5rem; border-radius: 9999px; font-weight: 700; }
-    .badge.mock { background: #f59e0b; }
-    main { max-width: 1480px; margin: 1.2rem auto 2rem; padding: 0 1.25rem; display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    header h1 {
+      font-size: clamp(1.1rem, 1rem + 0.5vw, 1.5rem);
+      font-weight: 700;
+      color: #f8fbff;
+      letter-spacing: 0.015em;
+    }
+    .badge {
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      color: #05111f;
+      font-size: 0.68rem;
+      padding: 0.28rem 0.65rem;
+      border-radius: 9999px;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      box-shadow: 0 8px 24px rgba(79, 209, 197, 0.22);
+    }
+    .badge.mock { background: linear-gradient(135deg, var(--accent-3), #ff9f43); color: #201402; }
+    main {
+      width: min(100%, 1720px);
+      margin: 1rem auto 2rem;
+      padding: 0 1rem 1rem;
+      display: grid;
+      grid-template-columns: minmax(0, 1.12fr) minmax(0, 0.88fr);
+      gap: 1rem;
+      align-items: start;
+    }
     .card {
-      background: linear-gradient(180deg, rgba(15, 25, 45, 0.93), rgba(11, 19, 37, 0.93));
-      border: 1px solid #243d62;
-      box-shadow: 0 10px 24px rgba(2, 8, 23, 0.45), inset 0 1px 0 rgba(148, 163, 184, 0.08);
-      border-radius: 1rem;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255,255,255,0) 24%),
+        linear-gradient(180deg, var(--panel), var(--panel-strong));
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow-md), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+      border-radius: var(--radius-xl);
       padding: 1rem;
+      overflow: hidden;
+      position: relative;
+      transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease, background 180ms ease;
     }
-    .card h2 { font-size: 0.9rem; font-weight: 600; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 1rem; }
-    label { display: block; font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.35rem; }
+    .card::before {
+      content: '';
+      position: absolute;
+      inset: 0 auto auto 0;
+      width: 100%;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.24), transparent);
+      opacity: 0.65;
+    }
+    .card:hover {
+      transform: translateY(-2px);
+      border-color: var(--border-strong);
+      box-shadow: var(--shadow-lg), inset 0 1px 0 rgba(255,255,255,0.08);
+    }
+    .card h2 {
+      font-size: 0.82rem;
+      font-weight: 700;
+      color: #9cb3d3;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      margin-bottom: 0.95rem;
+    }
+    label { display: block; font-size: 0.82rem; color: var(--muted); margin-bottom: 0.35rem; font-weight: 600; }
     input, textarea, select {
-      width: 100%; background: #0f172a; border: 1px solid #334155; border-radius: 0.5rem;
-      color: #e2e8f0; padding: 0.6rem 0.75rem; font-size: 0.9rem; outline: none;
+      width: 100%;
+      background: linear-gradient(180deg, rgba(10, 18, 31, 0.96), rgba(8, 16, 28, 0.96));
+      border: 1px solid rgba(116, 141, 177, 0.22);
+      border-radius: 0.85rem;
+      color: var(--text);
+      padding: 0.72rem 0.9rem;
+      font-size: 0.9rem;
+      outline: none;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+      transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease, transform 160ms ease;
     }
-    input:focus, textarea:focus { border-color: #38bdf8; box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.18); }
+    input:hover, textarea:hover, select:hover { border-color: rgba(124, 171, 225, 0.3); }
+    input:focus, textarea:focus, select:focus {
+      border-color: rgba(79, 209, 197, 0.74);
+      box-shadow: 0 0 0 3px rgba(79, 209, 197, 0.15), 0 10px 24px rgba(8, 17, 31, 0.22);
+      transform: translateY(-1px);
+    }
     textarea { resize: vertical; min-height: 60px; }
     button {
-      background: #0ea5e9; color: white; border: none; border-radius: 0.5rem;
-      padding: 0.6rem 1.2rem; font-size: 0.9rem; font-weight: 600; cursor: pointer;
-      transition: background 0.15s;
+      background: linear-gradient(135deg, #36d7c9, #5b9dff);
+      color: #03111d;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 999px;
+      padding: 0.68rem 1.15rem;
+      font-size: 0.88rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform 160ms ease, box-shadow 160ms ease, filter 160ms ease, background 160ms ease;
+      box-shadow: 0 10px 28px rgba(91, 157, 255, 0.18);
     }
-    button:hover { background: #0284c7; }
-    button.danger { background: #ef4444; }
-    button.danger:hover { background: #dc2626; }
-    button.secondary { background: #334155; }
-    button.secondary:hover { background: #475569; }
+    button:hover { transform: translateY(-1px); filter: brightness(1.05); }
+    button:active { transform: translateY(0); }
+    button.danger { background: linear-gradient(135deg, #ff7b7b, #ff4d6d); color: #fff5f5; }
+    button.secondary {
+      background: linear-gradient(180deg, rgba(23, 38, 62, 0.96), rgba(17, 30, 48, 0.96));
+      color: #dce9fb;
+      border-color: rgba(126, 150, 183, 0.22);
+      box-shadow: none;
+    }
     .btn-row { display: flex; gap: 0.5rem; margin-top: 0.75rem; flex-wrap: wrap; }
     .status-pill {
       display: inline-block; font-size: 0.75rem; font-weight: 600; padding: 0.2rem 0.6rem;
@@ -79,17 +211,21 @@
     .STOPPED { background: #374151; color: #9ca3af; }
     #run-list { display: flex; flex-direction: column; gap: 0.6rem; max-height: 380px; overflow-y: auto; }
     .run-item {
-      background: #0f172a; border: 1px solid #334155; border-radius: 0.5rem;
-      padding: 0.75rem 1rem; cursor: pointer; transition: border-color 0.15s, transform 0.12s;
+      background: linear-gradient(180deg, rgba(13, 24, 41, 0.96), rgba(10, 19, 33, 0.96));
+      border: 1px solid rgba(116, 141, 177, 0.18);
+      border-radius: 0.95rem;
+      padding: 0.85rem 1rem;
+      cursor: pointer;
+      transition: border-color 0.15s, transform 0.12s, box-shadow 0.15s ease, background 0.15s ease;
     }
-    .run-item:hover { border-color: #38bdf8; transform: translateY(-1px); }
-    .run-item.selected { border-color: #0ea5e9; background: #0c1a2e; }
+    .run-item:hover { border-color: rgba(79, 209, 197, 0.48); transform: translateY(-1px); box-shadow: 0 18px 30px rgba(3, 10, 24, 0.24); }
+    .run-item.selected { border-color: rgba(105, 168, 255, 0.5); background: linear-gradient(180deg, rgba(13, 29, 48, 0.98), rgba(10, 22, 37, 0.98)); }
     .run-goal { font-size: 0.9rem; font-weight: 500; margin-bottom: 0.3rem; }
     .run-meta { font-size: 0.75rem; color: #64748b; }
     #detail-panel { grid-column: 1 / -1; }
     .detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0.75rem; margin-bottom: 1rem; }
-    .stat { background: #0f172a; border: 1px solid #334155; border-radius: 0.65rem; padding: 0.75rem 1rem; }
-    .stat-label { font-size: 0.75rem; color: #64748b; margin-bottom: 0.2rem; }
+    .stat { background: linear-gradient(180deg, rgba(13, 24, 40, 0.9), rgba(11, 20, 33, 0.9)); border: 1px solid rgba(116, 141, 177, 0.18); border-radius: 0.9rem; padding: 0.85rem 1rem; }
+    .stat-label { font-size: 0.74rem; color: var(--soft); margin-bottom: 0.2rem; text-transform: uppercase; letter-spacing: 0.08em; }
     .stat-value { font-size: 1.1rem; font-weight: 600; color: #f1f5f9; }
     #action-log, #ai-log, #dab-log { max-height: 220px; overflow-y: auto; font-family: monospace; font-size: 0.8rem; color: #94a3b8; }
     #friendly-log, #diagnosis-log, #narration-log { max-height: 240px; overflow-y: auto; font-size: 0.85rem; color: #cbd5e1; }
@@ -143,12 +279,12 @@
     }
     #audio-stream-player { width: 100%; margin-top: 0.6rem; }
     .remote-layout { display: grid; grid-template-columns: 1.1fr 1fr; gap: 1rem; align-items: start; }
-    .remote-panel { background: #0f172a; border: 1px solid #334155; border-radius: 0.6rem; padding: 0.8rem; }
+    .remote-panel { background: linear-gradient(180deg, rgba(13, 24, 40, 0.92), rgba(10, 18, 31, 0.94)); border: 1px solid rgba(116, 141, 177, 0.18); border-radius: 1rem; padding: 0.9rem; box-shadow: inset 0 1px 0 rgba(255,255,255,0.04); }
     .remote-mode-toolbar { display:flex; gap:0.5rem; align-items:end; flex-wrap:wrap; margin-bottom:0.75rem; }
     .remote-mode-toolbar > div { flex:1 1 180px; }
     .remote-meta { display:grid; grid-template-columns: repeat(2, minmax(160px, 1fr)); gap:0.4rem; margin-bottom:0.75rem; }
-    .remote-meta-chip { background:#111827; border:1px solid #334155; border-radius:0.45rem; padding:0.45rem 0.55rem; font-size:0.75rem; color:#cbd5e1; }
-    .ir-panel { border:1px dashed #334155; border-radius:0.6rem; padding:0.7rem; margin-bottom:0.75rem; background:#0b1325; }
+    .remote-meta-chip { background: rgba(17, 29, 48, 0.92); border:1px solid rgba(116, 141, 177, 0.18); border-radius:0.7rem; padding:0.55rem 0.65rem; font-size:0.75rem; color:#d3e2f6; }
+    .ir-panel { border:1px dashed rgba(124, 171, 225, 0.22); border-radius:0.95rem; padding:0.8rem; margin-bottom:0.75rem; background:linear-gradient(180deg, rgba(8, 17, 31, 0.94), rgba(9, 20, 35, 0.9)); }
     .remote-grid { display: grid; grid-template-columns: repeat(4, minmax(58px, 1fr)); gap: 0.4rem; }
     .key-btn { padding: 0.45rem 0.35rem; font-size: 0.75rem; }
     .dpad-wrap { max-width: 260px; margin-bottom: 0.8rem; }
@@ -163,13 +299,60 @@
     .key-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.4rem; max-width: 220px; }
     .key-grid button { padding: 0.5rem; font-size: 0.8rem; }
     .full-width { grid-column: 1 / -1; }
-    #status-bar { text-align: center; font-size: 0.75rem; color: #94a3b8; margin-top: 0.5rem; display:flex; gap:0.4rem; align-items:center; justify-content:center; flex-wrap:wrap; padding: 0 1rem 1rem; }
+    #status-bar { text-align: center; font-size: 0.75rem; color: var(--muted); margin-top: 0.5rem; display:flex; gap:0.4rem; align-items:center; justify-content:center; flex-wrap:wrap; padding: 0 1rem 1rem; }
     #api-base-input { width: min(460px, 90vw); background:#0f172a; border:1px solid #334155; color:#cbd5e1; border-radius:0.4rem; padding:0.3rem 0.5rem; font-size:0.75rem; }
     .mini-btn { padding: 0.3rem 0.55rem; font-size:0.7rem; border-radius:0.4rem; }
     .empty-state { color: #475569; font-size: 0.85rem; text-align: center; padding: 1.5rem; }
     .error-msg { color: #f87171; font-size: 0.8rem; margin-top: 0.5rem; }
     .subtitle { font-size: 0.75rem; color: #7dd3fc; letter-spacing: 0.06em; text-transform: uppercase; }
     .header-right { margin-left:auto; display:flex; gap:0.6rem; align-items:center; }
+    .theme-toolbar { display:flex; gap:0.45rem; align-items:center; padding:0.35rem 0.45rem; border:1px solid var(--border); border-radius:999px; background:rgba(10, 19, 34, 0.28); backdrop-filter: blur(10px); }
+    .theme-toolbar label { margin:0; font-size:0.72rem; color:var(--muted); }
+    .theme-toolbar select { width:auto; min-width:112px; padding:0.38rem 1.8rem 0.38rem 0.65rem; font-size:0.76rem; border-radius:999px; }
+    body[data-theme="light"] header {
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(245, 250, 255, 0.78));
+      box-shadow: 0 10px 28px rgba(76, 112, 150, 0.12);
+    }
+    body[data-theme="light"] .theme-toolbar { background: rgba(255, 255, 255, 0.72); }
+    body[data-theme="light"] .card,
+    body[data-theme="light"] .hero-panel,
+    body[data-theme="light"] .remote-panel,
+    body[data-theme="light"] .yts-runner-panel,
+    body[data-theme="light"] .stat,
+    body[data-theme="light"] .run-item,
+    body[data-theme="light"] .kpi {
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(245, 250, 255, 0.94));
+      color: var(--text);
+    }
+    body[data-theme="light"] input,
+    body[data-theme="light"] textarea,
+    body[data-theme="light"] select,
+    body[data-theme="light"] .remote-meta-chip,
+    body[data-theme="light"] .ir-panel,
+    body[data-theme="light"] .settings-table-wrap,
+    body[data-theme="light"] .sysstate-panel,
+    body[data-theme="light"] .yts-job-item,
+    body[data-theme="light"] .yts-result-box,
+    body[data-theme="light"] .yts-chip-list {
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(242, 247, 253, 0.96));
+      color: var(--text);
+    }
+    body[data-theme="light"] .subtitle,
+    body[data-theme="light"] .model-status,
+    body[data-theme="light"] .device-status,
+    body[data-theme="light"] .hero-sub,
+    body[data-theme="light"] .perf-legend,
+    body[data-theme="light"] .yts-subtle {
+      color: #557297;
+    }
+    body[data-theme="light"] .quick-nav button,
+    body[data-theme="light"] .tab-btn,
+    body[data-theme="light"] button.secondary,
+    body[data-theme="light"] .yts-download-link.secondary {
+      background: linear-gradient(180deg, rgba(239, 246, 255, 0.96), rgba(227, 238, 252, 0.96));
+      color: #143250;
+    }
     .device-toolbar { display:flex; gap:0.45rem; align-items:center; flex-wrap:wrap; }
     .device-toolbar label { margin:0; font-size:0.72rem; color:#94a3b8; }
     .device-toolbar select { width:min(300px, 56vw); padding:0.35rem 0.45rem; font-size:0.78rem; }
@@ -230,12 +413,21 @@
     .sysstate-roll { max-height:84px; overflow:auto; white-space:pre-wrap; word-break:break-word; border:1px solid #334155; border-radius:0.35rem; padding:0.25rem; background:#0f172a; }
     .health-dot { width: 10px; height: 10px; border-radius: 50%; background: #ef4444; box-shadow: 0 0 12px rgba(239,68,68,0.6); }
     .health-dot.ok { background: #22c55e; box-shadow: 0 0 14px rgba(34,197,94,0.8); }
-    .hero { grid-column: 1 / -1; display:grid; grid-template-columns: 1.2fr 1fr; gap:1rem; }
-    .hero-panel { background: linear-gradient(120deg, rgba(14,165,233,0.16), rgba(59,130,246,0.08)); border:1px solid #1f3d66; border-radius: 0.9rem; padding: 1rem; }
-    .hero-title { font-size: 1.05rem; font-weight: 700; margin-bottom: 0.4rem; }
-    .hero-sub { color:#93c5fd; font-size:0.83rem; line-height:1.35; }
+    .hero { grid-column: 1 / -1; display:grid; grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.95fr); gap:1rem; align-items:stretch; }
+    .hero-panel {
+      background:
+        radial-gradient(circle at top left, rgba(79, 209, 197, 0.16), transparent 38%),
+        linear-gradient(135deg, rgba(11, 24, 42, 0.98), rgba(14, 32, 54, 0.92));
+      border:1px solid rgba(124, 171, 225, 0.22);
+      border-radius: 1.2rem;
+      padding: 1.15rem;
+      box-shadow: var(--shadow-lg);
+      min-height: 100%;
+    }
+    .hero-title { font-size: clamp(1.1rem, 1rem + 0.6vw, 1.5rem); font-weight: 700; margin-bottom: 0.45rem; }
+    .hero-sub { color:#a7c7ea; font-size:0.88rem; line-height:1.48; max-width: 72ch; }
     .kpi-grid { display:grid; grid-template-columns: repeat(3, minmax(90px,1fr)); gap:0.55rem; }
-    .kpi { background: rgba(2, 6, 23, 0.52); border:1px solid #284268; border-radius:0.65rem; padding:0.65rem; }
+    .kpi { background: linear-gradient(180deg, rgba(6, 15, 28, 0.78), rgba(11, 22, 37, 0.94)); border:1px solid rgba(124, 171, 225, 0.18); border-radius:0.9rem; padding:0.75rem; }
     .kpi .k { color:#93c5fd; font-size:0.7rem; }
     .kpi .v { font-size:1rem; font-weight:700; margin-top:0.2rem; }
     .perf-card { grid-column: 1 / -1; }
@@ -266,8 +458,8 @@
     .perf-dot.ram { background:#f472b6; box-shadow:0 0 8px rgba(244,114,182,0.65); }
     .perf-dot.temp { background:#fb923c; box-shadow:0 0 8px rgba(251,146,60,0.65); }
     .quick-nav { grid-column:1 / -1; display:flex; gap:0.5rem; flex-wrap:wrap; }
-    .quick-nav button { background:#132744; border:1px solid #27466f; color:#bae6fd; }
-    .quick-nav button:hover { background:#1b365c; }
+    .quick-nav button { background:linear-gradient(180deg, rgba(16, 34, 58, 0.95), rgba(12, 24, 42, 0.95)); border:1px solid rgba(124, 171, 225, 0.2); color:#cbe4ff; }
+    .quick-nav button:hover { background:linear-gradient(180deg, rgba(21, 43, 72, 0.98), rgba(14, 29, 49, 0.98)); }
     .detail-tabs { display:flex; gap:0.45rem; flex-wrap:wrap; margin:0.8rem 0; }
     .tab-btn { background:#132744; border:1px solid #2f4d74; color:#93c5fd; padding:0.35rem 0.7rem; border-radius:0.5rem; font-size:0.78rem; cursor:pointer; }
     .tab-btn.active { background:#0ea5e9; border-color:#0284c7; color:white; }
@@ -276,10 +468,10 @@
 
     /* New YTS Styles */
     .yts-layout { display: grid; grid-template-columns: 220px 1fr; gap: 1rem; margin-top: 1rem; }
-    .yts-nav { display: flex; flex-direction: column; gap: 0.25rem; border-right: 1px solid #334155; padding-right: 1rem; max-height: 500px; overflow-y: auto; }
+    .yts-nav { display: flex; flex-direction: column; gap: 0.3rem; border-right: 1px solid rgba(124, 171, 225, 0.16); padding-right: 1rem; max-height: 500px; overflow-y: auto; }
     .yts-nav-item { padding: 0.5rem 0.75rem; border-radius: 0.5rem; cursor: pointer; font-size: 0.85rem; color: #94a3b8; border: 1px solid transparent; white-space: nowrap; }
-    .yts-nav-item:hover { background: #1e293b; color: #e2e8f0; }
-    .yts-nav-item.active { background: #0ea5e9; color: white; font-weight: 600; border-color: #0284c7; }
+    .yts-nav-item:hover { background: rgba(20, 38, 62, 0.8); color: #eef6ff; }
+    .yts-nav-item.active { background: linear-gradient(135deg, rgba(79, 209, 197, 0.95), rgba(105, 168, 255, 0.95)); color: #04111d; font-weight: 700; border-color: transparent; }
     .yts-panel { display: none; }
     .yts-panel.active { display: block; }
     .yts-panel h3 { font-size: 1.1rem; font-weight: 600; margin-bottom: 0.5rem; color: #f1f5f9; }
@@ -300,12 +492,12 @@
     .yts-prompt-actions { display:flex; gap:0.5rem; flex-wrap:wrap; margin-top:0.75rem; }
     .yts-prompt-chip { background:#1e293b; color:#cbd5e1; border:1px solid #334155; border-radius:999px; padding:0.25rem 0.6rem; font-size:0.78rem; }
     .yts-runner-layout { display:grid; grid-template-columns: 1.4fr 0.8fr; gap:1rem; }
-    .yts-runner-panel { background:#0f172a; border:1px solid #334155; border-radius:0.75rem; padding:0.9rem; }
+    .yts-runner-panel { background:linear-gradient(180deg, rgba(13, 24, 40, 0.92), rgba(10, 18, 31, 0.95)); border:1px solid rgba(116, 141, 177, 0.18); border-radius:1rem; padding:0.95rem; }
     .yts-runner-panel h3 { font-size:0.95rem; color:#e2e8f0; margin-bottom:0.6rem; }
     .yts-job-list { display:flex; flex-direction:column; gap:0.55rem; max-height:720px; overflow-y:auto; }
-    .yts-job-item { background:#111827; border:1px solid #334155; border-radius:0.65rem; padding:0.75rem; cursor:pointer; }
-    .yts-job-item:hover { border-color:#38bdf8; }
-    .yts-job-item.active { border-color:#0ea5e9; background:#102038; }
+    .yts-job-item { background:linear-gradient(180deg, rgba(15, 24, 40, 0.95), rgba(12, 20, 34, 0.95)); border:1px solid rgba(116, 141, 177, 0.16); border-radius:0.95rem; padding:0.8rem; cursor:pointer; transition:border-color 150ms ease, transform 150ms ease, box-shadow 150ms ease; }
+    .yts-job-item:hover { border-color:rgba(79, 209, 197, 0.45); transform:translateY(-1px); box-shadow:0 16px 28px rgba(3,10,24,0.24); }
+    .yts-job-item.active { border-color:rgba(105, 168, 255, 0.46); background:linear-gradient(180deg, rgba(15, 31, 50, 0.98), rgba(12, 24, 40, 0.98)); }
     .yts-job-meta { font-size:0.75rem; color:#94a3b8; margin-top:0.25rem; }
     .yts-job-title { font-size:0.82rem; color:#e2e8f0; word-break:break-word; }
     .yts-job-links { display:flex; flex-wrap:wrap; gap:0.4rem; margin-top:0.5rem; }
@@ -320,6 +512,12 @@
     .yts-download-link { display:inline-flex; align-items:center; justify-content:center; padding:0.55rem 0.9rem; border-radius:0.55rem; border:1px solid #334155; background:#2563eb; color:#fff; text-decoration:none; font-size:0.82rem; }
     .yts-download-link.secondary { background:#132744; color:#bae6fd; }
     .yts-download-link:hover { filter:brightness(1.08); }
+    .yts-live-preview-wrap { margin-top:1rem; border:1px solid var(--border); border-radius:0.8rem; background:linear-gradient(180deg, rgba(9, 18, 32, 0.94), rgba(8, 16, 27, 0.98)); overflow:hidden; }
+    .yts-live-preview-head { display:flex; align-items:center; justify-content:space-between; gap:0.75rem; padding:0.7rem 0.85rem; border-bottom:1px solid var(--border); background:linear-gradient(180deg, rgba(14, 28, 49, 0.88), rgba(11, 22, 37, 0.95)); }
+    .yts-live-preview-title { font-size:0.82rem; font-weight:700; color:var(--text); letter-spacing:0.02em; }
+    .yts-live-preview-stage { position:relative; aspect-ratio:16/9; min-height:180px; background:#030712; }
+    .yts-live-preview-stage img { width:100%; height:100%; object-fit:cover; display:block; background:#020617; }
+    .yts-live-preview-empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; text-align:center; padding:1rem; color:var(--muted); font-size:0.82rem; background:radial-gradient(circle at center, rgba(79, 209, 197, 0.08), transparent 62%); }
     .yts-report-viewer-wrap { margin-top:0.85rem; border:1px solid #334155; border-radius:0.55rem; background:#0b1222; overflow:hidden; }
     .yts-report-viewer-header { display:flex; align-items:center; justify-content:space-between; gap:0.6rem; padding:0.55rem 0.75rem; border-bottom:1px solid #334155; background:#111b31; }
     .yts-report-viewer-frame { width:100%; min-height:620px; border:0; background:#fff; }
@@ -333,6 +531,9 @@
       .yts-runner-grid { grid-template-columns: 1fr; }
       .yts-runner-layout { grid-template-columns: 1fr; }
       .sysstate-grid { grid-template-columns: 1fr; }
+      header { padding: 0.9rem 1rem; }
+      main { padding: 0 0.85rem 1rem; }
+      .card { border-radius: 1.05rem; }
     }
   </style>
 </head>
@@ -345,6 +546,13 @@
   </div>
   <span class="badge mock" id="mode-badge">MOCK</span>
   <div class="header-right">
+    <div class="theme-toolbar">
+      <label for="theme-select">Theme</label>
+      <select id="theme-select" onchange="applyThemeSelection()">
+        <option value="dark">Dark</option>
+        <option value="light">Light</option>
+      </select>
+    </div>
     <div class="model-toolbar">
       <label for="ai-model-select">AI Model</label>
       <select id="ai-model-select">
@@ -742,6 +950,15 @@
           </div>
           <div class="yts-subtle">Use this field to send manual terminal input even if the CLI is waiting mid-execution.</div>
           <div id="yts-interactive-prompt" style="display:none;"></div>
+          <div id="yts-gemini-live-preview" class="yts-live-preview-wrap">
+            <div class="yts-live-preview-head">
+              <div class="yts-live-preview-title">Gemini Visual Feed</div>
+              <div id="yts-gemini-live-preview-status" class="yts-subtle">Starts when interactive YTS is running.</div>
+            </div>
+            <div class="yts-live-preview-stage" id="yts-gemini-live-preview-stage">
+              <div class="yts-live-preview-empty">Live capture preview will appear here when Gemini interactive monitoring is active.</div>
+            </div>
+          </div>
           <label style="margin-top:1rem;">Terminal Log</label>
           <div class="yts-result-box" id="yts-command-output">Select or start a YTS job to view logs.</div>
           <label style="margin-top:1rem;">Interactive / Gemini Log</label>
@@ -892,6 +1109,7 @@
   const DAB_DEVICE_STORAGE_KEY = 'dab_selected_device_id';
   const REMOTE_MODE_STORAGE_KEY = 'dab_remote_mode';
   const IR_DEVICE_STORAGE_KEY = 'dab_ir_device_id';
+  const THEME_STORAGE_KEY = 'dab_ui_theme';
   let apiBase = '';
   let selectedRunId = null;
   let pollInterval = null;
@@ -900,10 +1118,23 @@
   let hdmiAudioLatencyTimer = null;
   let captureSelectionBusy = false;
   let hdmiStreamTransitionToken = 0;
+  let hdmiStreamStartupTimer = null;
+  let hdmiStreamStopTimer = null;
+  let hdmiAvWebSocket = null;
+  let hdmiAvMediaSource = null;
+  let hdmiAvSourceBuffer = null;
+  let hdmiAvObjectUrl = null;
+  let hdmiAvAppendQueue = [];
+  let hdmiAvAppendInFlight = false;
+  let hdmiWebRtcPeer = null;
+  let hdmiWebRtcPeerId = null;
+  let hdmiWebRtcRemoteStream = null;
+  let hdmiWebRtcHasAudio = false;
   let lastNarrationIdx = -1;
   let currentNarrationAudio = null;
   let currentYtsCommandId = null;
   let ytsCommandPollInterval = null;
+  let ytsGeminiPreviewCommandId = null;
   const YTS_COMMAND_STORAGE_KEY = 'dab_yts_live_command_id';
   let ytsCommandHistory = [];
   let selectedRemoteMode = (localStorage.getItem(REMOTE_MODE_STORAGE_KEY) || 'DAB').toUpperCase();
@@ -923,6 +1154,24 @@
   let settingsValueRefreshDebounceTimer = null;
   const perfHistoryMaxPoints = 120;
   const perfHistory = { cpu: [], ram: [], temp: [] };
+  let selectedTheme = (localStorage.getItem(THEME_STORAGE_KEY) || 'dark').toLowerCase() === 'light' ? 'light' : 'dark';
+
+  function setTheme(theme, persist = true) {
+    selectedTheme = String(theme || 'dark').toLowerCase() === 'light' ? 'light' : 'dark';
+    document.body.dataset.theme = selectedTheme;
+    const select = document.getElementById('theme-select');
+    if (select) select.value = selectedTheme;
+    if (persist) localStorage.setItem(THEME_STORAGE_KEY, selectedTheme);
+  }
+
+  function applyThemeSelection() {
+    const next = document.getElementById('theme-select')?.value || 'dark';
+    setTheme(next, true);
+  }
+
+  function initTheme() {
+    setTheme(selectedTheme, false);
+  }
 
   function normalizeApiBase(v) {
     const s = (v || '').trim();
@@ -2495,17 +2744,12 @@
       const kindSel = document.getElementById('capture-kind-select');
       if (modeSel && data.configured_source) modeSel.value = data.configured_source;
       if (kindSel && data.preferred_video_kind) kindSel.value = data.preferred_video_kind;
-      const ad = await api('/audio/source').catch(() => null);
       const mode = data.configured_source || 'auto';
+      infoEl.dataset.activeDevice = String(data.hdmi_device || '').trim();
       if (data.hdmi_available) {
         const device = data.hdmi_device || 'auto';
         const kind = data.preferred_video_kind || 'auto';
-        let msg = `Capture source: ${mode} · kind=${kind} · video ready (${device})`;
-        if (ad) {
-          msg += ad.enabled
-            ? ` · audio ${ad.device || 'auto'} ${ad.ffmpeg_available ? 'ready' : 'ffmpeg-missing'}`
-            : ' · audio disabled';
-        }
+        const msg = `Capture source: ${mode} · kind=${kind} · video ready (${device})`;
         infoEl.textContent = msg;
         infoEl.style.color = '#86efac';
       } else if (data.hdmi_configured) {
@@ -2572,26 +2816,48 @@
     const modeSel = document.getElementById('capture-mode-select');
     const kindSel = document.getElementById('capture-kind-select');
     const devSel = document.getElementById('capture-device-select');
+    const streamBox = document.getElementById('hdmi-stream-container');
+    const previousActiveDevice = (document.getElementById('capture-source-info')?.dataset?.activeDevice || '').trim();
     const resultEl = document.getElementById('manual-result');
     const wasStreaming = hdmiStreamRunning;
+    const requestedSource = modeSel ? modeSel.value : 'auto';
+    const requestedDevice = devSel ? String(devSel.value || '').trim() : '';
     const prevApplyLabel = setCaptureSelectionBusy(true, wasStreaming ? 'Switching camera…' : 'Applying capture settings…');
     try {
+      if (wasStreaming && streamBox) {
+        streamBox.classList.add('switching');
+        setHdmiStreamOverlay('Switching camera…');
+      }
       await api('/capture/select', 'POST', {
-        source: modeSel ? modeSel.value : 'auto',
+        source: requestedSource,
         preferred_kind: kindSel ? kindSel.value : 'auto',
-        device: devSel ? devSel.value : '',
+        device: requestedDevice,
         persist: true,
       });
-      await loadCaptureSource();
-      await refreshCaptureDevices();
       if (wasStreaming) {
-        startHdmiStream({ smooth: true, overlayText: 'Camera switched' });
+        const ready = await waitForCaptureReady({
+          source: requestedSource,
+          device: requestedDevice,
+          previousActiveDevice,
+          preferredKind: kindSel ? kindSel.value : 'auto',
+          timeoutMs: 2400,
+        }).catch(() => false);
+        if (ready) {
+          setCaptureSwitchStatus('✓ Camera switched');
+        } else {
+          setCaptureSwitchStatus('Camera switched, waiting for stable frames...');
+        }
+        if (streamBox) streamBox.classList.remove('switching');
+        clearHdmiStreamOverlay();
       }
+      void Promise.allSettled([loadCaptureSource(), refreshCaptureDevices(), refreshStreamDiagnostics()]);
       if (resultEl) {
         resultEl.textContent = '✓ Capture selection updated';
         resultEl.style.color = '#4ade80';
       }
-      setCaptureSwitchStatus(wasStreaming ? '✓ Camera changed smoothly (live stream kept running)' : '✓ Capture source updated');
+      if (!wasStreaming) {
+        setCaptureSwitchStatus('✓ Capture source updated');
+      }
     } catch (e) {
       if (resultEl) {
         resultEl.textContent = `✗ ${e.message}`;
@@ -2599,7 +2865,6 @@
       }
       setCaptureSwitchStatus(`✗ ${e.message}`, true);
       clearHdmiStreamOverlay();
-      const streamBox = document.getElementById('hdmi-stream-container');
       if (streamBox) streamBox.classList.remove('switching');
     } finally {
       setCaptureSelectionBusy(false, '', prevApplyLabel);
@@ -2608,21 +2873,192 @@
 
   function toggleHdmiStream() {
     if (captureSelectionBusy) return;
-    if (hdmiStreamRunning) stopHdmiStream();
-    else startHdmiStream();
+    if (hdmiStreamRunning) void stopHdmiStream();
+    else void startHdmiStream();
   }
 
-  function startHdmiStream(options = {}) {
-    const { smooth = false, overlayText = 'Switching camera…' } = options;
+  function resetHdmiAvPipeline() {
+    if (hdmiAvWebSocket) {
+      try { hdmiAvWebSocket.onopen = null; } catch (_) {}
+      try { hdmiAvWebSocket.onmessage = null; } catch (_) {}
+      try { hdmiAvWebSocket.onerror = null; } catch (_) {}
+      try { hdmiAvWebSocket.onclose = null; } catch (_) {}
+      try { hdmiAvWebSocket.close(); } catch (_) {}
+      hdmiAvWebSocket = null;
+    }
+    hdmiAvAppendQueue = [];
+    hdmiAvAppendInFlight = false;
+    hdmiAvSourceBuffer = null;
+    hdmiAvMediaSource = null;
+    if (hdmiAvObjectUrl) {
+      try { URL.revokeObjectURL(hdmiAvObjectUrl); } catch (_) {}
+      hdmiAvObjectUrl = null;
+    }
+  }
+
+  function supportsWebRtcStreaming() {
+    return Boolean(window.RTCPeerConnection);
+  }
+
+  async function closeHdmiWebRtcPeer(notifyBackend = true) {
+    const peer = hdmiWebRtcPeer;
+    const peerId = hdmiWebRtcPeerId;
+    hdmiWebRtcPeer = null;
+    hdmiWebRtcPeerId = null;
+    hdmiWebRtcHasAudio = false;
+    if (peer) {
+      try {
+        peer.ontrack = null;
+        peer.onconnectionstatechange = null;
+        peer.close();
+      } catch (_) {}
+    }
+    if (notifyBackend && peerId) {
+      try {
+        await api(`/webrtc/close/${encodeURIComponent(peerId)}`, 'POST');
+      } catch (_) {}
+    }
+  }
+
+  async function startHdmiWebRtc(options = {}) {
+    const { smooth = false, overlayText = 'Switching camera…', forceRestart = false } = options;
+    const container = document.getElementById('hdmi-stream-container');
+    if (!container) return false;
+    if (hdmiStreamStopTimer) {
+      window.clearTimeout(hdmiStreamStopTimer);
+      hdmiStreamStopTimer = null;
+    }
+    await closeHdmiWebRtcPeer(true);
+
+    const token = ++hdmiStreamTransitionToken;
+    if (hdmiStreamStartupTimer) {
+      window.clearTimeout(hdmiStreamStartupTimer);
+      hdmiStreamStartupTimer = null;
+    }
+    if (smooth) {
+      container.classList.add('switching');
+      setHdmiStreamOverlay(overlayText);
+    } else {
+      container.classList.remove('switching');
+      clearHdmiStreamOverlay();
+    }
+
+    container.innerHTML = '<video id="hdmi-stream-player" playsinline autoplay controls style="width:100%;display:block;border-radius:0.5rem;"></video><div id="hdmi-stream-overlay" class="stream-overlay"></div>';
+    const player = document.getElementById('hdmi-stream-player');
+    if (!player) return false;
+    if (forceRestart) player.src = '';
+
+    const pc = new RTCPeerConnection();
+    hdmiWebRtcPeer = pc;
+    hdmiWebRtcRemoteStream = null;
+    player.autoplay = true;
+    player.playsInline = true;
+    player.muted = false;
+    player.volume = 1.0;
+
+    pc.addTransceiver('video', { direction: 'recvonly' });
+    pc.addTransceiver('audio', { direction: 'recvonly' });
+
+    pc.ontrack = (event) => {
+      if (token !== hdmiStreamTransitionToken) return;
+      const stream = event.streams && event.streams.length ? event.streams[0] : new MediaStream([event.track]);
+      hdmiWebRtcRemoteStream = stream;
+      if (player.srcObject !== stream) {
+        player.srcObject = stream;
+      }
+      container.classList.remove('switching');
+      clearHdmiStreamOverlay();
+      player.play().catch(() => {});
+    };
+
+    pc.onconnectionstatechange = () => {
+      const state = String(pc.connectionState || '').toLowerCase();
+      if (state === 'connected') {
+        container.classList.remove('switching');
+        clearHdmiStreamOverlay();
+      } else if (state === 'failed' || state === 'disconnected') {
+        setHdmiStreamOverlay('WebRTC stream lost. Falling back to MJPEG…');
+      }
+    };
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    const answer = await api('/webrtc/offer', 'POST', {
+      sdp: pc.localDescription.sdp,
+      type: pc.localDescription.type,
+    });
+    hdmiWebRtcPeerId = String(answer.peer_id || '').trim() || null;
+    hdmiWebRtcHasAudio = Boolean(answer.has_audio);
+    await pc.setRemoteDescription({ type: answer.type, sdp: answer.sdp });
+
+    hdmiStreamStartupTimer = window.setTimeout(() => {
+      if (token !== hdmiStreamTransitionToken) return;
+      setHdmiStreamOverlay('Waiting for WebRTC media tracks from Raspberry Pi capture…');
+    }, 1500);
+
+    document.getElementById('stream-toggle-btn').textContent = '■ Stop Stream';
+    document.getElementById('stream-toggle-btn').className = 'danger';
+    hdmiStreamRunning = true;
+    if (hdmiWebRtcHasAudio) {
+      const audioContainer = document.getElementById('audio-stream-container');
+      if (audioContainer) {
+        audioContainer.innerHTML = '<div class="empty-state" style="padding:0.5rem;">Audio is embedded in WebRTC stream.</div>';
+      }
+      const audioBtn = document.getElementById('audio-toggle-btn');
+      if (audioBtn) {
+        audioBtn.textContent = '■ Stop Audio';
+        audioBtn.className = 'danger';
+      }
+      hdmiAudioRunning = true;
+    }
+    return true;
+  }
+
+  function pumpHdmiAvQueue() {
+    if (!hdmiAvSourceBuffer || hdmiAvAppendInFlight || hdmiAvSourceBuffer.updating || !hdmiAvAppendQueue.length) return;
+    hdmiAvAppendInFlight = true;
+    try {
+      hdmiAvSourceBuffer.appendBuffer(hdmiAvAppendQueue.shift());
+    } catch (error) {
+      hdmiAvAppendInFlight = false;
+      throw error;
+    }
+  }
+
+  function enqueueHdmiAvChunk(chunk) {
+    if (!(chunk instanceof ArrayBuffer) && !(chunk instanceof Uint8Array)) return;
+    const normalized = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
+    hdmiAvAppendQueue.push(normalized);
+    if (hdmiAvAppendQueue.length > 120) hdmiAvAppendQueue.shift();
+    pumpHdmiAvQueue();
+  }
+
+  function buildAvWebSocketUrl() {
+    const base = apiBase || window.location.origin;
+    const url = new URL('/ws/stream/av', base);
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    return url.toString();
+  }
+
+  function startHdmiMjpegFallback(options = {}) {
+    const { smooth = false, overlayText = 'Switching camera…', forceRestart = false } = options;
     const url = `${apiBase}/stream/hdmi?ts=${Date.now()}`;
     const container = document.getElementById('hdmi-stream-container');
     if (!container) return;
+    if (hdmiStreamStopTimer) {
+      window.clearTimeout(hdmiStreamStopTimer);
+      hdmiStreamStopTimer = null;
+    }
     let img = document.getElementById('hdmi-stream-img');
     if (!img) {
       container.innerHTML = '<img id="hdmi-stream-img" alt="HDMI stream" /><div id="hdmi-stream-overlay" class="stream-overlay"></div>';
       img = document.getElementById('hdmi-stream-img');
     }
     const token = ++hdmiStreamTransitionToken;
+    if (hdmiStreamStartupTimer) {
+      window.clearTimeout(hdmiStreamStartupTimer);
+      hdmiStreamStartupTimer = null;
+    }
     if (smooth) {
       container.classList.add('switching');
       setHdmiStreamOverlay(overlayText);
@@ -2632,6 +3068,10 @@
     }
     img.onload = () => {
       if (token !== hdmiStreamTransitionToken) return;
+      if (hdmiStreamStartupTimer) {
+        window.clearTimeout(hdmiStreamStartupTimer);
+        hdmiStreamStartupTimer = null;
+      }
       container.classList.remove('switching');
       window.setTimeout(() => {
         if (token === hdmiStreamTransitionToken) clearHdmiStreamOverlay();
@@ -2639,36 +3079,92 @@
     };
     img.onerror = () => {
       if (token !== hdmiStreamTransitionToken) return;
+      if (hdmiStreamStartupTimer) {
+        window.clearTimeout(hdmiStreamStartupTimer);
+        hdmiStreamStartupTimer = null;
+      }
       container.classList.remove('switching');
       setHdmiStreamOverlay('Camera switch failed. Try again.');
     };
+    if (forceRestart) img.src = '';
     img.src = url;
+    hdmiStreamStartupTimer = window.setTimeout(() => {
+      if (token !== hdmiStreamTransitionToken) return;
+      setHdmiStreamOverlay('Waiting for first frame from selected camera…');
+    }, 1800);
     document.getElementById('stream-toggle-btn').textContent = '■ Stop Stream';
     document.getElementById('stream-toggle-btn').className = 'danger';
     hdmiStreamRunning = true;
   }
 
-  function stopHdmiStream() {
+  async function startHdmiStream(options = {}) {
+    resetHdmiAvPipeline();
+    if (supportsWebRtcStreaming()) {
+      try {
+        const started = await startHdmiWebRtc(options);
+        if (started) return;
+      } catch (error) {
+        await closeHdmiWebRtcPeer(true);
+      }
+    }
+    startHdmiMjpegFallback(options);
+  }
+
+  async function stopHdmiStream(options = {}) {
+    const { keepPlaceholder = false, preserveOverlay = false } = options;
     const container = document.getElementById('hdmi-stream-container');
     if (!container) return;
+    const player = document.getElementById('hdmi-stream-player');
     const img = document.getElementById('hdmi-stream-img');
     hdmiStreamTransitionToken += 1;
-    if (img) {
+    if (hdmiStreamStartupTimer) {
+      window.clearTimeout(hdmiStreamStartupTimer);
+      hdmiStreamStartupTimer = null;
+    }
+    if (hdmiStreamStopTimer) {
+      window.clearTimeout(hdmiStreamStopTimer);
+      hdmiStreamStopTimer = null;
+    }
+    await closeHdmiWebRtcPeer(true);
+    resetHdmiAvPipeline();
+    if (player) {
+      try { player.pause(); } catch (_) {}
+      player.removeAttribute('src');
+      player.load();
+    }
+    if (img || player) {
       container.classList.add('stopping');
-      window.setTimeout(() => {
-        const currentImg = document.getElementById('hdmi-stream-img');
-        if (currentImg) currentImg.src = '';
-        container.classList.remove('stopping');
-        container.classList.remove('switching');
-        clearHdmiStreamOverlay();
-        container.innerHTML = '<div class="empty-state">HDMI stream is stopped.</div>';
-      }, 180);
-    } else {
+      await new Promise((resolve) => {
+        hdmiStreamStopTimer = window.setTimeout(() => {
+          hdmiStreamStopTimer = null;
+          const currentImg = document.getElementById('hdmi-stream-img');
+          const currentPlayer = document.getElementById('hdmi-stream-player');
+          if (currentImg) currentImg.src = '';
+          if (currentPlayer) {
+            try { currentPlayer.pause(); } catch (_) {}
+            currentPlayer.removeAttribute('src');
+            currentPlayer.load();
+          }
+          container.classList.remove('stopping');
+          container.classList.remove('switching');
+          if (!preserveOverlay) clearHdmiStreamOverlay();
+          if (!keepPlaceholder) {
+            container.innerHTML = '<div class="empty-state">HDMI stream is stopped.</div>';
+          }
+          resolve();
+        }, 180);
+      });
+    } else if (!keepPlaceholder) {
       container.innerHTML = '<div class="empty-state">HDMI stream is stopped.</div>';
     }
     document.getElementById('stream-toggle-btn').textContent = '▶ Start Stream';
     document.getElementById('stream-toggle-btn').className = 'secondary';
     hdmiStreamRunning = false;
+    document.getElementById('audio-stream-container').innerHTML =
+      '<div class="empty-state" style="padding:0.5rem;">Audio stream is stopped.</div>';
+    document.getElementById('audio-toggle-btn').textContent = '🔊 Start Audio';
+    document.getElementById('audio-toggle-btn').className = 'secondary';
+    hdmiAudioRunning = false;
   }
 
   function setCaptureSwitchStatus(message, isError = false) {
@@ -2706,6 +3202,41 @@
 
   function clearHdmiStreamOverlay() {
     setHdmiStreamOverlay('');
+  }
+
+  async function waitForCaptureReady(options = {}) {
+    const {
+      source = 'auto',
+      device = '',
+      previousActiveDevice = '',
+      preferredKind = 'auto',
+      timeoutMs = 4000,
+    } = options;
+    const normalizedSource = String(source || 'auto').trim().toLowerCase();
+    const targetDevice = String(device || '').trim();
+    const previousDevice = String(previousActiveDevice || '').trim();
+    const targetKind = String(preferredKind || 'auto').trim().toLowerCase();
+    const requiresVideo = ['auto', 'hdmi-capture', 'camera-capture', 'hdmi', 'camera', 'capture-card', 'webcam'].includes(normalizedSource);
+    const deadline = Date.now() + Math.max(500, Number(timeoutMs) || 4000);
+
+    while (Date.now() < deadline) {
+      const data = await api('/capture/source').catch(() => null);
+      if (data) {
+        const activeDevice = String(data.hdmi_device || '').trim();
+        const selectedDevice = String(data.selected_video_device || '').trim();
+        const selectedMatches = !targetDevice || selectedDevice === targetDevice || activeDevice === targetDevice;
+        const sourceMatches = !normalizedSource || String(data.configured_source || '').toLowerCase() === normalizedSource || (normalizedSource === 'hdmi' && data.configured_source === 'hdmi-capture') || (normalizedSource === 'camera' && data.configured_source === 'camera-capture');
+        const effectiveKind = String(data.effective_preferred_kind || data.preferred_video_kind || '').toLowerCase();
+        const kindMatches = targetKind === 'auto' || !targetKind || effectiveKind === targetKind;
+        const switchedDevice = !previousDevice || !activeDevice || activeDevice !== previousDevice || selectedMatches;
+        const ready = !requiresVideo || (Boolean(data.hdmi_available) && selectedMatches && kindMatches && switchedDevice);
+        if (sourceMatches && ready) {
+          return true;
+        }
+      }
+      await new Promise(resolve => window.setTimeout(resolve, 220));
+    }
+    throw new Error('Selected camera did not become ready in time');
   }
 
   function _pushPerfPoint(seriesName, value) {
@@ -2833,6 +3364,22 @@
   }
 
   async function startAudioStream() {
+    if (hdmiStreamRunning && hdmiWebRtcPeer && hdmiWebRtcHasAudio) {
+      const player = document.getElementById('hdmi-stream-player');
+      if (player) {
+        player.muted = false;
+        player.volume = 1.0;
+        player.play().catch(() => {});
+      }
+      const audioContainer = document.getElementById('audio-stream-container');
+      if (audioContainer) {
+        audioContainer.innerHTML = '<div class="empty-state" style="padding:0.5rem;">Audio is embedded in WebRTC stream.</div>';
+      }
+      document.getElementById('audio-toggle-btn').textContent = '■ Stop Audio';
+      document.getElementById('audio-toggle-btn').className = 'danger';
+      hdmiAudioRunning = true;
+      return;
+    }
     const resultEl = document.getElementById('manual-result');
     try {
       const status = await api('/audio/source');
@@ -2898,6 +3445,18 @@
   }
 
   function stopAudioStream() {
+    if (hdmiStreamRunning && hdmiWebRtcPeer && hdmiWebRtcHasAudio) {
+      const player = document.getElementById('hdmi-stream-player');
+      if (player) {
+        player.muted = true;
+      }
+      document.getElementById('audio-stream-container').innerHTML =
+        '<div class="empty-state" style="padding:0.5rem;">WebRTC audio muted.</div>';
+      document.getElementById('audio-toggle-btn').textContent = '🔊 Start Audio';
+      document.getElementById('audio-toggle-btn').className = 'secondary';
+      hdmiAudioRunning = false;
+      return;
+    }
     if (hdmiAudioLatencyTimer) {
       clearInterval(hdmiAudioLatencyTimer);
       hdmiAudioLatencyTimer = null;
@@ -3884,6 +4443,7 @@
 
     outputEl.innerHTML = output;
   renderYtsInteractionLog(data);
+    renderYtsGeminiLivePreview(data);
 
     const pendingPrompt = data.pending_prompt;
     if (pendingPrompt && data.awaiting_input) {
@@ -3951,6 +4511,31 @@
         </div>
         <iframe class="yts-report-viewer-frame" src="${reportUrl}" title="YTS HTML report"></iframe>
       `;
+    }
+  }
+
+  function renderYtsGeminiLivePreview(data) {
+    const stage = document.getElementById('yts-gemini-live-preview-stage');
+    const statusEl = document.getElementById('yts-gemini-live-preview-status');
+    if (!stage || !statusEl) return;
+
+    const isActive = !!(data && data.interactive_ai && data.status === 'running');
+    if (!isActive) {
+      ytsGeminiPreviewCommandId = null;
+      stage.innerHTML = '<div class="yts-live-preview-empty">Live capture preview will appear here when Gemini interactive monitoring is active.</div>';
+      statusEl.textContent = 'Starts when interactive YTS is running.';
+      return;
+    }
+
+    const commandId = String(data.command_id || '');
+    const sourceText = data.latest_visual_analysis?.source || data.last_visual_context?.source || 'live-capture';
+    const summary = data.ai_status_message || 'Showing the same live capture source currently used for Gemini visual monitoring.';
+    statusEl.textContent = `${summary} Source: ${sourceText}`;
+
+    if (ytsGeminiPreviewCommandId !== commandId) {
+      ytsGeminiPreviewCommandId = commandId;
+      const url = `${apiBase}/stream/hdmi?ts=${Date.now()}`;
+      stage.innerHTML = `<img id="yts-gemini-live-preview-img" src="${url}" alt="Gemini live preview" />`;
     }
   }
 
@@ -5115,6 +5700,7 @@
   }
 
   async function initializeDashboard() {
+    initTheme();
     initApiBase();
     initDetailTabs();
     initYtsControlCenter();
@@ -5141,11 +5727,11 @@
   initializeDashboard();
   startCurrentSettingsRefreshLoop();
   setInterval(checkHealth, 30000);
-  setInterval(loadRuns, 5000);
-  setInterval(loadCaptureSource, 10000);
-  setInterval(refreshCaptureDevices, 15000);
-  setInterval(refreshStreamDiagnostics, 20000);
-  setInterval(refreshSystemMetrics, 1000);
+  setInterval(loadRuns, 12000);
+  setInterval(loadCaptureSource, 20000);
+  setInterval(refreshCaptureDevices, 30000);
+  setInterval(refreshStreamDiagnostics, 30000);
+  setInterval(refreshSystemMetrics, 5000);
   window.addEventListener('resize', drawPerfGraph);
 </script>
 </body>
