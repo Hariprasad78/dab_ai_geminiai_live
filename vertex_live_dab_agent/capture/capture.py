@@ -86,6 +86,7 @@ class ScreenCapture:
         self._next_dab_capture_ts = 0.0
         self._warned_dab_cooldown = False
         self._warned_no_hdmi = False
+        self._last_hdmi_error: Optional[str] = None
         self._hdmi = hdmi_session
 
     def _normalize_rotation_degrees(self, rotation_degrees: Optional[int]) -> int:
@@ -119,7 +120,14 @@ class ScreenCapture:
             if isinstance(device, str) and device.strip():
                 selected = device.strip()
                 if os.path.exists(selected):
-                    self._selected_video_device = selected
+                    if self._is_capture_capable_device(selected):
+                        self._selected_video_device = selected
+                    else:
+                        logger.warning(
+                            "Saved capture device is not capture-capable (index != 0), clearing preference: %s",
+                            selected,
+                        )
+                        self._selected_video_device = None
                 else:
                     logger.warning("Saved capture device is missing, clearing preference: %s", selected)
                     self._selected_video_device = None
@@ -164,6 +172,32 @@ class ScreenCapture:
         except Exception:
             return ""
 
+    def _video_device_index(self, device: str) -> Optional[int]:
+        dev = str(device).strip()
+        if not dev:
+            return None
+        try:
+            resolved = os.path.realpath(dev)
+        except Exception:
+            resolved = dev
+        m = re.match(r"^/dev/video(\d+)$", resolved)
+        if not m:
+            return None
+        sys_index = f"/sys/class/video4linux/video{m.group(1)}/index"
+        try:
+            with open(sys_index, "r", encoding="utf-8") as fh:
+                return int((fh.read() or "").strip())
+        except Exception:
+            return None
+
+    def _is_capture_capable_device(self, device: str) -> bool:
+        idx = self._video_device_index(device)
+        if idx is not None:
+            # Prefer the primary capture endpoint and avoid metadata/sideband
+            # companion nodes (often index 1+ on UVC capture cards).
+            return idx == 0
+        return True
+
     def _classify_video_device_kind(self, name: str) -> str:
         n = str(name or "").lower()
         if any(k in n for k in ["hdmi", "capture", "cam link", "loop", "elgato", "u3"]):
@@ -184,11 +218,14 @@ class ScreenCapture:
             if not os.path.exists(dev):
                 continue
             name = self._video_device_name(dev)
+            dev_index = self._video_device_index(dev)
             details.append(
                 {
                     "device": dev,
                     "name": name,
                     "kind": self._classify_video_device_kind(name),
+                    "index": dev_index,
+                    "capture_capable": self._is_capture_capable_device(dev),
                     "readable": bool(os.access(dev, os.R_OK)),
                 }
             )
@@ -260,7 +297,29 @@ class ScreenCapture:
                 dev = str(device or "").strip()
                 if dev and (not dev.startswith("/dev/") or not os.path.exists(dev)):
                     raise ValueError("device must be an existing /dev/* path")
+                if dev and not self._is_capture_capable_device(dev):
+                    raise ValueError("device is not capture-capable (requires /dev/video* index0)")
                 self._selected_video_device = dev or None
+            elif source is not None and previous_source != self._image_source and self._selected_video_device:
+                # If caller switches capture source without specifying a device,
+                # avoid carrying over a stale explicit selection from the
+                # opposite class (camera vs HDMI capture card).
+                selected_kind = self._classify_video_device_kind(
+                    self._video_device_name(self._selected_video_device)
+                )
+                target_kind = self._effective_kind_preference()
+                if (
+                    target_kind in {"hdmi", "camera"}
+                    and selected_kind in {"hdmi", "camera"}
+                    and selected_kind != target_kind
+                ):
+                    logger.info(
+                        "Clearing stale selected video device %s (kind=%s) after source switch to %s",
+                        self._selected_video_device,
+                        selected_kind,
+                        self._image_source,
+                    )
+                    self._selected_video_device = None
 
             if rotation_degrees is not None:
                 try:
@@ -313,32 +372,37 @@ class ScreenCapture:
             return None
 
         configured = (self._selected_video_device or self._config.hdmi_capture_device or "").strip()
+        if configured and not self._is_capture_capable_device(configured):
+            logger.warning("Ignoring non-capture configured device (index != 0): %s", configured)
+            configured = ""
         kind_pref = self._effective_kind_preference()
         explicit_device_requested = bool(configured)
+        explicit_from_selection = bool((self._selected_video_device or "").strip())
 
-        candidates = []
+        device_details = self._list_video_device_details()
+        if self._image_source == "hdmi-capture":
+            device_details = [d for d in device_details if str(d.get("kind")) != "camera"]
+        elif self._image_source == "camera-capture":
+            device_details = [d for d in device_details if str(d.get("kind")) != "hdmi"]
+
+        device_details = [
+            d for d in device_details
+            if self._is_kind_enabled(str(d.get("kind") or "unknown"))
+            and bool(d.get("capture_capable", True))
+        ]
+        devs = [d["device"] for d in device_details]
+        if kind_pref in {"hdmi", "camera"}:
+            preferred = [d["device"] for d in device_details if d.get("kind") == kind_pref]
+            others = [d for d in devs if d not in preferred]
+            devs = preferred + others
+
+        candidates: list[str] = []
         if configured:
             candidates.append(configured)
-
-        # If an explicit device is configured (UI/env), do not silently fall back
-        # to another camera/capture card. This prevents Gemini from receiving
-        # screenshots from the wrong physical source.
-        if not explicit_device_requested:
-            device_details = self._list_video_device_details()
-            if self._image_source == "hdmi-capture":
-                device_details = [d for d in device_details if str(d.get("kind")) != "camera"]
-            elif self._image_source == "camera-capture":
-                device_details = [d for d in device_details if str(d.get("kind")) != "hdmi"]
-
-            device_details = [
-                d for d in device_details
-                if self._is_kind_enabled(str(d.get("kind") or "unknown"))
-            ]
-            devs = [d["device"] for d in device_details]
-            if kind_pref in {"hdmi", "camera"}:
-                preferred = [d["device"] for d in device_details if d.get("kind") == kind_pref]
-                others = [d for d in devs if d not in preferred]
-                devs = preferred + others
+        # Recovery path: if a previously selected /dev/videoN disappears or
+        # stops producing frames after switching sources, fall back to
+        # auto-discovered peers of the requested kind.
+        if not explicit_device_requested or explicit_from_selection:
             candidates.extend([d for d in devs if d not in candidates])
 
         candidate_errors = []
@@ -374,6 +438,7 @@ class ScreenCapture:
 
             logger.info("HDMI capture ready: device=%s", device)
             self._warned_no_hdmi = False
+            self._last_hdmi_error = None
             return session
 
         if not self._warned_no_hdmi:
@@ -389,7 +454,7 @@ class ScreenCapture:
                 logger.info("No HDMI capture device detected; using DAB screenshot fallback")
             else:
                 logger.info("No HDMI capture device detected")
-            if explicit_device_requested:
+            if explicit_device_requested and not explicit_from_selection:
                 logger.warning(
                     "Configured capture device could not be opened; refusing fallback to a different device: %s",
                     configured,
@@ -405,6 +470,15 @@ class ScreenCapture:
                 )
             if candidate_errors:
                 logger.info("HDMI probe errors: %s", " | ".join(candidate_errors[:4]))
+                self._last_hdmi_error = candidate_errors[0]
+            elif explicit_device_requested and not explicit_from_selection:
+                self._last_hdmi_error = f"Configured device could not be opened: {configured}"
+            elif video_devices and unreadable:
+                self._last_hdmi_error = (
+                    "Video device permission issue: at least one /dev/video* node is unreadable"
+                )
+            else:
+                self._last_hdmi_error = "No readable HDMI/camera capture device detected"
             self._warned_no_hdmi = True
         return None
 
@@ -474,6 +548,7 @@ class ScreenCapture:
 
             image_b64 = self._hdmi.capture_png_base64()
             if image_b64 is None and self._hdmi.last_error:
+                self._last_hdmi_error = self._hdmi.last_error
                 logger.warning("HDMI capture failed: %s", self._hdmi.last_error)
                 # A transient read miss should not immediately tear down the
                 # shared session for every consumer. Retry once with a fresh
@@ -487,6 +562,8 @@ class ScreenCapture:
                     if self._hdmi is not None:
                         self._hdmi.close()
                     self._hdmi = None
+            elif image_b64 is not None:
+                self._last_hdmi_error = None
             return image_b64
 
     def ensure_hdmi_session(self, force: bool = False) -> bool:
@@ -527,6 +604,7 @@ class ScreenCapture:
             "hdmi_available": hdmi_available,
             "hdmi_device": hdmi_device,
             "hdmi_info": hdmi_info,
+            "hdmi_last_error": self._last_hdmi_error,
             "rotation_degrees": rotation_degrees,
             "enable_hdmi_capture": bool(self._config.enable_hdmi_capture),
             "enable_camera_capture": bool(self._config.enable_camera_capture),

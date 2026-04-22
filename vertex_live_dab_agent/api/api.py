@@ -136,6 +136,7 @@ _vertex_text_client: Optional[VertexPlannerClient] = None
 _vertex_live_visual_client: Optional[VertexPlannerClient] = None
 _ir_service: Optional[SamsungIrService] = None
 _runtime_vertex_planner_model_override: Optional[str] = None
+_runtime_vertex_live_model_override: Optional[str] = None
 _yts_live_commands: Dict[str, Dict[str, Any]] = {}
 _yts_live_tasks: Dict[str, asyncio.Task] = {}
 _yts_live_visual_tasks: Dict[str, asyncio.Task] = {}
@@ -164,6 +165,9 @@ _device_settings_values_ttl_seconds: float = 15.0
 _device_settings_values_min_interval_seconds: float = 15.0
 _device_settings_get_max_concurrency: int = 4
 _device_settings_get_semaphore = asyncio.Semaphore(_device_settings_get_max_concurrency)
+_device_settings_get_fallback_max_reads: int = 6
+_manual_keypress_last_sent_at: Dict[str, float] = {}
+_manual_keypress_lock = asyncio.Lock()
 _LIVE_AV_MP4_MIME = 'video/mp4; codecs="avc1.42E01F, mp4a.40.2"'
 _webrtc_lock = asyncio.Lock()
 _webrtc_peers: Dict[str, Any] = {}
@@ -192,6 +196,26 @@ _COMMON_VERTEX_MODELS: List[str] = [
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
 ]
+
+
+async def _is_manual_keypress_duplicate(
+    *,
+    device_id: str,
+    action: str,
+    key_code: str,
+) -> bool:
+    window_s = max(
+        0.0,
+        float(getattr(get_config(), "manual_keypress_dedupe_window_ms", 180)) / 1000.0,
+    )
+    if window_s <= 0.0:
+        return False
+    stamp_key = f"{device_id}:{action}:{key_code}"
+    now = time.monotonic()
+    async with _manual_keypress_lock:
+        previous = _manual_keypress_last_sent_at.get(stamp_key)
+        _manual_keypress_last_sent_at[stamp_key] = now
+    return previous is not None and (now - previous) <= window_s
 
 
 class WebRTCOfferRequest(BaseModel):
@@ -291,8 +315,14 @@ def _create_webrtc_audio_player() -> Optional[Any]:
         seen.add(key)
         candidates.append(key)
 
-    configured_device = str(config.hdmi_audio_device or "").strip() or (_guess_audio_input_for_selected_capture() or "")
-    primary_format, primary_device = _resolve_audio_input(allow_arecord=False)
+    _, capture_status = _resolve_active_capture_video_device()
+    configured_device = str(config.hdmi_audio_device or "").strip() or (
+        _guess_audio_input_for_selected_capture(capture_status=capture_status) or ""
+    )
+    primary_format, primary_device = _resolve_audio_input(
+        allow_arecord=False,
+        capture_status=capture_status,
+    )
     _add_candidate(primary_format, primary_device)
     for forced_format in ("pulse", "alsa"):
         fallback_format, fallback_device = resolve_audio_input(
@@ -511,7 +541,6 @@ def _build_live_av_ffmpeg_command(
 def _build_recording_ffmpeg_command(
     *,
     output_path: Path,
-    video_device: str,
     video_status: Dict[str, Any],
     audio_format: Optional[str],
     audio_device: Optional[str],
@@ -524,8 +553,17 @@ def _build_recording_ffmpeg_command(
         "-hide_banner",
         "-loglevel",
         "error",
+        "-thread_queue_size",
+        "1024",
+        "-f",
+        "image2pipe",
+        "-framerate",
+        str(float(config.hdmi_capture_fps)),
+        "-vcodec",
+        "mjpeg",
+        "-i",
+        "pipe:0",
     ]
-    command.extend(_build_ffmpeg_video_input_args(video_device=video_device, video_status=video_status))
     command.extend(_build_ffmpeg_audio_input_args(audio_format=audio_format, audio_device=audio_device))
     command.extend(["-map", "0:v:0"])
     if audio_format and audio_device:
@@ -628,8 +666,6 @@ class LiveAVStreamManager:
             await self._stop_locked()
 
     async def _ensure_running_locked(self) -> None:
-        if self._process is not None and self._process.returncode is None:
-            return
         if not ffmpeg_available():
             raise RuntimeError("ffmpeg not found on host")
         video_device, video_status = _resolve_active_capture_video_device()
@@ -638,13 +674,24 @@ class LiveAVStreamManager:
         audio_format: Optional[str] = None
         audio_device: Optional[str] = None
         if get_config().hdmi_audio_enabled:
-            audio_format, audio_device = _resolve_audio_input()
+            audio_format, audio_device = _resolve_audio_input(
+                allow_arecord=False,
+                capture_status=video_status,
+            )
         command = _build_live_av_ffmpeg_command(
             video_device=video_device,
             video_status=video_status,
             audio_format=audio_format,
             audio_device=audio_device,
         )
+
+        if self._process is not None and self._process.returncode is None:
+            # Reuse running process only when exact AV source/codec command
+            # remains unchanged; otherwise recycle so source switches apply.
+            if command == self._last_command:
+                return
+            await self._stop_locked()
+
         process = await asyncio.create_subprocess_exec(
             *command,
             stdout=asyncio.subprocess.PIPE,
@@ -1499,6 +1546,8 @@ async def _refresh_device_settings_values(device_id: str, *, settings_entries: O
                 return row
 
     values: List[Dict[str, Any]] = []
+    bulk_failed_timeout = False
+    bulk_failure_error = ""
 
     bulk_reader = getattr(dab, "get_all_settings_values", None)
     if callable(bulk_reader):
@@ -1537,11 +1586,67 @@ async def _refresh_device_settings_values(device_id: str, *, settings_entries: O
                         }
                     )
                 logger.info("DAB settings/get refresh used bulk request without settings/list: device=%s keys=%s", device_id, len(values))
+            elif not bool(getattr(bulk_resp, "success", False)):
+                bulk_failure_error = str((bulk_data or {}).get("error") or "")
+                bulk_failed_timeout = "timed out" in bulk_failure_error.lower()
         except Exception as exc:
+            bulk_failure_error = str(exc)
+            bulk_failed_timeout = "timed out" in bulk_failure_error.lower()
             logger.warning("Bulk settings/get request failed for %s: %s", device_id, exc)
 
     if not values and settings_entries:
-        values = list(await asyncio.gather(*[_read_setting(item) for item in settings_entries]))
+        # Prevent large per-key fan-out when the bridge/device is already timing out.
+        if bulk_failed_timeout:
+            values = [
+                {
+                    **dict(item or {}),
+                    "key": str((item or {}).get("key") or "").strip(),
+                    "read_success": False,
+                    "read_status": 504,
+                    "read_error": (
+                        "Bulk settings/get timed out; per-key fallback skipped to avoid DAB overload"
+                    ),
+                    "current_value": None,
+                    "read_raw": {},
+                }
+                for item in settings_entries
+            ]
+            logger.warning(
+                "DAB settings/get per-key fallback skipped after bulk timeout: device=%s keys=%s error=%s",
+                device_id,
+                len(settings_entries),
+                bulk_failure_error,
+            )
+        else:
+            entries_to_read = list(settings_entries)
+            if len(entries_to_read) > int(_device_settings_get_fallback_max_reads):
+                limited = entries_to_read[: int(_device_settings_get_fallback_max_reads)]
+                skipped = entries_to_read[int(_device_settings_get_fallback_max_reads):]
+                values = list(await asyncio.gather(*[_read_setting(item) for item in limited]))
+                values.extend(
+                    [
+                        {
+                            **dict(item or {}),
+                            "key": str((item or {}).get("key") or "").strip(),
+                            "read_success": False,
+                            "read_status": 429,
+                            "read_error": (
+                                "Skipped to avoid DAB overload (limited per-key fallback reads)"
+                            ),
+                            "current_value": None,
+                            "read_raw": {},
+                        }
+                        for item in skipped
+                    ]
+                )
+                logger.info(
+                    "DAB settings/get per-key fallback capped: device=%s attempted=%s skipped=%s",
+                    device_id,
+                    len(limited),
+                    len(skipped),
+                )
+            else:
+                values = list(await asyncio.gather(*[_read_setting(item) for item in entries_to_read]))
 
     payload = {
         "success": True,
@@ -2257,6 +2362,21 @@ def _normalize_video_device_path(value: Any) -> str:
         return dev
 
 
+def _video_device_identity(value: Any) -> str:
+    dev = _normalize_video_device_path(value)
+    if not dev:
+        return ""
+    match = re.match(r"^/dev/video(\d+)$", dev)
+    if not match:
+        return dev
+    sysfs_device = f"/sys/class/video4linux/video{match.group(1)}/device"
+    try:
+        resolved = os.path.realpath(sysfs_device)
+    except Exception:
+        resolved = ""
+    return resolved or dev
+
+
 def _is_hdmi_capture_device_mismatch(status: Dict[str, Any]) -> bool:
     configured_source = str(status.get("configured_source") or "").strip().lower()
     if configured_source != "hdmi-capture":
@@ -2265,6 +2385,12 @@ def _is_hdmi_capture_device_mismatch(status: Dict[str, Any]) -> bool:
     active = _normalize_video_device_path(status.get("hdmi_device"))
     if not selected or not active:
         return False
+    if selected == active:
+        return False
+    selected_identity = _video_device_identity(selected)
+    active_identity = _video_device_identity(active)
+    if selected_identity and active_identity:
+        return selected_identity != active_identity
     return selected != active
 
 
@@ -3128,7 +3254,10 @@ async def _start_yts_video_recording(command_id: str) -> None:
     audio_format: Optional[str] = None
     audio_device: Optional[str] = None
     if include_audio:
-        resolved_format, resolved_device = _resolve_audio_input()
+        resolved_format, resolved_device = _resolve_audio_input(
+            allow_arecord=False,
+            capture_status=capture_status,
+        )
         if resolved_format in {"alsa", "pulse"} and resolved_device:
             audio_format = resolved_format
             audio_device = resolved_device
@@ -3144,7 +3273,6 @@ async def _start_yts_video_recording(command_id: str) -> None:
 
     command = _build_recording_ffmpeg_command(
         output_path=output_path,
-        video_device=video_device,
         video_status=capture_status,
         audio_format=audio_format,
         audio_device=audio_device,
@@ -3153,21 +3281,29 @@ async def _start_yts_video_recording(command_id: str) -> None:
         process = await asyncio.create_subprocess_exec(
             *command,
             cwd=str(_get_yts_workspace_dir()),
+            stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
         stderr_task = asyncio.create_task(_capture_yts_recording_stderr(command_id, process.stderr))
+        pump_task = asyncio.create_task(
+            _pump_yts_video_recording_frames(
+                command_id,
+                process,
+                fps=max(1.0, float(get_config().hdmi_capture_fps or 30.0)),
+            )
+        )
         _yts_live_recording_processes[command_id] = {
             "process": process,
             "stderr_task": stderr_task,
-            "pump_task": None,
+            "pump_task": pump_task,
         }
         state["video_recording_status"] = "recording"
         state["video_file_path"] = str(output_path)
         state["video_file_name"] = output_path.name
         state["logs"].append({
             "stream": "system",
-            "message": f"Started synchronized AV recording from capture device: {shlex.join(command)}",
+            "message": f"Started synchronized AV recording from active capture session: {shlex.join(command)}",
         })
         if include_audio and not (audio_format and audio_device):
             state["logs"].append(
@@ -3944,6 +4080,60 @@ def _merge_yts_prompt_entry(prompt_entry: Dict[str, Any], line: str, stream_name
     return prompt_entry
 
 
+def _is_yts_prompt_context_signal_line(text: str) -> bool:
+    line = _strip_terminal_ansi(str(text or "")).strip()
+    if not line:
+        return False
+    lowered = line.lower()
+    if _parse_yts_prompt_option(line) or _is_prompt_scaffolding_line(line):
+        return False
+    if re.match(r"^-{3,}$", line):
+        return False
+    if lowered in {"etc", "etc localization"}:
+        return False
+    if lowered.startswith("launching guided test") or lowered.startswith("attempting relaunch"):
+        return False
+    if re.fullmatch(r"[A-Z0-9\s]+", line) and len(line.split()) <= 4:
+        return False
+    return True
+
+
+def _seed_yts_prompt_with_recent_context(
+    state: Dict[str, Any],
+    prompt_entry: Dict[str, Any],
+    *,
+    stream_name: str,
+    trigger_line: str,
+    max_lines: int = 24,
+) -> None:
+    if str(prompt_entry.get("text") or "").strip():
+        return
+    cleaned_trigger = _strip_terminal_ansi(str(trigger_line or "")).strip()
+    if not cleaned_trigger:
+        return
+    if not (_is_prompt_scaffolding_line(cleaned_trigger) or bool(_parse_yts_prompt_option(cleaned_trigger))):
+        return
+
+    logs = list(state.get("logs") or [])
+    if len(logs) < 2:
+        return
+
+    context_lines: List[str] = []
+    start = max(0, len(logs) - max(1, int(max_lines or 24)) - 1)
+    for entry in logs[start:-1]:
+        if str(entry.get("stream") or "") != stream_name:
+            continue
+        candidate = _strip_terminal_ansi(str(entry.get("raw_message", entry.get("message", "")))).strip()
+        if not _is_yts_prompt_context_signal_line(candidate):
+            continue
+        if candidate in context_lines:
+            continue
+        context_lines.append(candidate)
+
+    for candidate in context_lines:
+        _merge_yts_prompt_entry(prompt_entry, candidate, stream_name)
+
+
 def _prompt_ready_for_ai_response(prompt_entry: Dict[str, Any]) -> bool:
     prompt_text = str(prompt_entry.get("text") or "")
     lowered_prompt = prompt_text.lower()
@@ -4489,8 +4679,7 @@ def _is_live_preview_vertex_model(model_name: Optional[str]) -> bool:
 
 
 def _select_vertex_visual_model() -> str:
-    c = get_config()
-    live_model = str(c.vertex_live_model or "").strip()
+    live_model = _get_active_vertex_live_model()
     planner_model = _get_active_vertex_planner_model()
     if live_model and not _is_live_preview_vertex_model(live_model):
         return live_model
@@ -4927,6 +5116,12 @@ async def _append_yts_stream_output(command_id: str, stream_name: str, stream) -
                 if checkpoint:
                     prompt_entry["checkpoint"] = checkpoint
 
+            _seed_yts_prompt_with_recent_context(
+                state,
+                prompt_entry,
+                stream_name=stream_name,
+                trigger_line=stripped,
+            )
             _merge_yts_prompt_entry(prompt_entry, stripped, stream_name)
             _persist_yts_live_state(state)
 
@@ -5624,12 +5819,35 @@ def _plan_task_macro_actions(instruction: str) -> List[ManualActionRequest]:
     return actions
 
 
-def _resolve_audio_input(*, allow_arecord: bool = True) -> tuple[Optional[str], Optional[str]]:
+def _resolve_audio_input(
+    *,
+    allow_arecord: bool = True,
+    capture_status: Optional[Dict[str, Any]] = None,
+) -> tuple[Optional[str], Optional[str]]:
     """Resolve `(input_format, device)` for HDMI audio stream."""
     config = get_config()
     configured_device = str(config.hdmi_audio_device or "").strip()
-    if not configured_device:
-        configured_device = _guess_audio_input_for_selected_capture() or ""
+    if configured_device.lower() == "auto":
+        configured_device = ""
+    guessed_device = _guess_audio_input_for_selected_capture(capture_status=capture_status) or ""
+    follow_active_video = bool(getattr(config, "hdmi_audio_follow_active_video", True))
+    active_video_device = str((capture_status or {}).get("hdmi_device") or "").strip()
+    if follow_active_video and active_video_device and not guessed_device:
+        logger.warning(
+            "No audio device matched active video source %s; refusing fallback to unrelated audio input",
+            active_video_device,
+        )
+        return None, None
+    if follow_active_video and guessed_device:
+        if configured_device and configured_device != guessed_device:
+            logger.info(
+                "Overriding configured HDMI audio device to follow active video source: configured=%s resolved=%s",
+                configured_device,
+                guessed_device,
+            )
+        configured_device = guessed_device
+    elif not configured_device:
+        configured_device = guessed_device
     input_format, device = resolve_audio_input(
         preferred_format=config.hdmi_audio_input_format,
         configured_device=configured_device,
@@ -5647,14 +5865,15 @@ def _resolve_audio_input(*, allow_arecord: bool = True) -> tuple[Optional[str], 
     return None, None
 
 
-def _guess_audio_input_for_selected_capture() -> Optional[str]:
+def _guess_audio_input_for_selected_capture(*, capture_status: Optional[Dict[str, Any]] = None) -> Optional[str]:
     """Best-effort match between selected HDMI capture card and ALSA input."""
     try:
-        status = get_screen_capture().capture_source_status()
+        status = capture_status or get_screen_capture().capture_source_status()
     except Exception:
         return None
 
-    selected_video_device = str(status.get("selected_video_device") or status.get("hdmi_device") or "").strip()
+    # Prefer the currently active streaming device over a saved selection.
+    selected_video_device = str(status.get("hdmi_device") or status.get("selected_video_device") or "").strip()
     if not selected_video_device:
         return None
 
@@ -5663,15 +5882,45 @@ def _guess_audio_input_for_selected_capture() -> Optional[str]:
         (item for item in details if str(item.get("device") or "").strip() == selected_video_device),
         None,
     )
-    selected_kind = str((selected_detail or {}).get("kind") or "").strip().lower()
-    if selected_kind and selected_kind != "hdmi":
-        return None
 
     audio_devices = list_alsa_capture_devices()
     if not audio_devices:
         return None
     if len(audio_devices) == 1:
         return str(audio_devices[0].get("alsa_device") or "").strip() or None
+
+    def _sysfs_common_prefix_depth(a: str, b: str) -> int:
+        try:
+            a_parts = [p for p in os.path.realpath(a).split("/") if p]
+            b_parts = [p for p in os.path.realpath(b).split("/") if p]
+        except Exception:
+            return 0
+        depth = 0
+        for left, right in zip(a_parts, b_parts):
+            if left != right:
+                break
+            depth += 1
+        return depth
+
+    # Strongest signal: video and ALSA card share the same sysfs USB parent.
+    video_name = os.path.basename(selected_video_device)
+    video_sysfs = f"/sys/class/video4linux/{video_name}/device"
+    best_sysfs_device: Optional[str] = None
+    best_sysfs_depth = -1
+    for item in audio_devices:
+        card = str(item.get("card") or "").strip()
+        if not card.isdigit():
+            continue
+        audio_sysfs = f"/sys/class/sound/card{card}/device"
+        if not os.path.exists(audio_sysfs):
+            continue
+        depth = _sysfs_common_prefix_depth(video_sysfs, audio_sysfs)
+        # Ignore trivial common roots like "/sys/devices".
+        if depth >= 6 and depth > best_sysfs_depth:
+            best_sysfs_depth = depth
+            best_sysfs_device = str(item.get("alsa_device") or "").strip() or None
+    if best_sysfs_device:
+        return best_sysfs_device
 
     name_parts = [
         str((selected_detail or {}).get("name") or "").strip(),
@@ -5768,6 +6017,13 @@ def _get_active_vertex_planner_model() -> str:
     if override:
         return override
     return str(get_config().vertex_planner_model or "").strip()
+
+
+def _get_active_vertex_live_model() -> str:
+    override = str(_runtime_vertex_live_model_override or "").strip()
+    if override:
+        return override
+    return str(get_config().vertex_live_model or "").strip()
 
 
 def _get_available_vertex_models() -> List[str]:
@@ -6217,48 +6473,72 @@ async def config_summary() -> ConfigSummaryResponse:
 @app.get("/config/runtime-model", response_model=RuntimeModelResponse)
 async def runtime_model_summary() -> RuntimeModelResponse:
     c = get_config()
-    active = _get_active_vertex_planner_model()
-    configured = str(c.vertex_planner_model or "").strip()
+    active_planner = _get_active_vertex_planner_model()
+    configured_planner = str(c.vertex_planner_model or "").strip()
+    active_live = _get_active_vertex_live_model()
+    configured_live = str(c.vertex_live_model or "").strip()
     return RuntimeModelResponse(
         success=True,
-        active_vertex_planner_model=active,
-        configured_vertex_planner_model=configured,
+        active_vertex_planner_model=active_planner,
+        configured_vertex_planner_model=configured_planner,
+        active_vertex_live_model=active_live,
+        configured_vertex_live_model=configured_live,
         available_models=_get_available_vertex_models(),
-        message=("runtime override active" if active and active != configured else "using configured model"),
+        message=(
+            "runtime override active"
+            if (active_planner and active_planner != configured_planner) or (active_live and active_live != configured_live)
+            else "using configured model"
+        ),
     )
 
 
 @app.post("/config/runtime-model", response_model=RuntimeModelResponse)
 async def runtime_model_update(request: RuntimeModelUpdateRequest) -> RuntimeModelResponse:
-    global _runtime_vertex_planner_model_override
+    global _runtime_vertex_planner_model_override, _runtime_vertex_live_model_override
     requested = str(request.model or "").strip()
+    target = str(request.target or "planner").strip().lower()
     c = get_config()
-    configured = str(c.vertex_planner_model or "").strip()
+    configured_planner = str(c.vertex_planner_model or "").strip()
+    configured_live = str(c.vertex_live_model or "").strip()
 
     if not requested:
         raise HTTPException(status_code=400, detail="model is required")
+    if target not in {"planner", "live"}:
+        raise HTTPException(status_code=400, detail="target must be 'planner' or 'live'")
 
     if requested.lower() in {"default", "configured", "reset"}:
-        _runtime_vertex_planner_model_override = None
+        if target == "live":
+            _runtime_vertex_live_model_override = None
+        else:
+            _runtime_vertex_planner_model_override = None
         _reset_runtime_model_clients()
-        active = _get_active_vertex_planner_model()
+        active_planner = _get_active_vertex_planner_model()
+        active_live = _get_active_vertex_live_model()
         return RuntimeModelResponse(
             success=True,
-            active_vertex_planner_model=active,
-            configured_vertex_planner_model=configured,
+            active_vertex_planner_model=active_planner,
+            configured_vertex_planner_model=configured_planner,
+            active_vertex_live_model=active_live,
+            configured_vertex_live_model=configured_live,
             available_models=_get_available_vertex_models(),
-            message="runtime override cleared; using configured model",
+            message=f"{target} runtime override cleared; using configured model",
         )
 
-    _runtime_vertex_planner_model_override = requested
+    if target == "live":
+        _runtime_vertex_live_model_override = requested
+    else:
+        _runtime_vertex_planner_model_override = requested
     _reset_runtime_model_clients()
-    active = _get_active_vertex_planner_model()
+    active_planner = _get_active_vertex_planner_model()
+    active_live = _get_active_vertex_live_model()
     return RuntimeModelResponse(
         success=True,
-        active_vertex_planner_model=active,
-        configured_vertex_planner_model=configured,
+        active_vertex_planner_model=active_planner,
+        configured_vertex_planner_model=configured_planner,
+        active_vertex_live_model=active_live,
+        configured_vertex_live_model=configured_live,
         available_models=_get_available_vertex_models(),
-        message="runtime model updated",
+        message=f"{target} runtime model updated",
     )
 
 
@@ -6549,6 +6829,13 @@ async def capture_select(request: CaptureSelectRequest) -> CaptureSourceResponse
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
+    # Source/device switch must reset active live stream workers so they do
+    # not keep stale FFmpeg/WebRTC bindings to previous camera/audio nodes.
+    with contextlib.suppress(Exception):
+        await _live_av_stream_manager.stop()
+    with contextlib.suppress(Exception):
+        await _close_all_webrtc_peers()
+
     if bool(status.get("hdmi_configured")):
         async def _warm_capture_session() -> None:
             with contextlib.suppress(Exception):
@@ -6568,8 +6855,11 @@ def _audio_source_payload(*, include_probe_details: bool) -> dict:
     """Return HDMI audio stream diagnostics with optional expensive probe details."""
     c = get_config()
     capture_status = get_screen_capture().capture_source_status()
-    guessed_device = _guess_audio_input_for_selected_capture()
-    input_format, device = _resolve_audio_input()
+    guessed_device = _guess_audio_input_for_selected_capture(capture_status=capture_status)
+    input_format, device = _resolve_audio_input(capture_status=capture_status)
+    follow_active_video = bool(getattr(c, "hdmi_audio_follow_active_video", True))
+    active_video_device = str(capture_status.get("hdmi_device") or "").strip()
+    strict_match_blocked = bool(follow_active_video and active_video_device and not guessed_device)
     try:
         audio_gid = grp.getgrnam("audio").gr_gid
         user_in_audio_group = audio_gid in os.getgroups()
@@ -6578,12 +6868,15 @@ def _audio_source_payload(*, include_probe_details: bool) -> dict:
 
     payload = {
         "enabled": c.hdmi_audio_enabled,
+        "follow_active_video": follow_active_video,
         "ffmpeg_available": ffmpeg_available(),
         "arecord_available": arecord_available(),
         "user_in_audio_group": user_in_audio_group,
         "input_format": input_format,
         "device": device,
         "guessed_device": guessed_device,
+        "active_video_device": capture_status.get("hdmi_device"),
+        "strict_match_blocked": strict_match_blocked,
         "selected_video_device": capture_status.get("selected_video_device"),
         "sample_rate": c.hdmi_audio_sample_rate,
         "channels": c.hdmi_audio_channels,
@@ -7381,6 +7674,10 @@ async def stream_hdmi() -> StreamingResponse:
             detail="HDMI capture is disabled. Set IMAGE_SOURCE=auto or IMAGE_SOURCE=hdmi-capture.",
         )
 
+    # Keep the stream endpoint tolerant of transient startup issues. The
+    # capture helpers below already lazily retry session creation and emit
+    # frames as soon as the selected device becomes ready.
+
     async def frame_generator():
         boundary = b"--frame\r\n"
         while True:
@@ -7419,7 +7716,13 @@ async def stream_audio() -> StreamingResponse:
     if not ffmpeg_available():
         raise HTTPException(status_code=500, detail="ffmpeg not found on host; required for /stream/audio")
 
-    input_format, device = _resolve_audio_input()
+    capture = get_screen_capture()
+    capture.ensure_hdmi_session(force=True)
+    capture_status = capture.capture_source_status()
+    strict_source_lock = bool(getattr(c, "hdmi_audio_follow_active_video", True)) and bool(
+        str(capture_status.get("hdmi_device") or "").strip()
+    )
+    input_format, device = _resolve_audio_input(capture_status=capture_status)
     if not input_format or not device:
         raise HTTPException(status_code=404, detail="No supported audio input source (alsa/pulse) found")
 
@@ -7464,7 +7767,7 @@ async def stream_audio() -> StreamingResponse:
             for forced_format in ("alsa", "pulse"):
                 fallback_format, fallback_device = resolve_audio_input(
                     preferred_format=forced_format,
-                    configured_device="",
+                    configured_device=device,
                 )
                 if not fallback_format or not fallback_device:
                     continue
@@ -7479,7 +7782,7 @@ async def stream_audio() -> StreamingResponse:
 
     if not started:
         # If a fixed device is configured and failed, try one auto-resolve retry.
-        if c.hdmi_audio_device:
+        if c.hdmi_audio_device and not strict_source_lock:
             fallback_format, fallback_device = resolve_audio_input(
                 preferred_format=c.hdmi_audio_input_format,
                 configured_device="",
@@ -7567,15 +7870,39 @@ async def manual_action(request: ManualActionRequest) -> ManualActionResponse:
         await _ensure_selected_device_context(request.device_id, persist=bool(request.device_id))
         dab = get_dab_client()
         if action in KEY_MAP:
-            resp = await dab.key_press(KEY_MAP[action])
+            selected_device_id = _resolve_selected_device_id(request.device_id)
+            key_code = KEY_MAP[action]
+            if await _is_manual_keypress_duplicate(
+                device_id=selected_device_id,
+                action=action,
+                key_code=key_code,
+            ):
+                return ManualActionResponse(
+                    success=True,
+                    action=action,
+                    result={"deduped": True, "keyCode": key_code},
+                )
+            resp = await dab.key_press(key_code)
             return ManualActionResponse(success=resp.success, action=action, result=resp.data)
         elif action == "KEY_PRESS_CODE":
+            selected_device_id = _resolve_selected_device_id(request.device_id)
             key_code = str(params.get("key_code") or params.get("keyCode") or "").strip().upper()
             if not key_code:
                 raise HTTPException(status_code=400, detail="key_code is required for KEY_PRESS_CODE")
+            if await _is_manual_keypress_duplicate(
+                device_id=selected_device_id,
+                action=action,
+                key_code=key_code,
+            ):
+                return ManualActionResponse(
+                    success=True,
+                    action=action,
+                    result={"deduped": True, "keyCode": key_code},
+                )
             resp = await dab.key_press(key_code)
             return ManualActionResponse(success=resp.success, action=action, result=resp.data)
         elif action == "LONG_KEY_PRESS":
+            selected_device_id = _resolve_selected_device_id(request.device_id)
             key_action = str(params.get("key_action", "")).strip().upper()
             key_code = str(params.get("key_code") or params.get("keyCode") or "").strip().upper()
             duration_ms = int(params.get("duration_ms") or params.get("durationMs") or 1500)
@@ -7584,6 +7911,16 @@ async def manual_action(request: ManualActionRequest) -> ManualActionResponse:
                 raise HTTPException(
                     status_code=400,
                     detail="LONG_KEY_PRESS requires params.key_action or params.key_code",
+                )
+            if await _is_manual_keypress_duplicate(
+                device_id=selected_device_id,
+                action=action,
+                key_code=f"{resolved_key}:{duration_ms}",
+            ):
+                return ManualActionResponse(
+                    success=True,
+                    action=action,
+                    result={"deduped": True, "keyCode": resolved_key, "durationMs": duration_ms},
                 )
             resp = await dab.long_key_press(resolved_key, duration_ms=duration_ms)
             return ManualActionResponse(success=resp.success, action=action, result=resp.data)

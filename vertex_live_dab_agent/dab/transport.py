@@ -219,7 +219,6 @@ class MQTTTransport(DABTransportBase):
     async def send(self, request: TransportRequest) -> TransportResponse:
         """Publish request and wait for one correlated response message."""
         aiomqtt = self._import_aiomqtt()
-        legacy_response_topic = request.topic + "/response"
         compliance_response_topic = f"dab/_response/{request.topic}"
         response_topic = compliance_response_topic
 
@@ -237,105 +236,104 @@ class MQTTTransport(DABTransportBase):
         )
 
         try:
-            async with self._send_lock:
+            try:
+                import paho.mqtt.client as paho_mqtt  # type: ignore
+                client = aiomqtt.Client(
+                    hostname=self._broker,
+                    port=self._port,
+                    protocol=paho_mqtt.MQTTv5,
+                )
+            except Exception:
+                client = aiomqtt.Client(hostname=self._broker, port=self._port)
+
+            async with client:
+                await client.subscribe(response_topic)
+
+                publish_kwargs: Dict[str, Any] = {
+                    "payload": outbound_json,
+                }
+
+                # Prefer MQTT v5 response-topic so bridges can reply on a
+                # deterministic per-request topic.
                 try:
-                    import paho.mqtt.client as paho_mqtt  # type: ignore
-                    client = aiomqtt.Client(
-                        hostname=self._broker,
-                        port=self._port,
-                        protocol=paho_mqtt.MQTTv5,
-                    )
+                    from paho.mqtt.packettypes import PacketTypes
+                    from paho.mqtt.properties import Properties
+
+                    props = Properties(PacketTypes.PUBLISH)
+                    props.ResponseTopic = response_topic
+                    publish_kwargs["properties"] = props
                 except Exception:
-                    client = aiomqtt.Client(hostname=self._broker, port=self._port)
+                    # Fallback to payload-only publish when MQTT v5 properties
+                    # are unavailable in the runtime environment.
+                    pass
 
-                async with client:
-                    await client.subscribe(response_topic)
-                    await client.subscribe(legacy_response_topic)
+                await client.publish(request.topic, **publish_kwargs)
 
-                    publish_kwargs: Dict[str, Any] = {
-                        "payload": outbound_json,
-                    }
+                async with asyncio.timeout(request.timeout):
+                    async for message in client.messages:
+                        message_topic = str(getattr(message, "topic", response_topic))
+                        raw_payload = getattr(message, "payload", b"{}")
 
-                    # Prefer MQTT v5 response-topic so bridges can reply on a
-                    # deterministic per-request topic.
-                    try:
-                        from paho.mqtt.packettypes import PacketTypes
-                        from paho.mqtt.properties import Properties
+                        if isinstance(raw_payload, (bytes, bytearray)):
+                            payload_text = raw_payload.decode("utf-8", errors="replace")
+                        else:
+                            payload_text = str(raw_payload)
 
-                        props = Properties(PacketTypes.PUBLISH)
-                        props.ResponseTopic = response_topic
-                        publish_kwargs["properties"] = props
-                    except Exception:
-                        # Fallback to payload-only publish when MQTT v5 properties
-                        # are unavailable in the runtime environment.
-                        pass
+                        logger.info(
+                            "MQTT recv: topic=%s request_id=%s payload=%s",
+                            message_topic,
+                            request.request_id,
+                            payload_text,
+                        )
 
-                    await client.publish(request.topic, **publish_kwargs)
+                        try:
+                            payload_obj = json.loads(payload_text)
+                        except json.JSONDecodeError as exc:
+                            raise DABTransportError(
+                                f"Invalid JSON response on topic {message_topic}: {payload_text!r}"
+                            ) from exc
 
-                    async with asyncio.timeout(request.timeout):
-                        async for message in client.messages:
-                            message_topic = str(getattr(message, "topic", response_topic))
-                            raw_payload = getattr(message, "payload", b"{}")
+                        if not isinstance(payload_obj, dict):
+                            raise DABTransportError(
+                                f"Invalid response payload type on topic {message_topic}: "
+                                f"{type(payload_obj).__name__}"
+                            )
 
-                            if isinstance(raw_payload, (bytes, bytearray)):
-                                payload_text = raw_payload.decode("utf-8", errors="replace")
-                            else:
-                                payload_text = str(raw_payload)
-
-                            logger.info(
-                                "MQTT recv: topic=%s request_id=%s payload=%s",
-                                message_topic,
+                        response_request_id = str(
+                            payload_obj.get("requestId", request.request_id)
+                        )
+                        if response_request_id != request.request_id:
+                            logger.debug(
+                                "MQTT ignoring unmatched response: expected_request_id=%s "
+                                "got_request_id=%s topic=%s",
                                 request.request_id,
-                                payload_text,
+                                response_request_id,
+                                message_topic,
                             )
+                            continue
 
-                            try:
-                                payload_obj = json.loads(payload_text)
-                            except json.JSONDecodeError as exc:
-                                raise DABTransportError(
-                                    f"Invalid JSON response on topic {message_topic}: {payload_text!r}"
-                                ) from exc
+                        status_raw = payload_obj.get("status", 200)
+                        try:
+                            status = int(status_raw)
+                        except (TypeError, ValueError):
+                            status = 200
 
-                            if not isinstance(payload_obj, dict):
-                                raise DABTransportError(
-                                    f"Invalid response payload type on topic {message_topic}: "
-                                    f"{type(payload_obj).__name__}"
-                                )
+                        return TransportResponse(
+                            topic=message_topic,
+                            payload=payload_obj,
+                            request_id=response_request_id,
+                            status=status,
+                        )
 
-                            response_request_id = str(
-                                payload_obj.get("requestId", request.request_id)
-                            )
-                            if response_request_id != request.request_id:
-                                logger.debug(
-                                    "MQTT ignoring unmatched response: expected_request_id=%s "
-                                    "got_request_id=%s topic=%s",
-                                    request.request_id,
-                                    response_request_id,
-                                    message_topic,
-                                )
-                                continue
+                raise asyncio.TimeoutError(
+                    "Timed out waiting for MQTT response on "
+                    f"{response_topic} or {compliance_response_topic}"
+                )
 
-                            status_raw = payload_obj.get("status", 200)
-                            try:
-                                status = int(status_raw)
-                            except (TypeError, ValueError):
-                                status = 200
-
-                            return TransportResponse(
-                                topic=message_topic,
-                                payload=payload_obj,
-                                request_id=response_request_id,
-                                status=status,
-                            )
-
-                    raise asyncio.TimeoutError(
-                        "Timed out waiting for MQTT response on "
-                        f"{response_topic}, {legacy_response_topic}, "
-                        f"or {compliance_response_topic}"
-                    )
-
-        except asyncio.TimeoutError:
-            raise
+        except asyncio.TimeoutError as exc:
+            raise DABTransportError(
+                f"MQTT request timed out topic={request.topic} request_id={request.request_id}"
+            ) from exc
         except NotImplementedError:
             raise
         except Exception as exc:

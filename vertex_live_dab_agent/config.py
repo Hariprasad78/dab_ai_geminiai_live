@@ -62,6 +62,15 @@ class Config:
     dab_device_id: str = field(default_factory=lambda: os.environ.get("DAB_DEVICE_ID", "mock-device"))
     dab_request_timeout: float = field(default_factory=lambda: float(os.environ.get("DAB_REQUEST_TIMEOUT", "120.0")))
     dab_max_retries: int = field(default_factory=lambda: int(os.environ.get("DAB_MAX_RETRIES", "3")))
+    dab_keypress_timeout: float = field(
+        default_factory=lambda: float(os.environ.get("DAB_KEYPRESS_TIMEOUT", "0.8"))
+    )
+    dab_keypress_max_retries: int = field(
+        default_factory=lambda: int(os.environ.get("DAB_KEYPRESS_MAX_RETRIES", "0"))
+    )
+    manual_keypress_dedupe_window_ms: int = field(
+        default_factory=lambda: int(os.environ.get("MANUAL_KEYPRESS_DEDUPE_WINDOW_MS", "180"))
+    )
     youtube_app_id: str = field(default_factory=lambda: os.environ.get("YOUTUBE_APP_ID", "youtube"))
 
     # Capture
@@ -82,6 +91,9 @@ class Config:
     hdmi_audio_enabled: bool = field(default_factory=lambda: os.environ.get("HDMI_AUDIO_ENABLED", "false").lower() == "true")
     hdmi_audio_input_format: str = field(default_factory=lambda: os.environ.get("HDMI_AUDIO_INPUT_FORMAT", "auto"))
     hdmi_audio_device: str = field(default_factory=lambda: os.environ.get("HDMI_AUDIO_DEVICE", ""))
+    hdmi_audio_follow_active_video: bool = field(
+        default_factory=lambda: os.environ.get("HDMI_AUDIO_FOLLOW_ACTIVE_VIDEO", "true").lower() == "true"
+    )
     hdmi_audio_sample_rate: int = field(default_factory=lambda: int(os.environ.get("HDMI_AUDIO_SAMPLE_RATE", "48000")))
     hdmi_audio_channels: int = field(default_factory=lambda: int(os.environ.get("HDMI_AUDIO_CHANNELS", "2")))
     hdmi_audio_bitrate: str = field(default_factory=lambda: os.environ.get("HDMI_AUDIO_BITRATE", "128k"))
