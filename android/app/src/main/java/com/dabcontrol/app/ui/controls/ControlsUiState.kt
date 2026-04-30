@@ -1,0 +1,32 @@
+package com.dabcontrol.app.ui.controls
+
+data class ControlsUiState(
+    val isLoading: Boolean = false,
+    val deviceIds: List<String> = emptyList(),
+    val selectedDeviceId: String = "",
+    val actionName: String = "PRESS_HOME",
+    val actionParamsJson: String = "{}",
+    val batchActionsJson: String = """[{"action":"PRESS_HOME"},{"action":"WAIT","params":{"seconds":1.0}}]""",
+    val deviceInfoPreview: String = "--",
+    val capabilityPreview: String = "--",
+    val operationsPreview: String = "--",
+    val currentSettingsPreview: String = "--",
+    val lastActionResult: String = "--",
+    val lastBatchResult: String = "--",
+    val irDeviceId: String = "samsung_tv_default",
+    val irKeyName: String = "POWER",
+    val irStatusPreview: String = "--",
+    val irDevicesPreview: String = "--",
+    val irKeysPreview: String = "--",
+    val irLastResult: String = "--",
+    val macroInstruction: String = "Go home, wait, open YouTube",
+    val macroExecute: Boolean = false,
+    val macroResult: String = "--",
+    val plannerGoal: String = "Launch YouTube and verify home screen",
+    val plannerCurrentApp: String = "",
+    val plannerCurrentScreen: String = "",
+    val plannerOcrText: String = "",
+    val plannerResult: String = "--",
+    val refreshStatus: String = "Not refreshed yet.",
+    val error: String? = null
+)
