@@ -45,6 +45,9 @@ interface DabApiService {
     @GET("yts/command/live/{commandId}")
     suspend fun ytsLiveCommandState(@Path("commandId") commandId: String): Response<YtsLiveCommandStateDto>
 
+    @POST("yts/command/live")
+    suspend fun startYtsLiveCommand(@Body request: YtsLiveCommandRequestDto): Response<YtsLiveCommandStartResponseDto>
+
     @POST("yts/command/live/{commandId}/stop")
     suspend fun stopYtsLiveCommand(@Path("commandId") commandId: String): Response<JsonObject>
 
@@ -53,6 +56,30 @@ interface DabApiService {
         @Path("commandId") commandId: String,
         @Body request: YtsPromptResponseRequest
     ): Response<JsonObject>
+
+    @POST("yts/command/live/{commandId}/suggest")
+    suspend fun suggestYtsLiveCommand(
+        @Path("commandId") commandId: String,
+        @Body request: YtsPromptSuggestRequest
+    ): Response<JsonObject>
+
+    @GET("yts/tests")
+    suspend fun ytsTests(
+        @Query("guided") guided: Boolean = false
+    ): Response<List<YtsTestCatalogItemDto>>
+
+    @POST("yts/tests/refresh")
+    suspend fun refreshYtsTests(
+        @Query("guided") guided: Boolean = false
+    ): Response<List<YtsTestCatalogItemDto>>
+
+    @GET("config/runtime-model")
+    suspend fun runtimeModelSummary(): Response<RuntimeModelResponseDto>
+
+    @POST("config/runtime-model")
+    suspend fun updateRuntimeModel(
+        @Body request: RuntimeModelUpdateRequestDto
+    ): Response<RuntimeModelResponseDto>
 
     @GET("dab/devices")
     suspend fun dabDevices(): Response<DabDevicesResponseDto>

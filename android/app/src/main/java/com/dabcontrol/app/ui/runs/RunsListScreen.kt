@@ -29,7 +29,7 @@ fun RunsListScreen(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
 
     Column(
-        modifier = modifier.fillMaxSize().padding(16.dp),
+        modifier = modifier.fillMaxSize().padding(start = 16.dp, end = 16.dp, bottom = 16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
