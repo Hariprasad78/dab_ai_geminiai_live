@@ -2,8 +2,13 @@ package com.dabcontrol.app.ui.controls
 
 data class ControlsUiState(
     val isLoading: Boolean = false,
+    val apiBaseUrl: String = "",
     val deviceIds: List<String> = emptyList(),
     val selectedDeviceId: String = "",
+    val isStreaming: Boolean = false,
+    val streamFrameBytes: ByteArray? = null,
+    val streamStatus: String = "Stream stopped.",
+    val remoteStatus: String = "No remote actions yet.",
     val actionName: String = "PRESS_HOME",
     val actionParamsJson: String = "{}",
     val batchActionsJson: String = """[{"action":"PRESS_HOME"},{"action":"WAIT","params":{"seconds":1.0}}]""",

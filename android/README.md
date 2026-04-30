@@ -7,7 +7,7 @@ This folder contains the Android frontend for the `vertex_live_dab_agent` API.
 - Compose app scaffold
 - Hilt DI
 - Retrofit + OkHttp + Kotlinx Serialization
-- DataStore API base URL setting
+- SharedPreferences API base URL setting
 - Dashboard screen wired to:
   - `GET /health`
   - `GET /system/metrics`
@@ -16,7 +16,7 @@ This folder contains the Android frontend for the `vertex_live_dab_agent` API.
 
 1. Open this `android/` folder as a project.
 2. Let Android Studio sync Gradle.
-3. Set API URL in app (default: `http://10.0.2.2:8000` for emulator to host machine).
+3. Set API URL in app (default: `http://10.99.57.66:8081`).
 4. Run on emulator/device.
 
 ## Next

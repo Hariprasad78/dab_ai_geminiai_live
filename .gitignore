@@ -27,6 +27,7 @@ htmlcov/
 coverage.xml
 
 # IDE
+.codex
 .idea/
 .vscode/
 *.swp

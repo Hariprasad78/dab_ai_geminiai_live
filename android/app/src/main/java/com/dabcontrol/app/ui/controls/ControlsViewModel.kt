@@ -3,19 +3,31 @@ package com.dabcontrol.app.ui.controls
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.dabcontrol.app.data.api.ApiResult
-import com.dabcontrol.app.data.api.ManualActionBatchRequestDto
-import com.dabcontrol.app.data.api.ManualActionRequestDto
-import com.dabcontrol.app.data.api.PlannerDebugRequestDto
-import com.dabcontrol.app.data.api.TaskMacroRequestDto
 import com.dabcontrol.app.data.api.IrSendRequestDto
 import com.dabcontrol.app.data.api.IrTrainRequestDto
+import com.dabcontrol.app.data.api.ManualActionBatchRequestDto
+import com.dabcontrol.app.data.api.ManualActionBatchResponseDto
+import com.dabcontrol.app.data.api.ManualActionRequestDto
+import com.dabcontrol.app.data.api.ManualActionResponseDto
+import com.dabcontrol.app.data.api.PlannerDebugRequestDto
+import com.dabcontrol.app.data.api.TaskMacroRequestDto
+import com.dabcontrol.app.data.preferences.ApiSettingsStore
 import com.dabcontrol.app.data.repo.ControlsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import java.io.BufferedInputStream
+import java.io.ByteArrayOutputStream
 import javax.inject.Inject
+import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -24,21 +36,41 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.OkHttpClient
+import okhttp3.Request
 
 @HiltViewModel
 class ControlsViewModel @Inject constructor(
-    private val controlsRepository: ControlsRepository
+    private val controlsRepository: ControlsRepository,
+    private val apiSettingsStore: ApiSettingsStore,
+    private val okHttpClient: OkHttpClient
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(ControlsUiState())
     val uiState: StateFlow<ControlsUiState> = _uiState.asStateFlow()
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
+    private var streamJob: Job? = null
 
     init {
+        viewModelScope.launch {
+            apiSettingsStore.apiBaseUrl.collectLatest { baseUrl ->
+                _uiState.value = _uiState.value.copy(apiBaseUrl = baseUrl)
+            }
+        }
+        viewModelScope.launch {
+            apiSettingsStore.selectedDeviceId.collectLatest { deviceId ->
+                if (deviceId.isNotBlank()) {
+                    _uiState.value = _uiState.value.copy(selectedDeviceId = deviceId)
+                }
+            }
+        }
         refreshAll(force = true)
     }
 
     fun onDeviceSelected(deviceId: String) {
         _uiState.value = _uiState.value.copy(selectedDeviceId = deviceId)
+        viewModelScope.launch {
+            apiSettingsStore.saveSelectedDeviceId(deviceId)
+        }
     }
 
     fun onActionChanged(value: String) {
@@ -51,6 +83,149 @@ class ControlsViewModel @Inject constructor(
 
     fun onBatchActionsChanged(value: String) {
         _uiState.value = _uiState.value.copy(batchActionsJson = value)
+    }
+
+    fun toggleStream() {
+        if (_uiState.value.isStreaming) {
+            stopStream()
+        } else {
+            startStream()
+        }
+    }
+
+    fun refreshStream() {
+        stopStream(clearFrame = false)
+        startStream()
+    }
+
+    fun sendRemoteAction(action: String) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(remoteStatus = "Sending $action...")
+            val request = ManualActionRequestDto(
+                action = action,
+                device_id = _uiState.value.selectedDeviceId.ifBlank { null }
+            )
+            when (val res = controlsRepository.manualAction(request)) {
+                is ApiResult.Success -> {
+                    val resultText = json.encodeToString(ManualActionResponseDto.serializer(), res.data)
+                    _uiState.value = _uiState.value.copy(
+                        remoteStatus = "$action sent",
+                        lastActionResult = resultText
+                    )
+                }
+                is ApiResult.HttpError -> _uiState.value = _uiState.value.copy(
+                    remoteStatus = "$action failed: HTTP ${res.code}",
+                    lastActionResult = "HTTP ${res.code}: ${res.message}"
+                )
+                is ApiResult.NetworkError -> _uiState.value = _uiState.value.copy(
+                    remoteStatus = "$action failed: network",
+                    lastActionResult = "Network error: ${res.throwable.message}"
+                )
+                is ApiResult.UnknownError -> _uiState.value = _uiState.value.copy(
+                    remoteStatus = "$action failed",
+                    lastActionResult = "Unknown error: ${res.throwable.message}"
+                )
+            }
+        }
+    }
+
+    private fun startStream() {
+        streamJob?.cancel()
+        _uiState.value = _uiState.value.copy(
+            isStreaming = true,
+            streamStatus = "Connecting to HDMI stream..."
+        )
+        streamJob = viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val baseUrl = apiSettingsStore.apiBaseUrl.first().trimEnd('/')
+                val request = Request.Builder()
+                    .url("$baseUrl/stream/hdmi?ts=${System.currentTimeMillis()}")
+                    .build()
+                okHttpClient.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        _uiState.value = _uiState.value.copy(
+                            isStreaming = false,
+                            streamStatus = "Stream failed: HTTP ${response.code}"
+                        )
+                        return@use
+                    }
+                    val body = response.body ?: run {
+                        _uiState.value = _uiState.value.copy(
+                            isStreaming = false,
+                            streamStatus = "Stream failed: empty response body"
+                        )
+                        return@use
+                    }
+                    BufferedInputStream(body.byteStream()).use { input ->
+                        readMjpegFrames(input)
+                    }
+                }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                _uiState.value = _uiState.value.copy(
+                    isStreaming = false,
+                    streamStatus = "Stream failed: ${t.message ?: "unknown error"}"
+                )
+            }
+        }
+    }
+
+    private fun stopStream(clearFrame: Boolean = true) {
+        streamJob?.cancel()
+        streamJob = null
+        _uiState.value = _uiState.value.copy(
+            isStreaming = false,
+            streamFrameBytes = if (clearFrame) null else _uiState.value.streamFrameBytes,
+            streamStatus = if (clearFrame) "Stream stopped." else "Reconnecting stream..."
+        )
+    }
+
+    private suspend fun readMjpegFrames(input: BufferedInputStream) {
+        val coroutineContext = currentCoroutineContext()
+        val frameBuffer = ByteArrayOutputStream()
+        var previous = -1
+        var collecting = false
+        var firstFrame = true
+
+        while (coroutineContext.isActive) {
+            val current = input.read()
+            if (current == -1) break
+
+            if (!collecting) {
+                if (previous == 0xFF && current == 0xD8) {
+                    collecting = true
+                    frameBuffer.reset()
+                    frameBuffer.write(0xFF)
+                    frameBuffer.write(0xD8)
+                }
+            } else {
+                frameBuffer.write(current)
+                if (previous == 0xFF && current == 0xD9) {
+                    val frame = frameBuffer.toByteArray()
+                    _uiState.value = _uiState.value.copy(
+                        streamFrameBytes = frame,
+                        streamStatus = if (firstFrame) "Live stream connected." else _uiState.value.streamStatus
+                    )
+                    firstFrame = false
+                    collecting = false
+                    frameBuffer.reset()
+                }
+            }
+            previous = current
+        }
+
+        if (coroutineContext.isActive) {
+            _uiState.value = _uiState.value.copy(
+                isStreaming = false,
+                streamStatus = if (firstFrame) "Stream ended without video frames." else "Stream disconnected."
+            )
+        }
+    }
+
+    override fun onCleared() {
+        streamJob?.cancel()
+        super.onCleared()
     }
 
     fun refreshAll(force: Boolean = true) {
@@ -69,6 +244,9 @@ class ControlsViewModel @Inject constructor(
                         deviceIds = ids,
                         selectedDeviceId = if (_uiState.value.selectedDeviceId.isBlank()) resolved else _uiState.value.selectedDeviceId
                     )
+                    if (_uiState.value.selectedDeviceId.isNotBlank()) {
+                        apiSettingsStore.saveSelectedDeviceId(_uiState.value.selectedDeviceId)
+                    }
                     _uiState.value.selectedDeviceId
                 }
                 else -> _uiState.value.selectedDeviceId
@@ -111,7 +289,9 @@ class ControlsViewModel @Inject constructor(
                 device_id = _uiState.value.selectedDeviceId.ifBlank { null }
             )
             when (val res = controlsRepository.manualAction(req)) {
-                is ApiResult.Success -> _uiState.value = _uiState.value.copy(lastActionResult = json.encodeToString(res.data))
+                is ApiResult.Success -> _uiState.value = _uiState.value.copy(
+                    lastActionResult = json.encodeToString(ManualActionResponseDto.serializer(), res.data)
+                )
                 is ApiResult.HttpError -> _uiState.value = _uiState.value.copy(lastActionResult = "HTTP ${res.code}: ${res.message}")
                 is ApiResult.NetworkError -> _uiState.value = _uiState.value.copy(lastActionResult = "Network error: ${res.throwable.message}")
                 is ApiResult.UnknownError -> _uiState.value = _uiState.value.copy(lastActionResult = "Unknown error: ${res.throwable.message}")
@@ -138,7 +318,9 @@ class ControlsViewModel @Inject constructor(
             }
             val req = ManualActionBatchRequestDto(actions = actions, continue_on_error = true)
             when (val res = controlsRepository.manualBatch(req)) {
-                is ApiResult.Success -> _uiState.value = _uiState.value.copy(lastBatchResult = json.encodeToString(res.data))
+                is ApiResult.Success -> _uiState.value = _uiState.value.copy(
+                    lastBatchResult = json.encodeToString(ManualActionBatchResponseDto.serializer(), res.data)
+                )
                 is ApiResult.HttpError -> _uiState.value = _uiState.value.copy(lastBatchResult = "HTTP ${res.code}: ${res.message}")
                 is ApiResult.NetworkError -> _uiState.value = _uiState.value.copy(lastBatchResult = "Network error: ${res.throwable.message}")
                 is ApiResult.UnknownError -> _uiState.value = _uiState.value.copy(lastBatchResult = "Unknown error: ${res.throwable.message}")
@@ -256,7 +438,7 @@ class ControlsViewModel @Inject constructor(
             is ApiResult.Success<*> -> {
                 val data = result.data
                 when (data) {
-                    is JsonObject -> json.encodeToString(data).take(3500)
+                    is JsonObject -> data.toString().take(3500)
                     else -> data.toString().take(3500)
                 }
             }
