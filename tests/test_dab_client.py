@@ -1,7 +1,8 @@
 """Tests for DAB clients."""
 import pytest
 
-from vertex_live_dab_agent.dab.client import AdapterDABClient, DABResponse, MockDABClient, create_dab_client
+import vertex_live_dab_agent.config as cfg_mod
+from vertex_live_dab_agent.dab.client import AdapterDABClient, DABError, DABResponse, MockDABClient, create_dab_client
 from vertex_live_dab_agent.dab.topics import (
     TOPIC_APPLICATIONS_EXIT,
     KEY_MAP,
@@ -14,7 +15,7 @@ from vertex_live_dab_agent.dab.topics import (
     TOPIC_OPERATIONS_LIST,
     TOPIC_OUTPUT_IMAGE,
 )
-from vertex_live_dab_agent.dab.transport import DABTransportBase, TransportResponse
+from vertex_live_dab_agent.dab.transport import DABTransportBase, DABTransportError, TransportResponse
 
 
 @pytest.fixture
@@ -181,3 +182,31 @@ async def test_adapter_list_settings_degrades_when_cec_shell_unsupported():
     assert "timezone" in keys
     assert "language" in keys
     assert "cec_enabled" in keys
+
+
+class _AlwaysFailTransport(DABTransportBase):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def send(self, request):
+        self.calls += 1
+        raise DABTransportError("no response")
+
+    async def close(self) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_key_press_uses_low_latency_retry_profile(monkeypatch):
+    monkeypatch.setenv("DAB_KEYPRESS_MAX_RETRIES", "0")
+    monkeypatch.setenv("DAB_KEYPRESS_TIMEOUT", "0.2")
+    cfg_mod.reset_config()
+
+    transport = _AlwaysFailTransport()
+    client = AdapterDABClient(transport=transport, device_id="dev-1", timeout=2.0, max_retries=3)
+    with pytest.raises(DABError):
+        await client.key_press("KEY_HOME")
+
+    # Key presses should not use the general 4-attempt retry storm.
+    assert transport.calls == 1
+    cfg_mod.reset_config()

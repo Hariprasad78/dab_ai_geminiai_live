@@ -35,6 +35,13 @@
 
   const $ = (id) => document.getElementById(id);
   const esc = (value) => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const AV_MIME = 'video/mp4; codecs="avc1.42E01F, mp4a.40.2"';
+  let avSocket = null;
+  let avMediaSource = null;
+  let avSourceBuffer = null;
+  let avObjectUrl = null;
+  let avQueue = [];
+  let avAppending = false;
   const parseTokens = (value) => {
     const input = String(value || '').trim();
     if (!input) return [];
@@ -260,6 +267,7 @@
       const data = await api('/stream/status');
       const video = data.video || {};
       const audio = data.audio || {};
+      const av = data.av || {};
       $('stream-diagnostics').textContent = [
         `video.source: ${video.configured_source || 'unknown'}`,
         `video.device: ${video.hdmi_device || video.selected_video_device || 'auto'}`,
@@ -268,20 +276,65 @@
         `audio.enabled: ${audio.enabled ? 'yes' : 'no'}`,
         `audio.ffmpeg: ${audio.ffmpeg_available ? 'yes' : 'no'}`,
         `audio.device: ${audio.device || 'auto'}`,
+        `av.transport: ${av.transport || 'fallback'}`,
+        `av.clients: ${av.subscriber_count || 0}`,
       ].join('\n');
     } catch (error) {
       $('stream-diagnostics').textContent = `Failed to load stream diagnostics: ${error.message}`;
     }
   }
 
+  function stopCombinedStreamPlayer() {
+    if (avSocket) {
+      try { avSocket.onopen = null; } catch (_) {}
+      try { avSocket.onmessage = null; } catch (_) {}
+      try { avSocket.onerror = null; } catch (_) {}
+      try { avSocket.onclose = null; } catch (_) {}
+      try { avSocket.close(); } catch (_) {}
+      avSocket = null;
+    }
+    avQueue = [];
+    avAppending = false;
+    avSourceBuffer = null;
+    avMediaSource = null;
+    if (avObjectUrl) {
+      try { URL.revokeObjectURL(avObjectUrl); } catch (_) {}
+      avObjectUrl = null;
+    }
+  }
+
+  function pumpCombinedStreamQueue() {
+    if (!avSourceBuffer || avAppending || avSourceBuffer.updating || !avQueue.length) return;
+    avAppending = true;
+    avSourceBuffer.appendBuffer(avQueue.shift());
+  }
+
+  function enqueueCombinedChunk(chunk) {
+    if (!(chunk instanceof ArrayBuffer)) return;
+    avQueue.push(new Uint8Array(chunk));
+    if (avQueue.length > 120) avQueue.shift();
+    pumpCombinedStreamQueue();
+  }
+
+  function avWebSocketUrl() {
+    const url = new URL('/ws/stream/av', apiOrigin());
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    return url.toString();
+  }
+
   function toggleStream() {
     const button = $('toggle-stream-btn');
     const frame = $('stream-frame');
     if (state.streamRunning) {
+      stopCombinedStreamPlayer();
       state.streamRunning = false;
+      state.audioRunning = false;
       button.textContent = 'Start Stream';
       button.classList.add('secondary');
       frame.innerHTML = '<div class="empty-state">HDMI stream is stopped.</div>';
+      $('audio-frame').innerHTML = '<div class="empty-state slim">Audio stream is stopped.</div>';
+      $('toggle-audio-btn').textContent = 'Start Audio';
+      $('toggle-audio-btn').classList.add('secondary');
       return;
     }
     state.streamRunning = true;
@@ -957,10 +1010,10 @@
     await resumeLastCommand();
 
     window.setInterval(loadHealth, 30000);
-    window.setInterval(refreshStreamStatus, 20000);
-    window.setInterval(loadCaptureSource, 15000);
-    window.setInterval(loadCaptureDevices, 20000);
-    window.setInterval(() => loadHistory(true), 15000);
+    window.setInterval(refreshStreamStatus, 30000);
+    window.setInterval(loadCaptureSource, 30000);
+    window.setInterval(loadCaptureDevices, 30000);
+    window.setInterval(() => loadHistory(true), 30000);
   }
 
   window.addEventListener('error', (event) => showBanner('error', `Frontend error: ${event.message}`));

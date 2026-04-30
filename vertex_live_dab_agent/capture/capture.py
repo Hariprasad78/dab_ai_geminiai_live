@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from typing import Any, Dict, Optional
 
@@ -78,12 +79,14 @@ class ScreenCapture:
         self._capture_pref_path = os.path.join(self._config.artifacts_base_dir, "capture_preference.json")
         self._load_capture_preference()
         self._capture_lock = asyncio.Lock()
+        self._session_lock = threading.RLock()
         self._hdmi_reprobe_interval_s = 3.0
         self._next_hdmi_probe_ts = 0.0
         self._dab_capture_cooldown_s = 2.5
         self._next_dab_capture_ts = 0.0
         self._warned_dab_cooldown = False
         self._warned_no_hdmi = False
+        self._last_hdmi_error: Optional[str] = None
         self._hdmi = hdmi_session
 
     def _normalize_rotation_degrees(self, rotation_degrees: Optional[int]) -> int:
@@ -117,7 +120,14 @@ class ScreenCapture:
             if isinstance(device, str) and device.strip():
                 selected = device.strip()
                 if os.path.exists(selected):
-                    self._selected_video_device = selected
+                    if self._is_capture_capable_device(selected):
+                        self._selected_video_device = selected
+                    else:
+                        logger.warning(
+                            "Saved capture device is not capture-capable (index != 0), clearing preference: %s",
+                            selected,
+                        )
+                        self._selected_video_device = None
                 else:
                     logger.warning("Saved capture device is missing, clearing preference: %s", selected)
                     self._selected_video_device = None
@@ -162,6 +172,32 @@ class ScreenCapture:
         except Exception:
             return ""
 
+    def _video_device_index(self, device: str) -> Optional[int]:
+        dev = str(device).strip()
+        if not dev:
+            return None
+        try:
+            resolved = os.path.realpath(dev)
+        except Exception:
+            resolved = dev
+        m = re.match(r"^/dev/video(\d+)$", resolved)
+        if not m:
+            return None
+        sys_index = f"/sys/class/video4linux/video{m.group(1)}/index"
+        try:
+            with open(sys_index, "r", encoding="utf-8") as fh:
+                return int((fh.read() or "").strip())
+        except Exception:
+            return None
+
+    def _is_capture_capable_device(self, device: str) -> bool:
+        idx = self._video_device_index(device)
+        if idx is not None:
+            # Prefer the primary capture endpoint and avoid metadata/sideband
+            # companion nodes (often index 1+ on UVC capture cards).
+            return idx == 0
+        return True
+
     def _classify_video_device_kind(self, name: str) -> str:
         n = str(name or "").lower()
         if any(k in n for k in ["hdmi", "capture", "cam link", "loop", "elgato", "u3"]):
@@ -182,11 +218,14 @@ class ScreenCapture:
             if not os.path.exists(dev):
                 continue
             name = self._video_device_name(dev)
+            dev_index = self._video_device_index(dev)
             details.append(
                 {
                     "device": dev,
                     "name": name,
                     "kind": self._classify_video_device_kind(name),
+                    "index": dev_index,
+                    "capture_capable": self._is_capture_capable_device(dev),
                     "readable": bool(os.access(dev, os.R_OK)),
                 }
             )
@@ -219,76 +258,102 @@ class ScreenCapture:
         persist: bool = True,
     ) -> Dict[str, Any]:
         """Set capture source/device preference and re-open capture session."""
-        previous_selected_device = self._selected_video_device
-        previous_source = self._image_source
-        previous_kind = self._preferred_video_kind
-        previous_rotation = self._rotation_degrees
+        with self._session_lock:
+            previous_selected_device = self._selected_video_device
+            previous_source = self._image_source
+            previous_kind = self._preferred_video_kind
+            previous_rotation = self._rotation_degrees
 
-        if source is not None:
-            raw = str(source).strip().lower()
-            allowed = {
-                "auto",
-                "dab",
-                "hdmi",
-                "hdmi-capture",
-                "capture-card",
-                "camera",
-                "camera-capture",
-                "webcam",
-            }
-            if raw not in allowed:
-                raise ValueError("Unsupported capture source")
-            normalized = self._normalize_source(source)
-            if normalized not in {"auto", "dab", "hdmi-capture", "camera-capture"}:
-                raise ValueError("Unsupported capture source")
-            if normalized == "hdmi-capture" and not self._config.enable_hdmi_capture:
-                raise ValueError("HDMI capture is disabled by ENABLE_HDMI_CAPTURE=false")
-            if normalized == "camera-capture" and not self._config.enable_camera_capture:
-                raise ValueError("Camera capture is disabled by ENABLE_CAMERA_CAPTURE=false")
-            self._image_source = normalized
+            if source is not None:
+                raw = str(source).strip().lower()
+                allowed = {
+                    "auto",
+                    "dab",
+                    "hdmi",
+                    "hdmi-capture",
+                    "capture-card",
+                    "camera",
+                    "camera-capture",
+                    "webcam",
+                }
+                if raw not in allowed:
+                    raise ValueError("Unsupported capture source")
+                normalized = self._normalize_source(source)
+                if normalized not in {"auto", "dab", "hdmi-capture", "camera-capture"}:
+                    raise ValueError("Unsupported capture source")
+                if normalized == "hdmi-capture" and not self._config.enable_hdmi_capture:
+                    raise ValueError("HDMI capture is disabled by ENABLE_HDMI_CAPTURE=false")
+                if normalized == "camera-capture" and not self._config.enable_camera_capture:
+                    raise ValueError("Camera capture is disabled by ENABLE_CAMERA_CAPTURE=false")
+                self._image_source = normalized
 
-        if preferred_kind is not None:
-            kind = str(preferred_kind).strip().lower()
-            if kind not in {"auto", "hdmi", "camera"}:
-                raise ValueError("preferred_kind must be one of: auto, hdmi, camera")
-            self._preferred_video_kind = kind
+            if preferred_kind is not None:
+                kind = str(preferred_kind).strip().lower()
+                if kind not in {"auto", "hdmi", "camera"}:
+                    raise ValueError("preferred_kind must be one of: auto, hdmi, camera")
+                self._preferred_video_kind = kind
 
-        if device is not None:
-            dev = str(device or "").strip()
-            if dev and (not dev.startswith("/dev/") or not os.path.exists(dev)):
-                raise ValueError("device must be an existing /dev/* path")
-            self._selected_video_device = dev or None
+            if device is not None:
+                dev = str(device or "").strip()
+                if dev and (not dev.startswith("/dev/") or not os.path.exists(dev)):
+                    raise ValueError("device must be an existing /dev/* path")
+                if dev and not self._is_capture_capable_device(dev):
+                    raise ValueError("device is not capture-capable (requires /dev/video* index0)")
+                self._selected_video_device = dev or None
+            elif source is not None and previous_source != self._image_source and self._selected_video_device:
+                # If caller switches capture source without specifying a device,
+                # avoid carrying over a stale explicit selection from the
+                # opposite class (camera vs HDMI capture card).
+                selected_kind = self._classify_video_device_kind(
+                    self._video_device_name(self._selected_video_device)
+                )
+                target_kind = self._effective_kind_preference()
+                if (
+                    target_kind in {"hdmi", "camera"}
+                    and selected_kind in {"hdmi", "camera"}
+                    and selected_kind != target_kind
+                ):
+                    logger.info(
+                        "Clearing stale selected video device %s (kind=%s) after source switch to %s",
+                        self._selected_video_device,
+                        selected_kind,
+                        self._image_source,
+                    )
+                    self._selected_video_device = None
 
-        if rotation_degrees is not None:
-            try:
-                self._rotation_degrees = HdmiCaptureSession.normalize_rotation_degrees(int(rotation_degrees))
-            except Exception:
-                raise ValueError("rotation_degrees must be one of: 0, 90, 180, 270, 360")
+            if rotation_degrees is not None:
+                try:
+                    self._rotation_degrees = HdmiCaptureSession.normalize_rotation_degrees(int(rotation_degrees))
+                except Exception:
+                    raise ValueError("rotation_degrees must be one of: 0, 90, 180, 270, 360")
 
-        selection_changed = (
-            previous_selected_device != self._selected_video_device
-            or previous_source != self._image_source
-            or previous_kind != self._preferred_video_kind
-            or previous_rotation != self._rotation_degrees
-        )
-
-        self.close()
-        self._next_hdmi_probe_ts = 0.0
-        self._warned_no_hdmi = False
-        self._hdmi = self._init_hdmi_session()
-
-        if selection_changed:
-            logger.info(
-                "Capture selection changed: source=%s preferred_kind=%s device=%s",
-                self._image_source,
-                self._preferred_video_kind,
-                self._selected_video_device or "auto",
+            selection_changed = (
+                previous_selected_device != self._selected_video_device
+                or previous_source != self._image_source
+                or previous_kind != self._preferred_video_kind
+                or previous_rotation != self._rotation_degrees
             )
 
-        if persist:
-            self._save_capture_preference()
+            self.close()
+            self._next_hdmi_probe_ts = 0.0
+            self._warned_no_hdmi = False
 
-        return self.capture_source_status()
+            # Make camera switching return quickly; stream endpoints will lazily
+            # open and stabilize the session on demand.
+            self._hdmi = None
+
+            if selection_changed:
+                logger.info(
+                    "Capture selection changed: source=%s preferred_kind=%s device=%s",
+                    self._image_source,
+                    self._preferred_video_kind,
+                    self._selected_video_device or "auto",
+                )
+
+            if persist:
+                self._save_capture_preference()
+
+            return self.capture_source_status()
 
     def _init_hdmi_session(self) -> Optional[HdmiCaptureSession]:
         if self._image_source not in {"auto", "hdmi-capture", "camera-capture"}:
@@ -307,32 +372,37 @@ class ScreenCapture:
             return None
 
         configured = (self._selected_video_device or self._config.hdmi_capture_device or "").strip()
+        if configured and not self._is_capture_capable_device(configured):
+            logger.warning("Ignoring non-capture configured device (index != 0): %s", configured)
+            configured = ""
         kind_pref = self._effective_kind_preference()
         explicit_device_requested = bool(configured)
+        explicit_from_selection = bool((self._selected_video_device or "").strip())
 
-        candidates = []
+        device_details = self._list_video_device_details()
+        if self._image_source == "hdmi-capture":
+            device_details = [d for d in device_details if str(d.get("kind")) != "camera"]
+        elif self._image_source == "camera-capture":
+            device_details = [d for d in device_details if str(d.get("kind")) != "hdmi"]
+
+        device_details = [
+            d for d in device_details
+            if self._is_kind_enabled(str(d.get("kind") or "unknown"))
+            and bool(d.get("capture_capable", True))
+        ]
+        devs = [d["device"] for d in device_details]
+        if kind_pref in {"hdmi", "camera"}:
+            preferred = [d["device"] for d in device_details if d.get("kind") == kind_pref]
+            others = [d for d in devs if d not in preferred]
+            devs = preferred + others
+
+        candidates: list[str] = []
         if configured:
             candidates.append(configured)
-
-        # If an explicit device is configured (UI/env), do not silently fall back
-        # to another camera/capture card. This prevents Gemini from receiving
-        # screenshots from the wrong physical source.
-        if not explicit_device_requested:
-            device_details = self._list_video_device_details()
-            if self._image_source == "hdmi-capture":
-                device_details = [d for d in device_details if str(d.get("kind")) != "camera"]
-            elif self._image_source == "camera-capture":
-                device_details = [d for d in device_details if str(d.get("kind")) != "hdmi"]
-
-            device_details = [
-                d for d in device_details
-                if self._is_kind_enabled(str(d.get("kind") or "unknown"))
-            ]
-            devs = [d["device"] for d in device_details]
-            if kind_pref in {"hdmi", "camera"}:
-                preferred = [d["device"] for d in device_details if d.get("kind") == kind_pref]
-                others = [d for d in devs if d not in preferred]
-                devs = preferred + others
+        # Recovery path: if a previously selected /dev/videoN disappears or
+        # stops producing frames after switching sources, fall back to
+        # auto-discovered peers of the requested kind.
+        if not explicit_device_requested or explicit_from_selection:
             candidates.extend([d for d in devs if d not in candidates])
 
         candidate_errors = []
@@ -366,23 +436,9 @@ class ScreenCapture:
                     candidate_errors.append(f"{device}: {session.last_error}")
                 continue
 
-            # Validate by warming up a few frames; some cards need a brief delay
-            # right after open before frames become readable.
-            frame_ok = False
-            for _ in range(4):
-                if session.read_frame() is not None:
-                    frame_ok = True
-                    break
-                time.sleep(0.1)
-
-            if not frame_ok:
-                if session.last_error:
-                    candidate_errors.append(f"{device}: {session.last_error}")
-                session.close()
-                continue
-
             logger.info("HDMI capture ready: device=%s", device)
             self._warned_no_hdmi = False
+            self._last_hdmi_error = None
             return session
 
         if not self._warned_no_hdmi:
@@ -398,7 +454,7 @@ class ScreenCapture:
                 logger.info("No HDMI capture device detected; using DAB screenshot fallback")
             else:
                 logger.info("No HDMI capture device detected")
-            if explicit_device_requested:
+            if explicit_device_requested and not explicit_from_selection:
                 logger.warning(
                     "Configured capture device could not be opened; refusing fallback to a different device: %s",
                     configured,
@@ -414,6 +470,15 @@ class ScreenCapture:
                 )
             if candidate_errors:
                 logger.info("HDMI probe errors: %s", " | ".join(candidate_errors[:4]))
+                self._last_hdmi_error = candidate_errors[0]
+            elif explicit_device_requested and not explicit_from_selection:
+                self._last_hdmi_error = f"Configured device could not be opened: {configured}"
+            elif video_devices and unreadable:
+                self._last_hdmi_error = (
+                    "Video device permission issue: at least one /dev/video* node is unreadable"
+                )
+            else:
+                self._last_hdmi_error = "No readable HDMI/camera capture device detected"
             self._warned_no_hdmi = True
         return None
 
@@ -471,26 +536,59 @@ class ScreenCapture:
 
     def _capture_from_hdmi(self) -> Optional[str]:
         """Capture one frame from HDMI capture card as PNG base64."""
-        if self._hdmi is None:
-            now = time.monotonic()
-            if now < self._next_hdmi_probe_ts:
+        with self._session_lock:
+            if self._hdmi is None:
+                now = time.monotonic()
+                if now < self._next_hdmi_probe_ts:
+                    return None
+                self._next_hdmi_probe_ts = now + self._hdmi_reprobe_interval_s
+                self._hdmi = self._init_hdmi_session()
+            if self._hdmi is None:
                 return None
+
+            image_b64 = self._hdmi.capture_png_base64()
+            if image_b64 is None and self._hdmi.last_error:
+                self._last_hdmi_error = self._hdmi.last_error
+                logger.warning("HDMI capture failed: %s", self._hdmi.last_error)
+                # A transient read miss should not immediately tear down the
+                # shared session for every consumer. Retry once with a fresh
+                # open before giving up.
+                failed_session = self._hdmi
+                failed_session.close()
+                self._hdmi = self._init_hdmi_session()
+                if self._hdmi is not None:
+                    image_b64 = self._hdmi.capture_png_base64()
+                if image_b64 is None:
+                    if self._hdmi is not None:
+                        self._hdmi.close()
+                    self._hdmi = None
+            elif image_b64 is not None:
+                self._last_hdmi_error = None
+            return image_b64
+
+    def ensure_hdmi_session(self, force: bool = False) -> bool:
+        """Best-effort ensure the shared HDMI/camera session is open."""
+        with self._session_lock:
+            if self._hdmi is not None:
+                return True
+            now = time.monotonic()
+            if not force and now < self._next_hdmi_probe_ts:
+                return False
             self._next_hdmi_probe_ts = now + self._hdmi_reprobe_interval_s
             self._hdmi = self._init_hdmi_session()
-        if self._hdmi is None:
-            return None
-
-        image_b64 = self._hdmi.capture_png_base64()
-        if image_b64 is None and self._hdmi.last_error:
-            logger.warning("HDMI capture failed: %s", self._hdmi.last_error)
-            self._hdmi.close()
-            self._hdmi = None
-        return image_b64
+            return self._hdmi is not None
 
     def capture_source_status(self) -> Dict[str, Any]:
         """Return capture source state for API/UI diagnostics."""
-        hdmi_available = self._hdmi is not None
-        hdmi_info = self._hdmi.device_info() if self._hdmi else {}
+        with self._session_lock:
+            hdmi_available = self._hdmi is not None
+            hdmi_info = self._hdmi.device_info() if self._hdmi else {}
+            hdmi_device = self._hdmi.device if self._hdmi else None
+            configured_source = self._image_source
+            selected_video_device = self._selected_video_device
+            preferred_video_kind = self._preferred_video_kind
+            effective_preferred_kind = self._effective_kind_preference()
+            rotation_degrees = self._rotation_degrees
         video_details = self._list_video_device_details()
         video_devices = [d["device"] for d in video_details]
         device_readable = {dev: bool(os.access(dev, os.R_OK)) for dev in video_devices}
@@ -501,17 +599,18 @@ class ScreenCapture:
             user_in_video_group = None
 
         return {
-            "configured_source": self._image_source,
-            "hdmi_configured": self._image_source in {"auto", "hdmi-capture", "camera-capture"},
+            "configured_source": configured_source,
+            "hdmi_configured": configured_source in {"auto", "hdmi-capture", "camera-capture"},
             "hdmi_available": hdmi_available,
-            "hdmi_device": self._hdmi.device if self._hdmi else None,
+            "hdmi_device": hdmi_device,
             "hdmi_info": hdmi_info,
-            "rotation_degrees": self._rotation_degrees,
+            "hdmi_last_error": self._last_hdmi_error,
+            "rotation_degrees": rotation_degrees,
             "enable_hdmi_capture": bool(self._config.enable_hdmi_capture),
             "enable_camera_capture": bool(self._config.enable_camera_capture),
-            "selected_video_device": self._selected_video_device,
-            "preferred_video_kind": self._preferred_video_kind,
-            "effective_preferred_kind": self._effective_kind_preference(),
+            "selected_video_device": selected_video_device,
+            "preferred_video_kind": preferred_video_kind,
+            "effective_preferred_kind": effective_preferred_kind,
             "video_devices": video_devices,
             "video_device_details": video_details,
             "device_readable": device_readable,
@@ -520,29 +619,63 @@ class ScreenCapture:
 
     def get_hdmi_stream_frame_jpeg(self, quality: Optional[int] = None) -> Optional[bytes]:
         """Capture one HDMI frame encoded as JPEG for MJPEG web streaming."""
-        if self._hdmi is None:
-            now = time.monotonic()
-            if now < self._next_hdmi_probe_ts:
+        with self._session_lock:
+            if self._hdmi is None:
+                now = time.monotonic()
+                if now < self._next_hdmi_probe_ts:
+                    return None
+                self._next_hdmi_probe_ts = now + self._hdmi_reprobe_interval_s
+                self._hdmi = self._init_hdmi_session()
+            if self._hdmi is None:
                 return None
-            self._next_hdmi_probe_ts = now + self._hdmi_reprobe_interval_s
-            self._hdmi = self._init_hdmi_session()
-        if self._hdmi is None:
-            return None
 
-        jpeg_quality = (
-            int(quality)
-            if quality is not None
-            else int(getattr(self._config, "hdmi_stream_jpeg_quality", 80))
-        )
-        frame = self._hdmi.capture_jpeg_bytes(quality=jpeg_quality)
-        if frame is None:
-            self._hdmi.close()
-            self._hdmi = None
-        return frame
+            jpeg_quality = (
+                int(quality)
+                if quality is not None
+                else int(getattr(self._config, "hdmi_stream_jpeg_quality", 80))
+            )
+            frame = self._hdmi.capture_jpeg_bytes(quality=jpeg_quality)
+            if frame is None:
+                failed_session = self._hdmi
+                failed_session.close()
+                self._hdmi = self._init_hdmi_session()
+                if self._hdmi is not None:
+                    frame = self._hdmi.capture_jpeg_bytes(quality=jpeg_quality)
+                if frame is None:
+                    if self._hdmi is not None:
+                        self._hdmi.close()
+                    self._hdmi = None
+            return frame
+
+    def get_hdmi_stream_frame_raw(self) -> Optional[Any]:
+        """Capture one HDMI frame as a raw ndarray for server-side WebRTC tracks."""
+        with self._session_lock:
+            if self._hdmi is None:
+                now = time.monotonic()
+                if now < self._next_hdmi_probe_ts:
+                    return None
+                self._next_hdmi_probe_ts = now + self._hdmi_reprobe_interval_s
+                self._hdmi = self._init_hdmi_session()
+            if self._hdmi is None:
+                return None
+
+            frame = self._hdmi.read_frame()
+            if frame is None:
+                failed_session = self._hdmi
+                failed_session.close()
+                self._hdmi = self._init_hdmi_session()
+                if self._hdmi is not None:
+                    frame = self._hdmi.read_frame()
+                if frame is None:
+                    if self._hdmi is not None:
+                        self._hdmi.close()
+                    self._hdmi = None
+            return frame
 
     def close(self) -> None:
         """Release optional capture resources."""
-        if self._hdmi is not None:
-            logger.info("Closing active HDMI/camera capture session: device=%s", self._hdmi.device)
-            self._hdmi.close()
-            self._hdmi = None
+        with self._session_lock:
+            if self._hdmi is not None:
+                logger.info("Closing active HDMI/camera capture session: device=%s", self._hdmi.device)
+                self._hdmi.close()
+                self._hdmi = None

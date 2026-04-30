@@ -249,12 +249,15 @@ class ConfigSummaryResponse(BaseModel):
 
 class RuntimeModelUpdateRequest(BaseModel):
     model: str
+    target: str = "planner"
 
 
 class RuntimeModelResponse(BaseModel):
     success: bool
     active_vertex_planner_model: str
     configured_vertex_planner_model: str
+    active_vertex_live_model: str
+    configured_vertex_live_model: str
     available_models: List[str] = Field(default_factory=list)
     message: Optional[str] = None
 
@@ -265,6 +268,7 @@ class CaptureSourceResponse(BaseModel):
     hdmi_available: bool
     hdmi_device: Optional[str] = None
     hdmi_info: Dict[str, float] = Field(default_factory=dict)
+    hdmi_last_error: Optional[str] = None
     enable_hdmi_capture: bool = True
     enable_camera_capture: bool = True
     selected_video_device: Optional[str] = None

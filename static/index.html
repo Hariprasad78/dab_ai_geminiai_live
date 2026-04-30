@@ -5,111 +5,312 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Vertex Live DAB Agent</title>
   <style>
+    :root {
+      --bg-0: #050505;
+      --bg-1: #0b0b0c;
+      --bg-2: #141416;
+      --panel: rgba(15, 15, 16, 0.82);
+      --panel-strong: rgba(22, 22, 24, 0.96);
+      --panel-soft: rgba(29, 29, 32, 0.78);
+      --border: rgba(255, 255, 255, 0.1);
+      --border-strong: rgba(255, 255, 255, 0.18);
+      --text: #f5f5f5;
+      --muted: #b0b0b5;
+      --soft: #808087;
+      --accent: #3f3f46;
+      --accent-2: #71717a;
+      --accent-3: #a1a1aa;
+      --danger: #ff6b6b;
+      --surface-0: #09090b;
+      --surface-1: #111113;
+      --surface-2: #18181b;
+      --surface-3: #27272a;
+      --surface-4: #3f3f46;
+      --surface-5: #52525b;
+      --text-strong: #fafafa;
+      --text-muted: #b0b0b5;
+      --text-dim: #808087;
+      --text-faint: #71717a;
+      --text-on-accent: #fafafa;
+      --input-bg: linear-gradient(180deg, rgba(24, 24, 27, 0.96), rgba(14, 14, 16, 0.96));
+      --input-border: rgba(255, 255, 255, 0.12);
+      --input-hover: rgba(255, 255, 255, 0.18);
+      --focus: #a1a1aa;
+      --focus-ring: rgba(161, 161, 170, 0.18);
+      --empty-bg: rgba(24, 24, 27, 0.72);
+      --empty-border: rgba(255, 255, 255, 0.08);
+      --empty-text: #808087;
+      --tab-idle-bg: #27272a;
+      --tab-idle-border: #3f3f46;
+      --tab-idle-text: #b0b0b5;
+      --tab-hover-bg: #3f3f46;
+      --tab-hover-text: #f5f5f5;
+      --tab-active-bg: linear-gradient(135deg, #52525b, #71717a);
+      --tab-active-border: #71717a;
+      --tab-active-text: #fafafa;
+      --dropdown-bg: #18181b;
+      --dropdown-hover: #27272a;
+      --info: #d4d4d8;
+      --success: #86efac;
+      --warning: #fcd34d;
+      --error: #fca5a5;
+      --shadow-lg: 0 24px 80px rgba(1, 6, 18, 0.48);
+      --shadow-md: 0 14px 34px rgba(2, 8, 23, 0.34);
+      --radius-xl: 1.35rem;
+      --radius-lg: 1rem;
+      --radius-md: 0.72rem;
+    }
+    body[data-theme="light"] {
+      --bg-0: #f4f8fc;
+      --bg-1: #e9f0f8;
+      --bg-2: #dfe9f6;
+      --panel: rgba(255, 255, 255, 0.82);
+      --panel-strong: rgba(249, 252, 255, 0.96);
+      --panel-soft: rgba(240, 246, 253, 0.84);
+      --border: rgba(41, 84, 128, 0.12);
+      --border-strong: rgba(53, 106, 163, 0.25);
+      --text: #10233a;
+      --muted: #4f6785;
+      --soft: #607795;
+      --accent: #0ea5a4;
+      --accent-2: #3b82f6;
+      --accent-3: #d97706;
+      --danger: #dc2626;
+      --surface-0: #ffffff;
+      --surface-1: #f8fbff;
+      --surface-2: #edf3fa;
+      --surface-3: #dfe9f6;
+      --surface-4: #c9d7e8;
+      --surface-5: #bfd1e6;
+      --text-strong: #10233a;
+      --text-muted: #4f6785;
+      --text-dim: #607795;
+      --text-faint: #7a8ea9;
+      --text-on-accent: #10233a;
+      --input-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(242, 247, 253, 0.96));
+      --input-border: rgba(41, 84, 128, 0.14);
+      --input-hover: rgba(53, 106, 163, 0.24);
+      --focus: #0ea5a4;
+      --focus-ring: rgba(14, 165, 164, 0.16);
+      --empty-bg: rgba(237, 243, 250, 0.9);
+      --empty-border: rgba(41, 84, 128, 0.08);
+      --empty-text: #607795;
+      --tab-idle-bg: #edf3fa;
+      --tab-idle-border: #c9d7e8;
+      --tab-idle-text: #4f6785;
+      --tab-hover-bg: #dfe9f6;
+      --tab-hover-text: #10233a;
+      --tab-active-bg: linear-gradient(135deg, #d9e7f4, #bfd1e6);
+      --tab-active-border: #9eb7d3;
+      --tab-active-text: #10233a;
+      --dropdown-bg: #ffffff;
+      --dropdown-hover: #edf3fa;
+      --info: #35506e;
+      --success: #166534;
+      --warning: #b45309;
+      --error: #b91c1c;
+      --shadow-lg: 0 24px 80px rgba(32, 68, 107, 0.12);
+      --shadow-md: 0 14px 34px rgba(32, 68, 107, 0.1);
+    }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: 'Segoe UI', system-ui, sans-serif;
-      background: radial-gradient(1200px 400px at 10% -10%, rgba(56, 189, 248, 0.16), transparent 60%),
-                  radial-gradient(1000px 460px at 100% 0%, rgba(59, 130, 246, 0.12), transparent 60%),
-                  #050b18;
-      color: #e2e8f0;
+      font-family: "Space Grotesk", "Segoe UI Variable", "Aptos", "Trebuchet MS", sans-serif;
+      background:
+        radial-gradient(960px 560px at -10% -10%, rgba(255, 255, 255, 0.06), transparent 54%),
+        radial-gradient(840px 520px at 110% 0%, rgba(113, 113, 122, 0.14), transparent 52%),
+        linear-gradient(180deg, #141416 0%, #0b0b0c 34%, #050505 100%);
+      color: var(--text);
       min-height: 100vh;
       background-attachment: fixed;
+      overflow-x: hidden;
+      transition: background 240ms ease, color 180ms ease;
     }
     body::before {
       content: '';
       position: fixed;
       inset: 0;
       pointer-events: none;
-      background-image: linear-gradient(rgba(56, 189, 248, 0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(56, 189, 248, 0.04) 1px, transparent 1px);
-      background-size: 30px 30px;
-      mask-image: radial-gradient(circle at center, black, transparent 75%);
+      background:
+        linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+      background-size: 42px 42px;
+      mask-image: radial-gradient(circle at center, black 20%, transparent 78%);
+    }
+    body::after {
+      content: '';
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background:
+        radial-gradient(circle at 20% 20%, rgba(255,255,255,0.06), transparent 0.7%),
+        radial-gradient(circle at 80% 30%, rgba(255,255,255,0.05), transparent 0.8%),
+        radial-gradient(circle at 60% 70%, rgba(255,255,255,0.04), transparent 0.7%);
+      opacity: 0.65;
     }
     header {
-      background: rgba(10, 18, 37, 0.85);
-      backdrop-filter: blur(10px);
-      padding: 1rem 2rem;
-      border-bottom: 1px solid #1f3b63;
+      background: linear-gradient(180deg, rgba(12, 12, 13, 0.88), rgba(18, 18, 20, 0.72));
+      backdrop-filter: blur(18px) saturate(140%);
+      padding: 1rem 1.5rem;
+      border-bottom: 1px solid var(--border);
       display: flex;
       align-items: center;
       gap: 1rem;
       position: sticky;
       top: 0;
       z-index: 30;
+      box-shadow: 0 10px 32px rgba(2, 8, 23, 0.24);
     }
-    header h1 { font-size: 1.25rem; font-weight: 700; color: #f8fafc; letter-spacing: 0.02em; }
-    .badge { background: linear-gradient(135deg, #06b6d4, #3b82f6); color: white; font-size: 0.7rem; padding: 0.2rem 0.5rem; border-radius: 9999px; font-weight: 700; }
-    .badge.mock { background: #f59e0b; }
-    main { max-width: 1480px; margin: 1.2rem auto 2rem; padding: 0 1.25rem; display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    header h1 {
+      font-size: clamp(1.1rem, 1rem + 0.5vw, 1.5rem);
+      font-weight: 700;
+      color: #fafafa;
+      letter-spacing: 0.015em;
+    }
+    .badge {
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      color: #fafafa;
+      font-size: 0.68rem;
+      padding: 0.28rem 0.65rem;
+      border-radius: 9999px;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      box-shadow: 0 8px 24px rgba(113, 113, 122, 0.24);
+    }
+    .badge.mock { background: linear-gradient(135deg, var(--accent-3), #737373); color: #111111; }
+    main {
+      width: min(100%, 1720px);
+      margin: 1rem auto 2rem;
+      padding: 0 1rem 1rem;
+      display: grid;
+      grid-template-columns: minmax(0, 1.12fr) minmax(0, 0.88fr);
+      gap: 1rem;
+      align-items: start;
+    }
     .card {
-      background: linear-gradient(180deg, rgba(15, 25, 45, 0.93), rgba(11, 19, 37, 0.93));
-      border: 1px solid #243d62;
-      box-shadow: 0 10px 24px rgba(2, 8, 23, 0.45), inset 0 1px 0 rgba(148, 163, 184, 0.08);
-      border-radius: 1rem;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255,255,255,0) 24%),
+        linear-gradient(180deg, var(--panel), var(--panel-strong));
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow-md), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+      border-radius: var(--radius-xl);
       padding: 1rem;
+      overflow: hidden;
+      position: relative;
+      transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease, background 180ms ease;
     }
-    .card h2 { font-size: 0.9rem; font-weight: 600; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 1rem; }
-    label { display: block; font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.35rem; }
+    .card::before {
+      content: '';
+      position: absolute;
+      inset: 0 auto auto 0;
+      width: 100%;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.24), transparent);
+      opacity: 0.65;
+    }
+    .card:hover {
+      transform: translateY(-2px);
+      border-color: var(--border-strong);
+      box-shadow: var(--shadow-lg), inset 0 1px 0 rgba(255,255,255,0.08);
+    }
+    .card h2 {
+      font-size: 0.82rem;
+      font-weight: 700;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      margin-bottom: 0.95rem;
+    }
+    label { display: block; font-size: 0.82rem; color: var(--muted); margin-bottom: 0.35rem; font-weight: 600; }
     input, textarea, select {
-      width: 100%; background: #0f172a; border: 1px solid #334155; border-radius: 0.5rem;
-      color: #e2e8f0; padding: 0.6rem 0.75rem; font-size: 0.9rem; outline: none;
+      width: 100%;
+      background: var(--input-bg);
+      border: 1px solid var(--input-border);
+      border-radius: 0.85rem;
+      color: var(--text);
+      padding: 0.72rem 0.9rem;
+      font-size: 0.9rem;
+      outline: none;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+      transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease, transform 160ms ease;
     }
-    input:focus, textarea:focus { border-color: #38bdf8; box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.18); }
+    input:hover, textarea:hover, select:hover { border-color: var(--input-hover); }
+    input:focus, textarea:focus, select:focus {
+      border-color: var(--focus);
+      box-shadow: 0 0 0 3px var(--focus-ring), 0 10px 24px rgba(0, 0, 0, 0.22);
+      transform: translateY(-1px);
+    }
     textarea { resize: vertical; min-height: 60px; }
     button {
-      background: #0ea5e9; color: white; border: none; border-radius: 0.5rem;
-      padding: 0.6rem 1.2rem; font-size: 0.9rem; font-weight: 600; cursor: pointer;
-      transition: background 0.15s;
+      background: linear-gradient(135deg, #3f3f46, #71717a);
+      color: #fafafa;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 999px;
+      padding: 0.68rem 1.15rem;
+      font-size: 0.88rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform 160ms ease, box-shadow 160ms ease, filter 160ms ease, background 160ms ease;
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.24);
     }
-    button:hover { background: #0284c7; }
-    button.danger { background: #ef4444; }
-    button.danger:hover { background: #dc2626; }
-    button.secondary { background: #334155; }
-    button.secondary:hover { background: #475569; }
+    button:hover { transform: translateY(-1px); filter: brightness(1.05); }
+    button:active { transform: translateY(0); }
+    button.danger { background: linear-gradient(135deg, #ff7b7b, #ff4d6d); color: #fff5f5; }
+    button.secondary {
+      background: linear-gradient(180deg, rgba(29, 29, 32, 0.96), rgba(20, 20, 22, 0.96));
+      color: #e4e4e7;
+      border-color: rgba(255, 255, 255, 0.12);
+      box-shadow: none;
+    }
     .btn-row { display: flex; gap: 0.5rem; margin-top: 0.75rem; flex-wrap: wrap; }
     .status-pill {
       display: inline-block; font-size: 0.75rem; font-weight: 600; padding: 0.2rem 0.6rem;
       border-radius: 9999px;
     }
-    .PENDING { background: #334155; color: #94a3b8; }
-    .RUNNING { background: #0369a1; color: #bae6fd; }
-    .DONE { background: #166534; color: #86efac; }
-    .FAILED { background: #7f1d1d; color: #fca5a5; }
-    .TIMEOUT { background: #78350f; color: #fcd34d; }
-    .ERROR { background: #7f1d1d; color: #fca5a5; }
-    .STOPPED { background: #374151; color: #9ca3af; }
+    .PENDING { background: var(--surface-3); color: var(--text-muted); }
+    .RUNNING { background: rgba(113, 113, 122, 0.18); color: var(--info); }
+    .DONE { background: rgba(34, 197, 94, 0.12); color: var(--success); }
+    .FAILED { background: rgba(239, 68, 68, 0.12); color: var(--error); }
+    .TIMEOUT { background: rgba(245, 158, 11, 0.14); color: var(--warning); }
+    .ERROR { background: rgba(239, 68, 68, 0.12); color: var(--error); }
+    .STOPPED { background: var(--surface-4); color: var(--text-muted); }
     #run-list { display: flex; flex-direction: column; gap: 0.6rem; max-height: 380px; overflow-y: auto; }
     .run-item {
-      background: #0f172a; border: 1px solid #334155; border-radius: 0.5rem;
-      padding: 0.75rem 1rem; cursor: pointer; transition: border-color 0.15s, transform 0.12s;
+      background: linear-gradient(180deg, rgba(24, 24, 27, 0.96), rgba(14, 14, 16, 0.96));
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 0.95rem;
+      padding: 0.85rem 1rem;
+      cursor: pointer;
+      transition: border-color 0.15s, transform 0.12s, box-shadow 0.15s ease, background 0.15s ease;
     }
-    .run-item:hover { border-color: #38bdf8; transform: translateY(-1px); }
-    .run-item.selected { border-color: #0ea5e9; background: #0c1a2e; }
+    .run-item:hover { border-color: rgba(161, 161, 170, 0.4); transform: translateY(-1px); box-shadow: 0 18px 30px rgba(0, 0, 0, 0.28); }
+    .run-item.selected { border-color: rgba(161, 161, 170, 0.46); background: linear-gradient(180deg, rgba(34, 34, 37, 0.98), rgba(19, 19, 21, 0.98)); }
     .run-goal { font-size: 0.9rem; font-weight: 500; margin-bottom: 0.3rem; }
-    .run-meta { font-size: 0.75rem; color: #64748b; }
+    .run-meta { font-size: 0.75rem; color: var(--text-dim); }
     #detail-panel { grid-column: 1 / -1; }
     .detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0.75rem; margin-bottom: 1rem; }
-    .stat { background: #0f172a; border: 1px solid #334155; border-radius: 0.65rem; padding: 0.75rem 1rem; }
-    .stat-label { font-size: 0.75rem; color: #64748b; margin-bottom: 0.2rem; }
+    .stat { background: linear-gradient(180deg, rgba(24, 24, 27, 0.9), rgba(16, 16, 18, 0.9)); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 0.9rem; padding: 0.85rem 1rem; }
+    .stat-label { font-size: 0.74rem; color: var(--soft); margin-bottom: 0.2rem; text-transform: uppercase; letter-spacing: 0.08em; }
     .stat-value { font-size: 1.1rem; font-weight: 600; color: #f1f5f9; }
-    #action-log, #ai-log, #dab-log { max-height: 220px; overflow-y: auto; font-family: monospace; font-size: 0.8rem; color: #94a3b8; }
-    #friendly-log, #diagnosis-log, #narration-log { max-height: 240px; overflow-y: auto; font-size: 0.85rem; color: #cbd5e1; }
-    .log-line { padding: 0.15rem 0; border-bottom: 1px solid #1e293b; }
+    #action-log, #ai-log, #dab-log { max-height: 220px; overflow-y: auto; font-family: monospace; font-size: 0.8rem; color: var(--text-muted); }
+    #friendly-log, #diagnosis-log, #narration-log { max-height: 240px; overflow-y: auto; font-size: 0.85rem; color: var(--text); }
+    .log-line { padding: 0.15rem 0; border-bottom: 1px solid #27272a; }
     .log-line .PASS { color: #4ade80; }
     .log-line .FAIL { color: #f87171; }
-    #screenshot-img { max-width: 100%; border-radius: 0.5rem; border: 1px solid #334155; }
-    #hdmi-stream-img { max-width: 100%; border-radius: 0.5rem; border: 1px solid #334155; display: block; width: 100%; transition: opacity 220ms ease, filter 220ms ease; }
+    #screenshot-img { max-width: 100%; border-radius: 0.5rem; border: 1px solid #3f3f46; }
+    #hdmi-stream-img { max-width: 100%; border-radius: 0.5rem; border: 1px solid #3f3f46; display: block; width: 100%; transition: opacity 220ms ease, filter 220ms ease; }
     #hdmi-stream-container {
       position: relative;
       min-height: 210px;
       border-radius: 0.6rem;
       overflow: hidden;
-      background: #050f1f;
-      border: 1px solid #1e293b;
+      background: #09090b;
+      border: 1px solid #3f3f46;
       transition: box-shadow 220ms ease, border-color 220ms ease;
     }
     #hdmi-stream-container.switching {
-      border-color: #2563eb;
-      box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.18) inset;
+      border-color: #71717a;
+      box-shadow: 0 0 0 2px rgba(113, 113, 122, 0.18) inset;
     }
     #hdmi-stream-container.switching #hdmi-stream-img {
       opacity: 0.34;
@@ -122,8 +323,8 @@
       position: absolute;
       inset: auto 0 0 0;
       padding: 0.45rem 0.6rem;
-      background: linear-gradient(180deg, rgba(5,11,24,0), rgba(5,11,24,0.82) 55%, rgba(5,11,24,0.96));
-      color: #93c5fd;
+      background: linear-gradient(180deg, rgba(9,9,11,0), rgba(9,9,11,0.82) 55%, rgba(9,9,11,0.96));
+      color: #d4d4d8;
       font-size: 0.78rem;
       opacity: 0;
       transform: translateY(4px);
@@ -138,17 +339,17 @@
       margin-top: 0.45rem;
       font-size: 0.78rem;
       min-height: 1rem;
-      color: #93c5fd;
+      color: #d4d4d8;
       transition: opacity 180ms ease;
     }
     #audio-stream-player { width: 100%; margin-top: 0.6rem; }
     .remote-layout { display: grid; grid-template-columns: 1.1fr 1fr; gap: 1rem; align-items: start; }
-    .remote-panel { background: #0f172a; border: 1px solid #334155; border-radius: 0.6rem; padding: 0.8rem; }
+    .remote-panel { background: linear-gradient(180deg, rgba(24, 24, 27, 0.92), rgba(14, 14, 16, 0.94)); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 1rem; padding: 0.9rem; box-shadow: inset 0 1px 0 rgba(255,255,255,0.04); }
     .remote-mode-toolbar { display:flex; gap:0.5rem; align-items:end; flex-wrap:wrap; margin-bottom:0.75rem; }
     .remote-mode-toolbar > div { flex:1 1 180px; }
     .remote-meta { display:grid; grid-template-columns: repeat(2, minmax(160px, 1fr)); gap:0.4rem; margin-bottom:0.75rem; }
-    .remote-meta-chip { background:#111827; border:1px solid #334155; border-radius:0.45rem; padding:0.45rem 0.55rem; font-size:0.75rem; color:#cbd5e1; }
-    .ir-panel { border:1px dashed #334155; border-radius:0.6rem; padding:0.7rem; margin-bottom:0.75rem; background:#0b1325; }
+    .remote-meta-chip { background: rgba(24, 24, 27, 0.92); border:1px solid rgba(255, 255, 255, 0.1); border-radius:0.7rem; padding:0.55rem 0.65rem; font-size:0.75rem; color:#e4e4e7; }
+    .ir-panel { border:1px dashed rgba(255, 255, 255, 0.14); border-radius:0.95rem; padding:0.8rem; margin-bottom:0.75rem; background:linear-gradient(180deg, rgba(18, 18, 20, 0.94), rgba(10, 10, 11, 0.9)); }
     .remote-grid { display: grid; grid-template-columns: repeat(4, minmax(58px, 1fr)); gap: 0.4rem; }
     .key-btn { padding: 0.45rem 0.35rem; font-size: 0.75rem; }
     .dpad-wrap { max-width: 260px; margin-bottom: 0.8rem; }
@@ -157,47 +358,94 @@
     .k-red { background: #dc2626; }
     .k-green { background: #16a34a; }
     .k-yellow { background: #ca8a04; }
-    .k-blue { background: #2563eb; }
-    details.remote-optional { margin-top: 0.8rem; border-top: 1px dashed #334155; padding-top: 0.8rem; }
-    details.remote-optional > summary { cursor: pointer; color: #93c5fd; font-size: 0.8rem; margin-bottom: 0.6rem; }
+    .k-blue { background: #52525b; }
+    details.remote-optional { margin-top: 0.8rem; border-top: 1px dashed #3f3f46; padding-top: 0.8rem; }
+    details.remote-optional > summary { cursor: pointer; color: #d4d4d8; font-size: 0.8rem; margin-bottom: 0.6rem; }
     .key-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.4rem; max-width: 220px; }
     .key-grid button { padding: 0.5rem; font-size: 0.8rem; }
     .full-width { grid-column: 1 / -1; }
-    #status-bar { text-align: center; font-size: 0.75rem; color: #94a3b8; margin-top: 0.5rem; display:flex; gap:0.4rem; align-items:center; justify-content:center; flex-wrap:wrap; padding: 0 1rem 1rem; }
-    #api-base-input { width: min(460px, 90vw); background:#0f172a; border:1px solid #334155; color:#cbd5e1; border-radius:0.4rem; padding:0.3rem 0.5rem; font-size:0.75rem; }
+    #status-bar { text-align: center; font-size: 0.75rem; color: var(--muted); margin-top: 0.5rem; display:flex; gap:0.4rem; align-items:center; justify-content:center; flex-wrap:wrap; padding: 0 1rem 1rem; }
+    #api-base-input { width: min(460px, 90vw); background:#111113; border:1px solid #3f3f46; color:#e4e4e7; border-radius:0.4rem; padding:0.3rem 0.5rem; font-size:0.75rem; }
     .mini-btn { padding: 0.3rem 0.55rem; font-size:0.7rem; border-radius:0.4rem; }
-    .empty-state { color: #475569; font-size: 0.85rem; text-align: center; padding: 1.5rem; }
+    .empty-state { color: var(--empty-text); font-size: 0.85rem; text-align: center; padding: 1.5rem; background: var(--empty-bg); border: 1px solid var(--empty-border); border-radius: 0.8rem; }
     .error-msg { color: #f87171; font-size: 0.8rem; margin-top: 0.5rem; }
-    .subtitle { font-size: 0.75rem; color: #7dd3fc; letter-spacing: 0.06em; text-transform: uppercase; }
+    .subtitle { font-size: 0.75rem; color: #d4d4d8; letter-spacing: 0.06em; text-transform: uppercase; }
     .header-right { margin-left:auto; display:flex; gap:0.6rem; align-items:center; }
+    .theme-toolbar { display:flex; gap:0.45rem; align-items:center; padding:0.35rem 0.45rem; border:1px solid var(--border); border-radius:999px; background:rgba(24, 24, 27, 0.55); backdrop-filter: blur(10px); }
+    .theme-toolbar label { margin:0; font-size:0.72rem; color:var(--muted); }
+    .theme-toolbar select { width:auto; min-width:112px; padding:0.38rem 1.8rem 0.38rem 0.65rem; font-size:0.76rem; border-radius:999px; }
+    body[data-theme="light"] header {
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(245, 250, 255, 0.78));
+      box-shadow: 0 10px 28px rgba(76, 112, 150, 0.12);
+    }
+    body[data-theme="light"] .theme-toolbar { background: rgba(255, 255, 255, 0.72); }
+    body[data-theme="light"] .card,
+    body[data-theme="light"] .hero-panel,
+    body[data-theme="light"] .remote-panel,
+    body[data-theme="light"] .yts-runner-panel,
+    body[data-theme="light"] .stat,
+    body[data-theme="light"] .run-item,
+    body[data-theme="light"] .kpi {
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(245, 250, 255, 0.94));
+      color: var(--text);
+    }
+    body[data-theme="light"] input,
+    body[data-theme="light"] textarea,
+    body[data-theme="light"] select,
+    body[data-theme="light"] .remote-meta-chip,
+    body[data-theme="light"] .ir-panel,
+    body[data-theme="light"] .settings-table-wrap,
+    body[data-theme="light"] .sysstate-panel,
+    body[data-theme="light"] .yts-job-item,
+    body[data-theme="light"] .yts-result-box,
+    body[data-theme="light"] .yts-chip-list {
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(242, 247, 253, 0.96));
+      color: var(--text);
+    }
+    body[data-theme="light"] .subtitle,
+    body[data-theme="light"] .model-status,
+    body[data-theme="light"] .device-status,
+    body[data-theme="light"] .hero-sub,
+    body[data-theme="light"] .perf-legend,
+    body[data-theme="light"] .yts-subtle {
+      color: #557297;
+    }
+    body[data-theme="light"] .quick-nav button,
+    body[data-theme="light"] .tab-btn,
+    body[data-theme="light"] button.secondary,
+    body[data-theme="light"] .yts-download-link.secondary {
+      background: linear-gradient(180deg, rgba(239, 246, 255, 0.96), rgba(227, 238, 252, 0.96));
+      color: #143250;
+    }
     .device-toolbar { display:flex; gap:0.45rem; align-items:center; flex-wrap:wrap; }
-    .device-toolbar label { margin:0; font-size:0.72rem; color:#94a3b8; }
+    .device-toolbar label { margin:0; font-size:0.72rem; color:var(--text-muted); }
     .device-toolbar select { width:min(300px, 56vw); padding:0.35rem 0.45rem; font-size:0.78rem; }
     .model-toolbar { display:flex; gap:0.45rem; align-items:center; flex-wrap:wrap; }
-    .model-toolbar label { margin:0; font-size:0.72rem; color:#94a3b8; }
+    .model-toolbar label { margin:0; font-size:0.72rem; color:var(--text-muted); }
     .model-toolbar select { width:min(290px, 52vw); padding:0.35rem 0.45rem; font-size:0.78rem; }
-    .model-status { font-size:0.72rem; color:#93c5fd; max-width:360px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-    .device-status { font-size:0.72rem; color:#93c5fd; }
+    .model-status { font-size:0.72rem; color:#d4d4d8; max-width:360px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .device-status { font-size:0.72rem; color:#d4d4d8; }
     .device-info-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:0.75rem; margin-bottom:0.9rem; }
     .device-window { display:grid; grid-template-columns:1fr 1fr; gap:0.8rem; }
-    .device-section { background:#0f172a; border:1px solid #334155; border-radius:0.65rem; padding:0.75rem; }
-    .device-section h3 { font-size:0.84rem; color:#93c5fd; margin-bottom:0.5rem; }
+    .device-section { background:#111113; border:1px solid #3f3f46; border-radius:0.65rem; padding:0.75rem; }
+    .device-section h3 { font-size:0.84rem; color:#d4d4d8; margin-bottom:0.5rem; }
     .device-kv { display:grid; grid-template-columns: minmax(120px, 0.8fr) 1.2fr; gap:0.35rem 0.55rem; font-size:0.8rem; }
-    .device-kv > div:nth-child(odd) { color:#94a3b8; }
-    .device-kv > div:nth-child(even) { color:#e2e8f0; word-break:break-word; }
+    .device-kv > div:nth-child(odd) { color:var(--text-muted); }
+    .device-kv > div:nth-child(even) { color:var(--text); word-break:break-word; }
     .device-chip-list { display:flex; flex-wrap:wrap; gap:0.35rem; }
-    .device-chip { display:inline-block; border:1px solid #334155; border-radius:999px; padding:0.2rem 0.5rem; font-size:0.72rem; color:#cbd5e1; }
+    .device-chip { display:inline-block; border:1px solid #3f3f46; border-radius:999px; padding:0.2rem 0.5rem; font-size:0.72rem; color:#e4e4e7; }
     .device-raw details { margin-top:0.6rem; }
-    .device-raw summary { cursor:pointer; color:#93c5fd; font-size:0.78rem; }
-    .device-raw pre { margin-top:0.45rem; max-height:180px; overflow:auto; font-size:0.72rem; color:#93c5fd; }
+    .device-raw summary { cursor:pointer; color:#d4d4d8; font-size:0.78rem; }
+    .device-raw pre { margin-top:0.45rem; max-height:180px; overflow:auto; font-size:0.72rem; color:#d4d4d8; }
     .settings-toolbar { display:grid; grid-template-columns: minmax(220px, 1fr) auto; gap:0.6rem; align-items:end; margin-bottom:0.75rem; }
-    .settings-meta { display:flex; flex-wrap:wrap; gap:0.6rem; font-size:0.76rem; color:#94a3b8; margin-bottom:0.65rem; }
-    .settings-table-wrap { border:1px solid #334155; border-radius:0.65rem; background:#0b1325; overflow:hidden; }
+    .settings-meta { display:flex; flex-wrap:wrap; gap:0.6rem; font-size:0.76rem; color:var(--text-muted); margin-bottom:0.65rem; }
+    .settings-table-wrap { border:1px solid #3f3f46; border-radius:0.65rem; background:#111113; overflow:hidden; }
     .settings-table-scroll { max-height:440px; overflow:auto; }
     .settings-table { width:100%; border-collapse:collapse; table-layout:fixed; font-size:0.78rem; }
-    .settings-table thead th { position:sticky; top:0; z-index:2; background:#12203a; color:#bfdbfe; text-align:left; padding:0.55rem; border-bottom:1px solid #334155; }
-    .settings-table tbody td { padding:0.5rem 0.55rem; border-bottom:1px solid #1e293b; vertical-align:top; color:#e2e8f0; word-break:break-word; }
-    .settings-table tbody tr:nth-child(2n) { background:rgba(15, 23, 42, 0.55); }
+    .settings-table thead th { position:sticky; top:0; z-index:2; background:#18181b; color:#e4e4e7; text-align:left; padding:0.55rem; border-bottom:1px solid #3f3f46; }
+    .settings-table tbody td { padding:0.5rem 0.55rem; border-bottom:1px solid #27272a; vertical-align:top; color:#e5e7eb; word-break:break-word; }
+    .settings-table tbody tr:nth-child(2n) { background:rgba(39, 39, 42, 0.45); }
     .settings-col-key { width:22%; }
     .settings-col-value { width:26%; }
     .settings-col-name { width:22%; }
@@ -205,49 +453,58 @@
     .settings-col-error { width:16%; }
     .settings-status-ok { color:#86efac; }
     .settings-status-fail { color:#fca5a5; }
-    .sysstate-meta { display:flex; flex-wrap:wrap; gap:0.6rem; font-size:0.76rem; color:#94a3b8; margin-bottom:0.65rem; }
+    .sysstate-meta { display:flex; flex-wrap:wrap; gap:0.6rem; font-size:0.76rem; color:var(--text-muted); margin-bottom:0.65rem; }
     .sysstate-grid { display:grid; grid-template-columns: 1fr 1fr; gap:0.75rem; }
-    .sysstate-panel { background:#0f172a; border:1px solid #334155; border-radius:0.65rem; overflow:hidden; }
-    .sysstate-panel h3 { font-size:0.82rem; color:#93c5fd; padding:0.55rem 0.7rem; border-bottom:1px solid #24374d; background:#0d1a31; }
+    .sysstate-panel { background:#111113; border:1px solid #3f3f46; border-radius:0.65rem; overflow:hidden; }
+    .sysstate-panel h3 { font-size:0.82rem; color:#d4d4d8; padding:0.55rem 0.7rem; border-bottom:1px solid #3f3f46; background:#18181b; }
     .sysstate-panel .body { padding:0.7rem; }
-    .sysstate-static-block { min-height:220px; max-height:260px; overflow:auto; border:1px solid #334155; border-radius:0.5rem; background:#0b1325; padding:0.55rem; }
-    .sysstate-op-actions { border:1px solid #334155; border-radius:0.5rem; background:#0b1325; padding:0.55rem; margin-bottom:0.55rem; max-height:320px; overflow:auto; display:grid; grid-template-columns:1fr; gap:0.5rem; }
-    .sysstate-op-card { border:1px solid #334155; border-radius:0.45rem; background:#0f172a; padding:0.5rem; }
+    .sysstate-static-block { min-height:220px; max-height:260px; overflow:auto; border:1px solid #3f3f46; border-radius:0.5rem; background:#111113; padding:0.55rem; }
+    .sysstate-op-actions { border:1px solid #3f3f46; border-radius:0.5rem; background:#111113; padding:0.55rem; margin-bottom:0.55rem; max-height:320px; overflow:auto; display:grid; grid-template-columns:1fr; gap:0.5rem; }
+    .sysstate-op-card { border:1px solid #3f3f46; border-radius:0.45rem; background:#18181b; padding:0.5rem; }
     .sysstate-op-head { display:flex; justify-content:space-between; gap:0.45rem; align-items:center; margin-bottom:0.4rem; }
-    .sysstate-op-name { color:#93c5fd; font-size:0.74rem; word-break:break-word; }
+    .sysstate-op-name { color:#d4d4d8; font-size:0.74rem; word-break:break-word; }
     .sysstate-op-body { display:grid; grid-template-columns:1fr auto; gap:0.45rem; align-items:end; }
     .sysstate-op-fields { display:grid; grid-template-columns:repeat(auto-fit, minmax(120px, 1fr)); gap:0.4rem; }
     .sysstate-op-fields input, .sysstate-op-fields select { padding:0.4rem 0.45rem; font-size:0.74rem; }
     .sysstate-op-card button { padding:0.4rem 0.65rem; font-size:0.74rem; }
-    .sysstate-op-note { color:#94a3b8; font-size:0.72rem; }
-    .sysstate-op-result { margin-top:0.45rem; font-size:0.74rem; min-height:1rem; color:#94a3b8; }
+    .sysstate-op-note { color:var(--text-muted); font-size:0.72rem; }
+    .sysstate-op-result { margin-top:0.45rem; font-size:0.74rem; min-height:1rem; color:var(--text-muted); }
     .sysstate-chip-list { display:flex; flex-wrap:wrap; gap:0.35rem; }
-    .sysstate-chip { display:inline-block; border:1px solid #334155; border-radius:999px; padding:0.2rem 0.5rem; font-size:0.72rem; color:#cbd5e1; background:#0f172a; }
-    .sysstate-empty { color:#64748b; font-size:0.78rem; }
+    .sysstate-chip { display:inline-block; border:1px solid #3f3f46; border-radius:999px; padding:0.2rem 0.5rem; font-size:0.72rem; color:#e4e4e7; background:#18181b; }
+    .sysstate-empty { color:var(--text-dim); font-size:0.78rem; }
     .sysstate-table { width:100%; border-collapse:collapse; table-layout:fixed; font-size:0.76rem; }
-    .sysstate-table th { text-align:left; color:#93c5fd; border-bottom:1px solid #334155; padding:0.38rem; position:sticky; top:0; background:#0d1a31; }
-    .sysstate-table td { color:#e2e8f0; border-bottom:1px solid #1e293b; padding:0.36rem; vertical-align:top; word-break:break-word; }
-    .sysstate-roll { max-height:84px; overflow:auto; white-space:pre-wrap; word-break:break-word; border:1px solid #334155; border-radius:0.35rem; padding:0.25rem; background:#0f172a; }
+    .sysstate-table th { text-align:left; color:#d4d4d8; border-bottom:1px solid #3f3f46; padding:0.38rem; position:sticky; top:0; background:#18181b; }
+    .sysstate-table td { color:#e5e7eb; border-bottom:1px solid #27272a; padding:0.36rem; vertical-align:top; word-break:break-word; }
+    .sysstate-roll { max-height:84px; overflow:auto; white-space:pre-wrap; word-break:break-word; border:1px solid #3f3f46; border-radius:0.35rem; padding:0.25rem; background:#111113; }
     .health-dot { width: 10px; height: 10px; border-radius: 50%; background: #ef4444; box-shadow: 0 0 12px rgba(239,68,68,0.6); }
     .health-dot.ok { background: #22c55e; box-shadow: 0 0 14px rgba(34,197,94,0.8); }
-    .hero { grid-column: 1 / -1; display:grid; grid-template-columns: 1.2fr 1fr; gap:1rem; }
-    .hero-panel { background: linear-gradient(120deg, rgba(14,165,233,0.16), rgba(59,130,246,0.08)); border:1px solid #1f3d66; border-radius: 0.9rem; padding: 1rem; }
-    .hero-title { font-size: 1.05rem; font-weight: 700; margin-bottom: 0.4rem; }
-    .hero-sub { color:#93c5fd; font-size:0.83rem; line-height:1.35; }
+    .hero { grid-column: 1 / -1; display:grid; grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.95fr); gap:1rem; align-items:stretch; }
+    .hero-panel {
+      background:
+        radial-gradient(circle at top left, rgba(255, 255, 255, 0.05), transparent 38%),
+        linear-gradient(135deg, rgba(24, 24, 27, 0.98), rgba(14, 14, 16, 0.92));
+      border:1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 1.2rem;
+      padding: 1.15rem;
+      box-shadow: var(--shadow-lg);
+      min-height: 100%;
+    }
+    .hero-title { font-size: clamp(1.1rem, 1rem + 0.6vw, 1.5rem); font-weight: 700; margin-bottom: 0.45rem; }
+    .hero-sub { color:#d4d4d8; font-size:0.88rem; line-height:1.48; max-width: 72ch; }
     .kpi-grid { display:grid; grid-template-columns: repeat(3, minmax(90px,1fr)); gap:0.55rem; }
-    .kpi { background: rgba(2, 6, 23, 0.52); border:1px solid #284268; border-radius:0.65rem; padding:0.65rem; }
-    .kpi .k { color:#93c5fd; font-size:0.7rem; }
+    .kpi { background: linear-gradient(180deg, rgba(24, 24, 27, 0.78), rgba(14, 14, 16, 0.94)); border:1px solid rgba(255, 255, 255, 0.1); border-radius:0.9rem; padding:0.75rem; }
+    .kpi .k { color:#d4d4d8; font-size:0.7rem; }
     .kpi .v { font-size:1rem; font-weight:700; margin-top:0.2rem; }
     .perf-card { grid-column: 1 / -1; }
     .perf-header { display:flex; justify-content:space-between; align-items:center; gap:0.75rem; margin-bottom:0.75rem; flex-wrap:wrap; }
     .perf-stats { display:flex; gap:0.55rem; flex-wrap:wrap; }
-    .perf-chip { border:1px solid #2d476b; border-radius:999px; padding:0.3rem 0.6rem; background:#0b1730; font-size:0.78rem; color:#c7d2fe; }
+    .perf-chip { border:1px solid #3f3f46; border-radius:999px; padding:0.3rem 0.6rem; background:#18181b; font-size:0.78rem; color:#e4e4e7; }
     .perf-chip strong { color:#f8fafc; }
     .perf-canvas-wrap {
       position: relative;
-      border: 1px solid #223f68;
+      border: 1px solid #3f3f46;
       border-radius: 0.8rem;
-      background: linear-gradient(180deg, rgba(2,6,23,0.65), rgba(2,6,23,0.92));
+      background: linear-gradient(180deg, rgba(9,9,11,0.65), rgba(9,9,11,0.92));
       overflow: hidden;
       min-height: 210px;
     }
@@ -256,74 +513,81 @@
       position: absolute;
       inset: 0;
       pointer-events: none;
-      background-image: linear-gradient(rgba(96,165,250,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(96,165,250,0.06) 1px, transparent 1px);
+      background-image: linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px);
       background-size: 28px 28px;
     }
     #perf-canvas { width:100%; height:220px; display:block; position:relative; z-index:1; }
-    .perf-legend { margin-top:0.55rem; display:flex; gap:0.75rem; flex-wrap:wrap; font-size:0.76rem; color:#93c5fd; }
+    .perf-legend { margin-top:0.55rem; display:flex; gap:0.75rem; flex-wrap:wrap; font-size:0.76rem; color:#d4d4d8; }
     .perf-dot { width:10px; height:10px; border-radius:999px; display:inline-block; margin-right:0.35rem; vertical-align:middle; }
     .perf-dot.cpu { background:#22d3ee; box-shadow:0 0 8px rgba(34,211,238,0.65); }
     .perf-dot.ram { background:#f472b6; box-shadow:0 0 8px rgba(244,114,182,0.65); }
     .perf-dot.temp { background:#fb923c; box-shadow:0 0 8px rgba(251,146,60,0.65); }
     .quick-nav { grid-column:1 / -1; display:flex; gap:0.5rem; flex-wrap:wrap; }
-    .quick-nav button { background:#132744; border:1px solid #27466f; color:#bae6fd; }
-    .quick-nav button:hover { background:#1b365c; }
+    .quick-nav button { background:linear-gradient(180deg, rgba(39, 39, 42, 0.95), rgba(24, 24, 27, 0.95)); border:1px solid rgba(255, 255, 255, 0.1); color:#f4f4f5; }
+    .quick-nav button:hover { background:linear-gradient(180deg, rgba(63, 63, 70, 0.98), rgba(39, 39, 42, 0.98)); }
     .detail-tabs { display:flex; gap:0.45rem; flex-wrap:wrap; margin:0.8rem 0; }
-    .tab-btn { background:#132744; border:1px solid #2f4d74; color:#93c5fd; padding:0.35rem 0.7rem; border-radius:0.5rem; font-size:0.78rem; cursor:pointer; }
-    .tab-btn.active { background:#0ea5e9; border-color:#0284c7; color:white; }
+    .tab-btn { background:var(--tab-idle-bg); border:1px solid var(--tab-idle-border); color:var(--tab-idle-text); padding:0.35rem 0.7rem; border-radius:0.5rem; font-size:0.78rem; cursor:pointer; }
+    .tab-btn:hover { background:var(--tab-hover-bg); color:var(--tab-hover-text); }
+    .tab-btn.active { background:var(--tab-active-bg); border-color:var(--tab-active-border); color:var(--tab-active-text); }
     .detail-section { display:none; }
     .detail-section.active { display:block; }
 
     /* New YTS Styles */
     .yts-layout { display: grid; grid-template-columns: 220px 1fr; gap: 1rem; margin-top: 1rem; }
-    .yts-nav { display: flex; flex-direction: column; gap: 0.25rem; border-right: 1px solid #334155; padding-right: 1rem; max-height: 500px; overflow-y: auto; }
-    .yts-nav-item { padding: 0.5rem 0.75rem; border-radius: 0.5rem; cursor: pointer; font-size: 0.85rem; color: #94a3b8; border: 1px solid transparent; white-space: nowrap; }
-    .yts-nav-item:hover { background: #1e293b; color: #e2e8f0; }
-    .yts-nav-item.active { background: #0ea5e9; color: white; font-weight: 600; border-color: #0284c7; }
+    .yts-nav { display: flex; flex-direction: column; gap: 0.3rem; border-right: 1px solid rgba(255, 255, 255, 0.1); padding-right: 1rem; max-height: 500px; overflow-y: auto; }
+    .yts-nav-item { padding: 0.5rem 0.75rem; border-radius: 0.5rem; cursor: pointer; font-size: 0.85rem; color: #b0b0b5; border: 1px solid transparent; white-space: nowrap; }
+    .yts-nav-item:hover { background: rgba(39, 39, 42, 0.8); color: #fafafa; }
+    .yts-nav-item.active { background: linear-gradient(135deg, rgba(82, 82, 91, 0.95), rgba(113, 113, 122, 0.95)); color: #fafafa; font-weight: 700; border-color: transparent; }
     .yts-panel { display: none; }
     .yts-panel.active { display: block; }
     .yts-panel h3 { font-size: 1.1rem; font-weight: 600; margin-bottom: 0.5rem; color: #f1f5f9; }
-    .yts-panel .description { font-size: 0.85rem; color: #94a3b8; margin-bottom: 1.25rem; }
-    .yts-result-box { margin-top:1rem; background:#0f172a; border:1px solid #334155; border-radius:0.5rem; padding:0.75rem; font-family:monospace; font-size:0.8rem; color:#94a3b8; white-space:pre-wrap; max-height:280px; overflow-y:auto; min-height:60px; }
+    .yts-panel .description { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1.25rem; }
+    .yts-result-box { margin-top:1rem; background:#111113; border:1px solid #3f3f46; border-radius:0.5rem; padding:0.75rem; font-family:monospace; font-size:0.8rem; color:#b0b0b5; white-space:pre-wrap; max-height:280px; overflow-y:auto; min-height:60px; }
     .yts-runner-grid { display:grid; grid-template-columns:1fr 1fr; gap:0.75rem; }
-    .yts-chip-list { display:flex; flex-wrap:wrap; gap:0.5rem; min-height:2.5rem; padding:0.75rem; border:1px solid #334155; border-radius:0.5rem; background:#0f172a; }
-    .yts-chip { display:inline-flex; align-items:center; gap:0.45rem; border:1px solid #0ea5e9; background:rgba(14,165,233,0.12); color:#e0f2fe; border-radius:999px; padding:0.3rem 0.65rem; font-size:0.78rem; }
-    .yts-chip button { background:none; border:none; color:#7dd3fc; cursor:pointer; padding:0; font-size:0.85rem; }
-    .yts-hint { font-size:0.78rem; color:#94a3b8; margin-top:0.4rem; }
+    .yts-chip-list { display:flex; flex-wrap:wrap; gap:0.5rem; min-height:2.5rem; padding:0.75rem; border:1px solid #3f3f46; border-radius:0.5rem; background:#111113; }
+    .yts-chip { display:inline-flex; align-items:center; gap:0.45rem; border:1px solid #71717a; background:rgba(113,113,122,0.16); color:#f4f4f5; border-radius:999px; padding:0.3rem 0.65rem; font-size:0.78rem; }
+    .yts-chip button { background:none; border:none; color:#d4d4d8; cursor:pointer; padding:0; font-size:0.85rem; }
+    .yts-hint { font-size:0.78rem; color:var(--text-muted); margin-top:0.4rem; }
     .yts-inline-actions { display:flex; flex-wrap:wrap; gap:0.5rem; margin-top:0.75rem; }
-    .yts-search-results { display:none; position:absolute; background:#1e293b; border:1px solid #334155; border-radius:0.5rem; max-height:220px; overflow-y:auto; z-index:10; width:100%; }
-    .yts-search-item { padding:0.55rem 0.65rem; cursor:pointer; border-bottom:1px solid #334155; }
+    .yts-search-results { display:none; position:absolute; background:var(--dropdown-bg); border:1px solid var(--tab-idle-border); border-radius:0.5rem; max-height:220px; overflow-y:auto; z-index:10; width:100%; box-shadow: var(--shadow-md); }
+    .yts-search-item { padding:0.55rem 0.65rem; cursor:pointer; border-bottom:1px solid #3f3f46; }
     .yts-search-item:last-child { border-bottom:none; }
-    .yts-search-item:hover { background:#132744; }
+    .yts-search-item:hover { background:var(--dropdown-hover); }
     .yts-select-multiple { min-height:220px; }
-    .yts-prompt-box { margin-top:0.75rem; padding:0.75rem; border:1px solid #334155; border-radius:0.5rem; background:#111827; }
+    .yts-prompt-box { margin-top:0.75rem; padding:0.75rem; border:1px solid #3f3f46; border-radius:0.5rem; background:#18181b; }
     .yts-prompt-actions { display:flex; gap:0.5rem; flex-wrap:wrap; margin-top:0.75rem; }
-    .yts-prompt-chip { background:#1e293b; color:#cbd5e1; border:1px solid #334155; border-radius:999px; padding:0.25rem 0.6rem; font-size:0.78rem; }
+    .yts-prompt-chip { background:#27272a; color:#e4e4e7; border:1px solid #3f3f46; border-radius:999px; padding:0.25rem 0.6rem; font-size:0.78rem; }
     .yts-runner-layout { display:grid; grid-template-columns: 1.4fr 0.8fr; gap:1rem; }
-    .yts-runner-panel { background:#0f172a; border:1px solid #334155; border-radius:0.75rem; padding:0.9rem; }
+    .yts-runner-panel { background:linear-gradient(180deg, rgba(24, 24, 27, 0.92), rgba(14, 14, 16, 0.95)); border:1px solid rgba(255, 255, 255, 0.1); border-radius:1rem; padding:0.95rem; }
     .yts-runner-panel h3 { font-size:0.95rem; color:#e2e8f0; margin-bottom:0.6rem; }
     .yts-job-list { display:flex; flex-direction:column; gap:0.55rem; max-height:720px; overflow-y:auto; }
-    .yts-job-item { background:#111827; border:1px solid #334155; border-radius:0.65rem; padding:0.75rem; cursor:pointer; }
-    .yts-job-item:hover { border-color:#38bdf8; }
-    .yts-job-item.active { border-color:#0ea5e9; background:#102038; }
-    .yts-job-meta { font-size:0.75rem; color:#94a3b8; margin-top:0.25rem; }
+    .yts-job-item { background:linear-gradient(180deg, rgba(24, 24, 27, 0.95), rgba(15, 15, 17, 0.95)); border:1px solid rgba(255, 255, 255, 0.1); border-radius:0.95rem; padding:0.8rem; cursor:pointer; transition:border-color 150ms ease, transform 150ms ease, box-shadow 150ms ease; }
+    .yts-job-item:hover { border-color:rgba(161, 161, 170, 0.4); transform:translateY(-1px); box-shadow:0 16px 28px rgba(0,0,0,0.28); }
+    .yts-job-item.active { border-color:rgba(161, 161, 170, 0.46); background:linear-gradient(180deg, rgba(34, 34, 37, 0.98), rgba(19, 19, 21, 0.98)); }
+    .yts-job-meta { font-size:0.75rem; color:var(--text-muted); margin-top:0.25rem; }
     .yts-job-title { font-size:0.82rem; color:#e2e8f0; word-break:break-word; }
     .yts-job-links { display:flex; flex-wrap:wrap; gap:0.4rem; margin-top:0.5rem; }
     .yts-status-badge { display:inline-block; padding:0.18rem 0.5rem; border-radius:999px; font-size:0.72rem; font-weight:600; }
-    .yts-status-running { background:#082f49; color:#7dd3fc; }
-    .yts-status-completed { background:#052e16; color:#86efac; }
-    .yts-status-failed { background:#450a0a; color:#fca5a5; }
-    .yts-status-stopped { background:#3f3f46; color:#d4d4d8; }
+    .yts-status-running { background:rgba(113, 113, 122, 0.18); color:var(--info); }
+    .yts-status-completed { background:rgba(34, 197, 94, 0.12); color:var(--success); }
+    .yts-status-failed { background:rgba(239, 68, 68, 0.12); color:var(--error); }
+    .yts-status-stopped { background:var(--surface-4); color:var(--text-muted); }
     .yts-inline-input { display:flex; gap:0.5rem; flex-wrap:wrap; align-items:center; }
     .yts-inline-input input { flex:1 1 240px; }
-    .yts-subtle { font-size:0.78rem; color:#94a3b8; }
-    .yts-download-link { display:inline-flex; align-items:center; justify-content:center; padding:0.55rem 0.9rem; border-radius:0.55rem; border:1px solid #334155; background:#2563eb; color:#fff; text-decoration:none; font-size:0.82rem; }
-    .yts-download-link.secondary { background:#132744; color:#bae6fd; }
+    .yts-subtle { font-size:0.78rem; color:var(--text-muted); }
+    .yts-download-link { display:inline-flex; align-items:center; justify-content:center; padding:0.55rem 0.9rem; border-radius:0.55rem; border:1px solid #3f3f46; background:#3f3f46; color:#fff; text-decoration:none; font-size:0.82rem; }
+    .yts-download-link.secondary { background:#27272a; color:#e4e4e7; }
     .yts-download-link:hover { filter:brightness(1.08); }
-    .yts-report-viewer-wrap { margin-top:0.85rem; border:1px solid #334155; border-radius:0.55rem; background:#0b1222; overflow:hidden; }
-    .yts-report-viewer-header { display:flex; align-items:center; justify-content:space-between; gap:0.6rem; padding:0.55rem 0.75rem; border-bottom:1px solid #334155; background:#111b31; }
+    .yts-live-preview-wrap { margin-top:1rem; border:1px solid var(--border); border-radius:0.8rem; background:linear-gradient(180deg, rgba(18, 18, 20, 0.94), rgba(10, 10, 11, 0.98)); overflow:hidden; }
+    .yts-live-preview-head { display:flex; align-items:center; justify-content:space-between; gap:0.75rem; padding:0.7rem 0.85rem; border-bottom:1px solid var(--border); background:linear-gradient(180deg, rgba(29, 29, 32, 0.88), rgba(18, 18, 20, 0.95)); }
+    .yts-live-preview-title { font-size:0.82rem; font-weight:700; color:var(--text); letter-spacing:0.02em; }
+    .yts-live-preview-stage { position:relative; aspect-ratio:16/9; min-height:180px; background:#09090b; }
+    .yts-live-preview-stage img { width:100%; height:100%; object-fit:cover; display:block; background:#050505; }
+    .yts-live-preview-empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; text-align:center; padding:1rem; color:var(--muted); font-size:0.82rem; background:radial-gradient(circle at center, rgba(113, 113, 122, 0.08), transparent 62%); }
+    .yts-report-viewer-wrap { margin-top:0.85rem; border:1px solid #3f3f46; border-radius:0.55rem; background:#111113; overflow:hidden; }
+    .yts-report-viewer-header { display:flex; align-items:center; justify-content:space-between; gap:0.6rem; padding:0.55rem 0.75rem; border-bottom:1px solid #3f3f46; background:#18181b; }
     .yts-report-viewer-frame { width:100%; min-height:620px; border:0; background:#fff; }
-    .yts-report-empty { padding:0.75rem; color:#94a3b8; font-size:0.8rem; }
+    .yts-report-empty { padding:0.75rem; color:var(--empty-text); font-size:0.8rem; background:var(--empty-bg); border-top:1px solid var(--empty-border); }
 
 
     @media (max-width: 980px) {
@@ -333,6 +597,9 @@
       .yts-runner-grid { grid-template-columns: 1fr; }
       .yts-runner-layout { grid-template-columns: 1fr; }
       .sysstate-grid { grid-template-columns: 1fr; }
+      header { padding: 0.9rem 1rem; }
+      main { padding: 0 0.85rem 1rem; }
+      .card { border-radius: 1.05rem; }
     }
   </style>
 </head>
@@ -345,13 +612,28 @@
   </div>
   <span class="badge mock" id="mode-badge">MOCK</span>
   <div class="header-right">
+    <div class="theme-toolbar">
+      <label for="theme-select">Theme</label>
+      <select id="theme-select" onchange="applyThemeSelection()">
+        <option value="dark">Dark</option>
+        <option value="light">Light</option>
+      </select>
+    </div>
     <div class="model-toolbar">
-      <label for="ai-model-select">AI Model</label>
-      <select id="ai-model-select">
+      <label for="planner-model-select">Planner / YTS Model</label>
+      <select id="planner-model-select">
         <option value="">Loading models...</option>
       </select>
-      <button class="secondary mini-btn" onclick="applyAiModel()">Apply</button>
-      <span class="model-status" id="ai-model-status">Loading active model...</span>
+      <button class="secondary mini-btn" onclick="applyAiModel('planner')">Apply</button>
+      <span class="model-status" id="planner-model-status">Loading planner model...</span>
+    </div>
+    <div class="model-toolbar">
+      <label for="live-model-select">Live Model</label>
+      <select id="live-model-select">
+        <option value="">Loading models...</option>
+      </select>
+      <button class="secondary mini-btn" onclick="applyAiModel('live')">Apply</button>
+      <span class="model-status" id="live-model-status">Loading live model...</span>
     </div>
     <div class="device-toolbar">
       <label for="dab-device-select">DAB Device</label>
@@ -362,7 +644,7 @@
       <span class="device-status" id="dab-device-status">Discovering devices...</span>
     </div>
     <span class="health-dot" id="health-dot"></span>
-    <span style="font-size:0.8rem; color:#94a3b8;" id="health-status">Connecting...</span>
+    <span style="font-size:0.8rem; color:var(--text-muted);" id="health-status">Connecting...</span>
   </div>
 </header>
 
@@ -555,7 +837,7 @@
     <h2>Virtual Remote + HDMI Live Stream</h2>
     <div class="remote-layout">
       <div class="remote-panel">
-        <div style="font-size:0.8rem; color:#94a3b8; margin-bottom:0.75rem;" id="capture-source-info">
+        <div style="font-size:0.8rem; color:var(--text-muted); margin-bottom:0.75rem;" id="capture-source-info">
           Checking capture source...
         </div>
         <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0.5rem; margin-bottom:0.65rem;">
@@ -586,8 +868,8 @@
         </div>
 
         <details style="margin-bottom:0.75rem;">
-          <summary style="cursor:pointer; color:#93c5fd; font-size:0.8rem;">Stream Status & Diagnostics</summary>
-          <div id="stream-diagnostics" style="margin-top:0.5rem; padding:0.5rem; background:#0f172a; border-radius:0.5rem; font-size:0.8rem; color:#94a3b8;">
+          <summary style="cursor:pointer; color:#d4d4d8; font-size:0.8rem;">Stream Status & Diagnostics</summary>
+          <div id="stream-diagnostics" style="margin-top:0.5rem; padding:0.5rem; background:#111113; border:1px solid #3f3f46; border-radius:0.5rem; font-size:0.8rem; color:#b0b0b5;">
             Checking...
           </div>
         </details>
@@ -720,7 +1002,7 @@
           </div>
         </details>
 
-        <div id="manual-result" style="margin-top:0.75rem; font-size:0.8rem; color:#64748b;"></div>
+        <div id="manual-result" style="margin-top:0.75rem; font-size:0.8rem; color:var(--text-dim);"></div>
       </div>
     </div>
   </div>
@@ -742,6 +1024,15 @@
           </div>
           <div class="yts-subtle">Use this field to send manual terminal input even if the CLI is waiting mid-execution.</div>
           <div id="yts-interactive-prompt" style="display:none;"></div>
+          <div id="yts-gemini-live-preview" class="yts-live-preview-wrap">
+            <div class="yts-live-preview-head">
+              <div class="yts-live-preview-title">Gemini Visual Feed</div>
+              <div id="yts-gemini-live-preview-status" class="yts-subtle">Starts when interactive YTS is running.</div>
+            </div>
+            <div class="yts-live-preview-stage" id="yts-gemini-live-preview-stage">
+              <div class="yts-live-preview-empty">Live capture preview will appear here when Gemini interactive monitoring is active.</div>
+            </div>
+          </div>
           <label style="margin-top:1rem;">Terminal Log</label>
           <div class="yts-result-box" id="yts-command-output">Select or start a YTS job to view logs.</div>
           <label style="margin-top:1rem;">Interactive / Gemini Log</label>
@@ -842,13 +1133,13 @@
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:1rem;">
       <div>
         <label>Gemini Request (full prompt)</label>
-        <div id="ai-request-log" style="background:#0f172a; border:1px solid #334155; border-radius:0.5rem; padding:0.75rem; min-height:180px; max-height:360px; overflow:auto; font-family:monospace; font-size:0.78rem; white-space:pre-wrap; color:#93c5fd;">
+        <div id="ai-request-log" style="background:#111113; border:1px solid #3f3f46; border-radius:0.5rem; padding:0.75rem; min-height:180px; max-height:360px; overflow:auto; font-family:monospace; font-size:0.78rem; white-space:pre-wrap; color:#d4d4d8;">
           No Gemini request captured yet.
         </div>
       </div>
       <div>
         <label>Gemini Response (raw)</label>
-        <div id="ai-response-log" style="background:#0f172a; border:1px solid #334155; border-radius:0.5rem; padding:0.75rem; min-height:180px; max-height:360px; overflow:auto; font-family:monospace; font-size:0.78rem; white-space:pre-wrap; color:#86efac;">
+        <div id="ai-response-log" style="background:#111113; border:1px solid #3f3f46; border-radius:0.5rem; padding:0.75rem; min-height:180px; max-height:360px; overflow:auto; font-family:monospace; font-size:0.78rem; white-space:pre-wrap; color:#86efac;">
           No Gemini response captured yet.
         </div>
       </div>
@@ -872,7 +1163,7 @@
   <!-- Task Trace (Full Bottom) -->
   <div class="card full-width" id="task-trace-card">
     <h2>Task Trace Log (Detailed)</h2>
-    <div id="task-trace-log" style="background:#0f172a; border:1px solid #334155; border-radius:0.5rem; padding:0.75rem; min-height:220px; max-height:420px; overflow:auto; font-family:monospace; font-size:0.78rem; white-space:pre-wrap; color:#cbd5e1;">
+    <div id="task-trace-log" style="background:#111113; border:1px solid #3f3f46; border-radius:0.5rem; padding:0.75rem; min-height:220px; max-height:420px; overflow:auto; font-family:monospace; font-size:0.78rem; white-space:pre-wrap; color:#e4e4e7;">
       Select a run to view full task trace.
     </div>
   </div>
@@ -892,6 +1183,7 @@
   const DAB_DEVICE_STORAGE_KEY = 'dab_selected_device_id';
   const REMOTE_MODE_STORAGE_KEY = 'dab_remote_mode';
   const IR_DEVICE_STORAGE_KEY = 'dab_ir_device_id';
+  const THEME_STORAGE_KEY = 'dab_ui_theme';
   let apiBase = '';
   let selectedRunId = null;
   let pollInterval = null;
@@ -900,10 +1192,23 @@
   let hdmiAudioLatencyTimer = null;
   let captureSelectionBusy = false;
   let hdmiStreamTransitionToken = 0;
+  let hdmiStreamStartupTimer = null;
+  let hdmiStreamStopTimer = null;
+  let hdmiAvWebSocket = null;
+  let hdmiAvMediaSource = null;
+  let hdmiAvSourceBuffer = null;
+  let hdmiAvObjectUrl = null;
+  let hdmiAvAppendQueue = [];
+  let hdmiAvAppendInFlight = false;
+  let hdmiWebRtcPeer = null;
+  let hdmiWebRtcPeerId = null;
+  let hdmiWebRtcRemoteStream = null;
+  let hdmiWebRtcHasAudio = false;
   let lastNarrationIdx = -1;
   let currentNarrationAudio = null;
   let currentYtsCommandId = null;
   let ytsCommandPollInterval = null;
+  let ytsGeminiPreviewCommandId = null;
   const YTS_COMMAND_STORAGE_KEY = 'dab_yts_live_command_id';
   let ytsCommandHistory = [];
   let selectedRemoteMode = (localStorage.getItem(REMOTE_MODE_STORAGE_KEY) || 'DAB').toUpperCase();
@@ -923,6 +1228,37 @@
   let settingsValueRefreshDebounceTimer = null;
   const perfHistoryMaxPoints = 120;
   const perfHistory = { cpu: [], ram: [], temp: [] };
+  let selectedTheme = (localStorage.getItem(THEME_STORAGE_KEY) || 'dark').toLowerCase() === 'light' ? 'light' : 'dark';
+
+  function setTheme(theme, persist = true) {
+    selectedTheme = String(theme || 'dark').toLowerCase() === 'light' ? 'light' : 'dark';
+    document.body.dataset.theme = selectedTheme;
+    const select = document.getElementById('theme-select');
+    if (select) select.value = selectedTheme;
+    if (persist) localStorage.setItem(THEME_STORAGE_KEY, selectedTheme);
+  }
+
+  function applyThemeSelection() {
+    const next = document.getElementById('theme-select')?.value || 'dark';
+    setTheme(next, true);
+  }
+
+  function initTheme() {
+    setTheme(selectedTheme, false);
+  }
+
+  function uiColor(token) {
+    return getComputedStyle(document.body).getPropertyValue(token).trim();
+  }
+
+  function setUiColor(el, token) {
+    if (!el) return;
+    el.style.color = uiColor(token);
+  }
+
+  function statusHtml(token, text) {
+    return `<span style="color:${uiColor(token)};">${text}</span>`;
+  }
 
   function normalizeApiBase(v) {
     const s = (v || '').trim();
@@ -1029,55 +1365,80 @@
     loadAiModels();
   }
 
+  function populateModelSelect(select, models, active) {
+    if (!select) return;
+    select.innerHTML = '';
+    for (const model of models) {
+      const opt = document.createElement('option');
+      opt.value = model;
+      opt.textContent = model;
+      select.appendChild(opt);
+    }
+    if (active && !models.includes(active)) {
+      const opt = document.createElement('option');
+      opt.value = active;
+      opt.textContent = active;
+      select.appendChild(opt);
+    }
+    if (active) select.value = active;
+  }
+
   async function loadAiModels() {
-    const select = document.getElementById('ai-model-select');
-    const statusEl = document.getElementById('ai-model-status');
-    if (!select || !statusEl) return;
+    const plannerSelect = document.getElementById('planner-model-select');
+    const plannerStatusEl = document.getElementById('planner-model-status');
+    const liveSelect = document.getElementById('live-model-select');
+    const liveStatusEl = document.getElementById('live-model-status');
+    if (!plannerSelect || !plannerStatusEl || !liveSelect || !liveStatusEl) return;
     try {
       const data = await api('/config/runtime-model');
       const models = Array.isArray(data.available_models) ? data.available_models : [];
-      select.innerHTML = '';
-      for (const model of models) {
-        const opt = document.createElement('option');
-        opt.value = model;
-        opt.textContent = model;
-        select.appendChild(opt);
-      }
+      const plannerActive = String(data.active_vertex_planner_model || '').trim();
+      const plannerConfigured = String(data.configured_vertex_planner_model || '').trim();
+      const liveActive = String(data.active_vertex_live_model || '').trim();
+      const liveConfigured = String(data.configured_vertex_live_model || '').trim();
 
-      const active = String(data.active_vertex_planner_model || '').trim();
-      if (active && !models.includes(active)) {
-        const opt = document.createElement('option');
-        opt.value = active;
-        opt.textContent = active;
-        select.appendChild(opt);
-      }
-      if (active) select.value = active;
+      populateModelSelect(plannerSelect, models, plannerActive);
+      populateModelSelect(liveSelect, models, liveActive);
 
-      statusEl.textContent = `Active: ${active || '-'}`;
-      statusEl.style.color = '#93c5fd';
+      plannerStatusEl.textContent = plannerActive && plannerActive !== plannerConfigured
+        ? `Active: ${plannerActive} (override; config ${plannerConfigured || '-'})`
+        : `Active: ${plannerActive || '-'}`;
+      setUiColor(plannerStatusEl, '--info');
+
+      liveStatusEl.textContent = liveActive && liveActive !== liveConfigured
+        ? `Active: ${liveActive} (override; config ${liveConfigured || '-'})`
+        : `Active: ${liveActive || '-'}`;
+      setUiColor(liveStatusEl, '--info');
     } catch (e) {
-      statusEl.textContent = `AI model unavailable: ${e.message}`;
-      statusEl.style.color = '#f87171';
+      plannerStatusEl.textContent = `Planner model unavailable: ${e.message}`;
+      setUiColor(plannerStatusEl, '--error');
+      liveStatusEl.textContent = `Live model unavailable: ${e.message}`;
+      setUiColor(liveStatusEl, '--error');
     }
   }
 
-  async function applyAiModel() {
-    const select = document.getElementById('ai-model-select');
-    const statusEl = document.getElementById('ai-model-status');
+  async function applyAiModel(target) {
+    const normalizedTarget = String(target || 'planner').trim().toLowerCase() === 'live' ? 'live' : 'planner';
+    const select = document.getElementById(normalizedTarget === 'live' ? 'live-model-select' : 'planner-model-select');
+    const statusEl = document.getElementById(normalizedTarget === 'live' ? 'live-model-status' : 'planner-model-status');
     if (!select || !statusEl) return;
     const model = String(select.value || '').trim();
     if (!model) {
       statusEl.textContent = 'Pick a model first.';
-      statusEl.style.color = '#f87171';
+      setUiColor(statusEl, '--error');
       return;
     }
     try {
-      const data = await api('/config/runtime-model', 'POST', { model });
-      statusEl.textContent = `Active: ${String(data.active_vertex_planner_model || model)}`;
-      statusEl.style.color = '#4ade80';
+      const data = await api('/config/runtime-model', 'POST', { model, target: normalizedTarget });
+      const active = normalizedTarget === 'live'
+        ? String(data.active_vertex_live_model || model)
+        : String(data.active_vertex_planner_model || model);
+      statusEl.textContent = `Active: ${active}`;
+      setUiColor(statusEl, '--success');
+      loadAiModels();
     } catch (e) {
       statusEl.textContent = `Model update failed: ${e.message}`;
-      statusEl.style.color = '#f87171';
+      setUiColor(statusEl, '--error');
     }
   }
 
@@ -1292,7 +1653,7 @@
       if (!appId) {
         if (resultEl) {
           resultEl.textContent = '✗ app_id is required for launch.';
-          resultEl.style.color = '#f87171';
+          setUiColor(resultEl, '--error');
         }
         return;
       }
@@ -1308,7 +1669,7 @@
       if (!keyCode) {
         if (resultEl) {
           resultEl.textContent = '✗ key_code is required for key press.';
-          resultEl.style.color = '#f87171';
+          setUiColor(resultEl, '--error');
         }
         return;
       }
@@ -1319,7 +1680,7 @@
       if (!key) {
         if (resultEl) {
           resultEl.textContent = '✗ setting key is required for get.';
-          resultEl.style.color = '#f87171';
+          setUiColor(resultEl, '--error');
         }
         return;
       }
@@ -1331,7 +1692,7 @@
       if (!key || !value) {
         if (resultEl) {
           resultEl.textContent = '✗ key and value are required for set.';
-          resultEl.style.color = '#f87171';
+          setUiColor(resultEl, '--error');
         }
         return;
       }
@@ -1339,14 +1700,14 @@
     } else {
       if (resultEl) {
         resultEl.textContent = '✗ Operation execution UI is not available for this operation yet.';
-        resultEl.style.color = '#f87171';
+        setUiColor(resultEl, '--error');
       }
       return;
     }
 
     if (resultEl) {
       resultEl.textContent = `Running ${action}...`;
-      resultEl.style.color = '#93c5fd';
+      setUiColor(resultEl, '--info');
     }
 
     try {
@@ -1365,7 +1726,7 @@
     } catch (e) {
       if (resultEl) {
         resultEl.textContent = `✗ ${e.message}`;
-        resultEl.style.color = '#f87171';
+        setUiColor(resultEl, '--error');
       }
     }
   }
@@ -1659,7 +2020,7 @@
     if (!operation) {
       if (statusEl) {
         statusEl.textContent = '✗ Select an operation first.';
-        statusEl.style.color = '#f87171';
+        setUiColor(statusEl, '--error');
       }
       return;
     }
@@ -1670,20 +2031,20 @@
     } catch (e) {
       if (statusEl) {
         statusEl.textContent = `✗ Invalid payload JSON: ${e.message}`;
-        statusEl.style.color = '#f87171';
+        setUiColor(statusEl, '--error');
       }
       return;
     }
 
     if (statusEl) {
       statusEl.textContent = `Executing ${operation}...`;
-      statusEl.style.color = '#93c5fd';
+      setUiColor(statusEl, '--info');
     }
     try {
       const data = await api('/dab/execute-request', 'POST', { device_id: deviceId, operation, payload });
       if (statusEl) {
         statusEl.textContent = data.success ? `✓ ${operation} executed` : `✗ ${operation} failed`;
-        statusEl.style.color = data.success ? '#4ade80' : '#f87171';
+        statusEl.style.color = data.success ? uiColor('--success') : uiColor('--error');
       }
       if (responseEl) responseEl.textContent = JSON.stringify(data, null, 2);
       if (String(operation).toLowerCase() === 'system/settings/set' || String(operation).toLowerCase() === 'system/settings/get') {
@@ -1692,7 +2053,7 @@
     } catch (e) {
       if (statusEl) {
         statusEl.textContent = `✗ ${e.message}`;
-        statusEl.style.color = '#f87171';
+        setUiColor(statusEl, '--error');
       }
       if (responseEl) responseEl.textContent = String(e.message || e);
     }
@@ -1728,7 +2089,7 @@
 
     if (statusEl) {
       statusEl.textContent = `Loaded capability/status for ${String(data.device_id || '-')}`;
-      statusEl.style.color = '#4ade80';
+      setUiColor(statusEl, '--success');
     }
     if (updatedEl) updatedEl.textContent = `Last updated: ${String(data.last_updated || data.captured_at || '--')}`;
     if (fileEl) fileEl.textContent = `JSON file: ${String(data.json_file || '--')}`;
@@ -1811,13 +2172,13 @@
       renderDabDeviceSystemState();
       if (statusEl) {
         statusEl.textContent = 'No valid device selected.';
-        statusEl.style.color = '#fca5a5';
+        setUiColor(statusEl, '--error');
       }
       return;
     }
     if (!silent && statusEl) {
       statusEl.textContent = `Loading system status for ${resolved}...`;
-      statusEl.style.color = '#93c5fd';
+      setUiColor(statusEl, '--info');
     }
     try {
       const data = await api(`/dab/device-capability-status?device_id=${encodeURIComponent(resolved)}&refresh=${forceRefresh ? 'true' : 'false'}`);
@@ -1828,7 +2189,7 @@
     } catch (e) {
       if (statusEl) {
         statusEl.textContent = `Unable to load system status: ${e.message}`;
-        statusEl.style.color = '#f87171';
+        setUiColor(statusEl, '--error');
       }
     }
   }
@@ -1886,7 +2247,7 @@
       dabDeviceSettingsMeta = { capturedAt: '', failedReads: 0, warning: '', degraded: false };
       if (statusEl) {
         statusEl.textContent = 'No valid device selected.';
-        statusEl.style.color = '#fca5a5';
+        setUiColor(statusEl, '--error');
       }
       if (countEl) countEl.textContent = '0 settings';
       if (failedEl) failedEl.textContent = '0 read failures';
@@ -1898,7 +2259,7 @@
 
     if (!silent && statusEl) {
       statusEl.textContent = `Loading settings for ${resolved}...`;
-      statusEl.style.color = '#93c5fd';
+      setUiColor(statusEl, '--info');
     }
 
     try {
@@ -1915,20 +2276,20 @@
       if (updatedEl) updatedEl.textContent = `Last updated: ${dabDeviceSettingsMeta.capturedAt || '--'}`;
       if (warningEl) {
         warningEl.textContent = dabDeviceSettingsMeta.warning ? `Warning: ${dabDeviceSettingsMeta.warning}` : '';
-        warningEl.style.color = dabDeviceSettingsMeta.warning ? '#fcd34d' : '#94a3b8';
+        warningEl.style.color = dabDeviceSettingsMeta.warning ? uiColor('--warning') : uiColor('--text-muted');
       }
       if (statusEl) {
         const ok = !!data.success;
         statusEl.textContent = ok
           ? `Loaded settings for ${resolved}${dabDeviceSettingsMeta.degraded ? ' (degraded)' : ''}`
           : `Settings list failed for ${resolved}`;
-        statusEl.style.color = ok ? '#4ade80' : '#f87171';
+        statusEl.style.color = ok ? uiColor('--success') : uiColor('--error');
       }
       renderDabDeviceSettingsTable();
     } catch (e) {
       if (statusEl) {
         statusEl.textContent = `Unable to load settings: ${e.message}`;
-        statusEl.style.color = '#f87171';
+        setUiColor(statusEl, '--error');
       }
       if (!silent) {
         dabDeviceSettingsSnapshot = [];
@@ -1966,7 +2327,7 @@
         const statusEl = document.getElementById('dab-settings-status');
         if (statusEl) {
           statusEl.textContent = `Updated setting values for ${resolved}`;
-          statusEl.style.color = '#4ade80';
+          setUiColor(statusEl, '--success');
         }
       }
       renderDabDeviceSettingsTable();
@@ -1982,7 +2343,7 @@
         const statusEl = document.getElementById('dab-settings-status');
         if (statusEl) {
           statusEl.textContent = `Unable to refresh setting values: ${e.message}`;
-          statusEl.style.color = '#f87171';
+          setUiColor(statusEl, '--error');
         }
       }
     }
@@ -2067,10 +2428,10 @@
       irStatusSnapshot = data;
       const serialPort = String(data.serial_port || '').trim() || 'not configured';
       el.textContent = `IR endpoint ready · serial=${serialPort} · sender=${data.sender_channel || 'D2'} · dataset=${data.dataset_path || '--'}`;
-      el.style.color = '#93c5fd';
+      setUiColor(el, '--info');
     } catch (e) {
       el.textContent = `IR status unavailable: ${e.message}`;
-      el.style.color = '#f87171';
+      setUiColor(el, '--error');
     }
   }
 
@@ -2117,7 +2478,7 @@
       const debugEl = document.getElementById('ir-debug-status');
       if (debugEl) {
         debugEl.textContent = `Failed to load IR devices: ${e.message}`;
-        debugEl.style.color = '#f87171';
+        setUiColor(debugEl, '--error');
       }
       populateIrKeyOptions(defaultIrKeys);
     }
@@ -2148,7 +2509,7 @@
     try {
       if (debugEl) {
         debugEl.textContent = `Training ${keyName}... point Samsung remote at IR receiver.`;
-        debugEl.style.color = '#93c5fd';
+        setUiColor(debugEl, '--info');
       }
       const result = await api('/ir/train', 'POST', { device_id: selectedIrDeviceId, key_name: keyName });
       lastTrainedIrKey = `${result.key_name || keyName} ✓`;
@@ -2161,14 +2522,14 @@
         debugEl.textContent = details
           ? `Trained ${result.key_name || keyName} for ${result.device_id || selectedIrDeviceId} → ${details}`
           : `Trained ${result.key_name || keyName} for ${result.device_id || selectedIrDeviceId}.`;
-        debugEl.style.color = '#4ade80';
+        setUiColor(debugEl, '--success');
       }
       await loadIrDevices(selectedIrDeviceId);
       updateRemoteModeStatusBanner();
     } catch (e) {
       if (debugEl) {
         debugEl.textContent = `Train failed: ${e.message}`;
-        debugEl.style.color = '#f87171';
+        setUiColor(debugEl, '--error');
       }
     }
   }
@@ -2183,14 +2544,14 @@
       lastIrSendResult = `${result.key_name || keyName} ✓`;
       if (debugEl) {
         debugEl.textContent = `Sent ${result.key_name || keyName} on ${result.sender_channel || 'D2'}.`;
-        debugEl.style.color = '#4ade80';
+        setUiColor(debugEl, '--success');
       }
       updateRemoteModeStatusBanner();
     } catch (e) {
       lastIrSendResult = `${keyName} ✗`;
       if (debugEl) {
         debugEl.textContent = `Send failed: ${e.message}`;
-        debugEl.style.color = '#f87171';
+        setUiColor(debugEl, '--error');
       }
       updateRemoteModeStatusBanner();
     }
@@ -2221,7 +2582,7 @@
     const el = document.getElementById(messageElId);
     if (el) {
       el.textContent = `✗ ${message}`;
-      el.style.color = '#f87171';
+      setUiColor(el, '--error');
     }
     return '';
   }
@@ -2292,7 +2653,7 @@
     const selected = selectedDeviceId || getSelectedDabDeviceId();
     if (!selected) {
       el.textContent = 'Pick a top device to bind camera / HDMI capture and live stream routing.';
-      el.style.color = '#64748b';
+      setUiColor(el, '--text-dim');
       return;
     }
     const parts = [`selected=${selected}`];
@@ -2300,7 +2661,7 @@
     if (binding.preferred_kind) parts.push(`kind=${binding.preferred_kind}`);
     if (binding.adb_device_id) parts.push(`adb=${binding.adb_device_id}`);
     el.textContent = `Device routing · ${parts.join(' · ')}`;
-    el.style.color = Object.keys(binding || {}).length ? '#93c5fd' : '#fcd34d';
+    el.style.color = Object.keys(binding || {}).length ? uiColor('--info') : uiColor('--warning');
   }
 
   async function onLiveStreamDeviceChanged() {
@@ -2473,7 +2834,7 @@
     try {
       const data = await api('/health');
       document.getElementById('health-status').textContent = `✓ Controller connected (${data.status})`;
-      document.getElementById('health-status').style.color = '#4ade80';
+      setUiColor(document.getElementById('health-status'), '--success');
       document.getElementById('health-dot').classList.add('ok');
       const badge = document.getElementById('mode-badge');
       if (data.mock_mode) { badge.textContent = 'MOCK MODE'; badge.className = 'badge mock'; }
@@ -2481,7 +2842,7 @@
       document.getElementById('kpi-controller').textContent = data.status || 'ok';
     } catch (e) {
       document.getElementById('health-status').textContent = '✗ Controller disconnected';
-      document.getElementById('health-status').style.color = '#f87171';
+      setUiColor(document.getElementById('health-status'), '--error');
       document.getElementById('health-dot').classList.remove('ok');
       document.getElementById('kpi-controller').textContent = 'offline';
     }
@@ -2495,29 +2856,24 @@
       const kindSel = document.getElementById('capture-kind-select');
       if (modeSel && data.configured_source) modeSel.value = data.configured_source;
       if (kindSel && data.preferred_video_kind) kindSel.value = data.preferred_video_kind;
-      const ad = await api('/audio/source').catch(() => null);
       const mode = data.configured_source || 'auto';
+      infoEl.dataset.activeDevice = String(data.hdmi_device || '').trim();
       if (data.hdmi_available) {
         const device = data.hdmi_device || 'auto';
         const kind = data.preferred_video_kind || 'auto';
-        let msg = `Capture source: ${mode} · kind=${kind} · video ready (${device})`;
-        if (ad) {
-          msg += ad.enabled
-            ? ` · audio ${ad.device || 'auto'} ${ad.ffmpeg_available ? 'ready' : 'ffmpeg-missing'}`
-            : ' · audio disabled';
-        }
+        const msg = `Capture source: ${mode} · kind=${kind} · video ready (${device})`;
         infoEl.textContent = msg;
-        infoEl.style.color = '#86efac';
+        setUiColor(infoEl, '--success');
       } else if (data.hdmi_configured) {
         infoEl.textContent = `Capture source: ${mode} · HDMI not available (falling back to DAB in auto mode)`;
-        infoEl.style.color = '#fcd34d';
+        setUiColor(infoEl, '--warning');
       } else {
         infoEl.textContent = `Capture source: ${mode} · HDMI disabled`;
-        infoEl.style.color = '#94a3b8';
+        setUiColor(infoEl, '--text-muted');
       }
     } catch (e) {
       infoEl.textContent = 'Failed to read capture source status';
-      infoEl.style.color = '#f87171';
+      setUiColor(infoEl, '--error');
     }
   }
 
@@ -2572,34 +2928,55 @@
     const modeSel = document.getElementById('capture-mode-select');
     const kindSel = document.getElementById('capture-kind-select');
     const devSel = document.getElementById('capture-device-select');
+    const streamBox = document.getElementById('hdmi-stream-container');
+    const previousActiveDevice = (document.getElementById('capture-source-info')?.dataset?.activeDevice || '').trim();
     const resultEl = document.getElementById('manual-result');
     const wasStreaming = hdmiStreamRunning;
+    const requestedSource = modeSel ? modeSel.value : 'auto';
+    const requestedDevice = devSel ? String(devSel.value || '').trim() : '';
     const prevApplyLabel = setCaptureSelectionBusy(true, wasStreaming ? 'Switching camera…' : 'Applying capture settings…');
     try {
+      if (wasStreaming && streamBox) {
+        streamBox.classList.add('switching');
+        setHdmiStreamOverlay('Switching camera…');
+      }
       await api('/capture/select', 'POST', {
-        source: modeSel ? modeSel.value : 'auto',
+        source: requestedSource,
         preferred_kind: kindSel ? kindSel.value : 'auto',
-        device: devSel ? devSel.value : '',
+        device: requestedDevice,
         persist: true,
       });
-      await loadCaptureSource();
-      await refreshCaptureDevices();
       if (wasStreaming) {
-        startHdmiStream({ smooth: true, overlayText: 'Camera switched' });
+        const ready = await waitForCaptureReady({
+          source: requestedSource,
+          device: requestedDevice,
+          previousActiveDevice,
+          preferredKind: kindSel ? kindSel.value : 'auto',
+          timeoutMs: 2400,
+        }).catch(() => false);
+        if (ready) {
+          setCaptureSwitchStatus('✓ Camera switched');
+        } else {
+          setCaptureSwitchStatus('Camera switched, waiting for stable frames...');
+        }
+        if (streamBox) streamBox.classList.remove('switching');
+        clearHdmiStreamOverlay();
       }
+      void Promise.allSettled([loadCaptureSource(), refreshCaptureDevices(), refreshStreamDiagnostics()]);
       if (resultEl) {
         resultEl.textContent = '✓ Capture selection updated';
-        resultEl.style.color = '#4ade80';
+        setUiColor(resultEl, '--success');
       }
-      setCaptureSwitchStatus(wasStreaming ? '✓ Camera changed smoothly (live stream kept running)' : '✓ Capture source updated');
+      if (!wasStreaming) {
+        setCaptureSwitchStatus('✓ Capture source updated');
+      }
     } catch (e) {
       if (resultEl) {
         resultEl.textContent = `✗ ${e.message}`;
-        resultEl.style.color = '#f87171';
+        setUiColor(resultEl, '--error');
       }
       setCaptureSwitchStatus(`✗ ${e.message}`, true);
       clearHdmiStreamOverlay();
-      const streamBox = document.getElementById('hdmi-stream-container');
       if (streamBox) streamBox.classList.remove('switching');
     } finally {
       setCaptureSelectionBusy(false, '', prevApplyLabel);
@@ -2608,21 +2985,212 @@
 
   function toggleHdmiStream() {
     if (captureSelectionBusy) return;
-    if (hdmiStreamRunning) stopHdmiStream();
-    else startHdmiStream();
+    if (hdmiStreamRunning) void stopHdmiStream();
+    else void startHdmiStream();
   }
 
-  function startHdmiStream(options = {}) {
-    const { smooth = false, overlayText = 'Switching camera…' } = options;
+  function resetHdmiAvPipeline() {
+    if (hdmiAvWebSocket) {
+      try { hdmiAvWebSocket.onopen = null; } catch (_) {}
+      try { hdmiAvWebSocket.onmessage = null; } catch (_) {}
+      try { hdmiAvWebSocket.onerror = null; } catch (_) {}
+      try { hdmiAvWebSocket.onclose = null; } catch (_) {}
+      try { hdmiAvWebSocket.close(); } catch (_) {}
+      hdmiAvWebSocket = null;
+    }
+    hdmiAvAppendQueue = [];
+    hdmiAvAppendInFlight = false;
+    hdmiAvSourceBuffer = null;
+    hdmiAvMediaSource = null;
+    if (hdmiAvObjectUrl) {
+      try { URL.revokeObjectURL(hdmiAvObjectUrl); } catch (_) {}
+      hdmiAvObjectUrl = null;
+    }
+  }
+
+  function supportsWebRtcStreaming() {
+    return Boolean(window.RTCPeerConnection);
+  }
+
+  async function closeHdmiWebRtcPeer(notifyBackend = true) {
+    const peer = hdmiWebRtcPeer;
+    const peerId = hdmiWebRtcPeerId;
+    hdmiWebRtcPeer = null;
+    hdmiWebRtcPeerId = null;
+    hdmiWebRtcHasAudio = false;
+    if (peer) {
+      try {
+        peer.ontrack = null;
+        peer.onconnectionstatechange = null;
+        peer.close();
+      } catch (_) {}
+    }
+    if (notifyBackend && peerId) {
+      try {
+        await api(`/webrtc/close/${encodeURIComponent(peerId)}`, 'POST');
+      } catch (_) {}
+    }
+  }
+
+  async function startHdmiWebRtc(options = {}) {
+    const { smooth = false, overlayText = 'Switching camera…', forceRestart = false } = options;
+    const container = document.getElementById('hdmi-stream-container');
+    if (!container) return false;
+    if (hdmiStreamStopTimer) {
+      window.clearTimeout(hdmiStreamStopTimer);
+      hdmiStreamStopTimer = null;
+    }
+    await closeHdmiWebRtcPeer(true);
+
+    const token = ++hdmiStreamTransitionToken;
+    if (hdmiStreamStartupTimer) {
+      window.clearTimeout(hdmiStreamStartupTimer);
+      hdmiStreamStartupTimer = null;
+    }
+    if (smooth) {
+      container.classList.add('switching');
+      setHdmiStreamOverlay(overlayText);
+    } else {
+      container.classList.remove('switching');
+      clearHdmiStreamOverlay();
+    }
+
+    container.innerHTML = '<video id="hdmi-stream-player" playsinline autoplay controls style="width:100%;display:block;border-radius:0.5rem;"></video><div id="hdmi-stream-overlay" class="stream-overlay"></div>';
+    const player = document.getElementById('hdmi-stream-player');
+    if (!player) return false;
+    if (forceRestart) player.src = '';
+
+    const pc = new RTCPeerConnection();
+    hdmiWebRtcPeer = pc;
+    hdmiWebRtcRemoteStream = null;
+    let receivedTrack = false;
+    let fallbackTriggered = false;
+    player.autoplay = true;
+    player.playsInline = true;
+    player.muted = false;
+    player.volume = 1.0;
+
+    const triggerMjpegFallback = async (reasonText) => {
+      if (fallbackTriggered || token !== hdmiStreamTransitionToken) return;
+      fallbackTriggered = true;
+      if (hdmiStreamStartupTimer) {
+        window.clearTimeout(hdmiStreamStartupTimer);
+        hdmiStreamStartupTimer = null;
+      }
+      setHdmiStreamOverlay(reasonText || 'WebRTC unavailable. Switching to MJPEG…');
+      await closeHdmiWebRtcPeer(true);
+      startHdmiMjpegFallback({
+        smooth: true,
+        overlayText: reasonText || 'Switching to MJPEG…',
+        forceRestart: true,
+      });
+    };
+
+    pc.addTransceiver('video', { direction: 'recvonly' });
+    pc.addTransceiver('audio', { direction: 'recvonly' });
+
+    pc.ontrack = (event) => {
+      if (token !== hdmiStreamTransitionToken) return;
+      receivedTrack = true;
+      const stream = event.streams && event.streams.length ? event.streams[0] : new MediaStream([event.track]);
+      hdmiWebRtcRemoteStream = stream;
+      if (player.srcObject !== stream) {
+        player.srcObject = stream;
+      }
+      container.classList.remove('switching');
+      clearHdmiStreamOverlay();
+      player.play().catch(() => {});
+    };
+
+    pc.onconnectionstatechange = () => {
+      const state = String(pc.connectionState || '').toLowerCase();
+      if (state === 'connected') {
+        container.classList.remove('switching');
+        clearHdmiStreamOverlay();
+      } else if (state === 'failed' || state === 'disconnected') {
+        void triggerMjpegFallback('WebRTC stream lost. Switching to MJPEG…');
+      }
+    };
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    const answer = await api('/webrtc/offer', 'POST', {
+      sdp: pc.localDescription.sdp,
+      type: pc.localDescription.type,
+    });
+    hdmiWebRtcPeerId = String(answer.peer_id || '').trim() || null;
+    hdmiWebRtcHasAudio = Boolean(answer.has_audio);
+    await pc.setRemoteDescription({ type: answer.type, sdp: answer.sdp });
+
+    hdmiStreamStartupTimer = window.setTimeout(() => {
+      if (token !== hdmiStreamTransitionToken) return;
+      if (receivedTrack || hdmiWebRtcRemoteStream) return;
+      void triggerMjpegFallback('WebRTC did not deliver video. Switching to MJPEG…');
+    }, 2500);
+
+    document.getElementById('stream-toggle-btn').textContent = '■ Stop Stream';
+    document.getElementById('stream-toggle-btn').className = 'danger';
+    hdmiStreamRunning = true;
+    if (hdmiWebRtcHasAudio) {
+      const audioContainer = document.getElementById('audio-stream-container');
+      if (audioContainer) {
+        audioContainer.innerHTML = '<div class="empty-state" style="padding:0.5rem;">Audio is embedded in WebRTC stream.</div>';
+      }
+      const audioBtn = document.getElementById('audio-toggle-btn');
+      if (audioBtn) {
+        audioBtn.textContent = '■ Stop Audio';
+        audioBtn.className = 'danger';
+      }
+      hdmiAudioRunning = true;
+    }
+    return true;
+  }
+
+  function pumpHdmiAvQueue() {
+    if (!hdmiAvSourceBuffer || hdmiAvAppendInFlight || hdmiAvSourceBuffer.updating || !hdmiAvAppendQueue.length) return;
+    hdmiAvAppendInFlight = true;
+    try {
+      hdmiAvSourceBuffer.appendBuffer(hdmiAvAppendQueue.shift());
+    } catch (error) {
+      hdmiAvAppendInFlight = false;
+      throw error;
+    }
+  }
+
+  function enqueueHdmiAvChunk(chunk) {
+    if (!(chunk instanceof ArrayBuffer) && !(chunk instanceof Uint8Array)) return;
+    const normalized = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
+    hdmiAvAppendQueue.push(normalized);
+    if (hdmiAvAppendQueue.length > 120) hdmiAvAppendQueue.shift();
+    pumpHdmiAvQueue();
+  }
+
+  function buildAvWebSocketUrl() {
+    const base = apiBase || window.location.origin;
+    const url = new URL('/ws/stream/av', base);
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    return url.toString();
+  }
+
+  function startHdmiMjpegFallback(options = {}) {
+    const { smooth = false, overlayText = 'Switching camera…', forceRestart = false } = options;
     const url = `${apiBase}/stream/hdmi?ts=${Date.now()}`;
     const container = document.getElementById('hdmi-stream-container');
     if (!container) return;
+    if (hdmiStreamStopTimer) {
+      window.clearTimeout(hdmiStreamStopTimer);
+      hdmiStreamStopTimer = null;
+    }
     let img = document.getElementById('hdmi-stream-img');
     if (!img) {
       container.innerHTML = '<img id="hdmi-stream-img" alt="HDMI stream" /><div id="hdmi-stream-overlay" class="stream-overlay"></div>';
       img = document.getElementById('hdmi-stream-img');
     }
     const token = ++hdmiStreamTransitionToken;
+    if (hdmiStreamStartupTimer) {
+      window.clearTimeout(hdmiStreamStartupTimer);
+      hdmiStreamStartupTimer = null;
+    }
     if (smooth) {
       container.classList.add('switching');
       setHdmiStreamOverlay(overlayText);
@@ -2632,6 +3200,10 @@
     }
     img.onload = () => {
       if (token !== hdmiStreamTransitionToken) return;
+      if (hdmiStreamStartupTimer) {
+        window.clearTimeout(hdmiStreamStartupTimer);
+        hdmiStreamStartupTimer = null;
+      }
       container.classList.remove('switching');
       window.setTimeout(() => {
         if (token === hdmiStreamTransitionToken) clearHdmiStreamOverlay();
@@ -2639,43 +3211,92 @@
     };
     img.onerror = () => {
       if (token !== hdmiStreamTransitionToken) return;
+      if (hdmiStreamStartupTimer) {
+        window.clearTimeout(hdmiStreamStartupTimer);
+        hdmiStreamStartupTimer = null;
+      }
       container.classList.remove('switching');
       setHdmiStreamOverlay('Camera switch failed. Try again.');
     };
+    if (forceRestart) img.src = '';
     img.src = url;
+    hdmiStreamStartupTimer = window.setTimeout(() => {
+      if (token !== hdmiStreamTransitionToken) return;
+      setHdmiStreamOverlay('Waiting for first frame from selected camera…');
+    }, 1800);
     document.getElementById('stream-toggle-btn').textContent = '■ Stop Stream';
     document.getElementById('stream-toggle-btn').className = 'danger';
     hdmiStreamRunning = true;
   }
 
-  function stopHdmiStream() {
+  async function startHdmiStream(options = {}) {
+    resetHdmiAvPipeline();
+    await closeHdmiWebRtcPeer(true);
+    startHdmiMjpegFallback(options);
+  }
+
+  async function stopHdmiStream(options = {}) {
+    const { keepPlaceholder = false, preserveOverlay = false } = options;
     const container = document.getElementById('hdmi-stream-container');
     if (!container) return;
+    const player = document.getElementById('hdmi-stream-player');
     const img = document.getElementById('hdmi-stream-img');
     hdmiStreamTransitionToken += 1;
-    if (img) {
+    if (hdmiStreamStartupTimer) {
+      window.clearTimeout(hdmiStreamStartupTimer);
+      hdmiStreamStartupTimer = null;
+    }
+    if (hdmiStreamStopTimer) {
+      window.clearTimeout(hdmiStreamStopTimer);
+      hdmiStreamStopTimer = null;
+    }
+    await closeHdmiWebRtcPeer(true);
+    resetHdmiAvPipeline();
+    if (player) {
+      try { player.pause(); } catch (_) {}
+      player.removeAttribute('src');
+      player.load();
+    }
+    if (img || player) {
       container.classList.add('stopping');
-      window.setTimeout(() => {
-        const currentImg = document.getElementById('hdmi-stream-img');
-        if (currentImg) currentImg.src = '';
-        container.classList.remove('stopping');
-        container.classList.remove('switching');
-        clearHdmiStreamOverlay();
-        container.innerHTML = '<div class="empty-state">HDMI stream is stopped.</div>';
-      }, 180);
-    } else {
+      await new Promise((resolve) => {
+        hdmiStreamStopTimer = window.setTimeout(() => {
+          hdmiStreamStopTimer = null;
+          const currentImg = document.getElementById('hdmi-stream-img');
+          const currentPlayer = document.getElementById('hdmi-stream-player');
+          if (currentImg) currentImg.src = '';
+          if (currentPlayer) {
+            try { currentPlayer.pause(); } catch (_) {}
+            currentPlayer.removeAttribute('src');
+            currentPlayer.load();
+          }
+          container.classList.remove('stopping');
+          container.classList.remove('switching');
+          if (!preserveOverlay) clearHdmiStreamOverlay();
+          if (!keepPlaceholder) {
+            container.innerHTML = '<div class="empty-state">HDMI stream is stopped.</div>';
+          }
+          resolve();
+        }, 180);
+      });
+    } else if (!keepPlaceholder) {
       container.innerHTML = '<div class="empty-state">HDMI stream is stopped.</div>';
     }
     document.getElementById('stream-toggle-btn').textContent = '▶ Start Stream';
     document.getElementById('stream-toggle-btn').className = 'secondary';
     hdmiStreamRunning = false;
+    document.getElementById('audio-stream-container').innerHTML =
+      '<div class="empty-state" style="padding:0.5rem;">Audio stream is stopped.</div>';
+    document.getElementById('audio-toggle-btn').textContent = '🔊 Start Audio';
+    document.getElementById('audio-toggle-btn').className = 'secondary';
+    hdmiAudioRunning = false;
   }
 
   function setCaptureSwitchStatus(message, isError = false) {
     const el = document.getElementById('capture-switch-status');
     if (!el) return;
     el.textContent = message || '';
-    el.style.color = isError ? '#fca5a5' : '#93c5fd';
+    el.style.color = isError ? uiColor('--error') : uiColor('--info');
   }
 
   function setCaptureSelectionBusy(isBusy, statusText = '', restoreApplyLabel = null) {
@@ -2706,6 +3327,41 @@
 
   function clearHdmiStreamOverlay() {
     setHdmiStreamOverlay('');
+  }
+
+  async function waitForCaptureReady(options = {}) {
+    const {
+      source = 'auto',
+      device = '',
+      previousActiveDevice = '',
+      preferredKind = 'auto',
+      timeoutMs = 4000,
+    } = options;
+    const normalizedSource = String(source || 'auto').trim().toLowerCase();
+    const targetDevice = String(device || '').trim();
+    const previousDevice = String(previousActiveDevice || '').trim();
+    const targetKind = String(preferredKind || 'auto').trim().toLowerCase();
+    const requiresVideo = ['auto', 'hdmi-capture', 'camera-capture', 'hdmi', 'camera', 'capture-card', 'webcam'].includes(normalizedSource);
+    const deadline = Date.now() + Math.max(500, Number(timeoutMs) || 4000);
+
+    while (Date.now() < deadline) {
+      const data = await api('/capture/source').catch(() => null);
+      if (data) {
+        const activeDevice = String(data.hdmi_device || '').trim();
+        const selectedDevice = String(data.selected_video_device || '').trim();
+        const selectedMatches = !targetDevice || selectedDevice === targetDevice || activeDevice === targetDevice;
+        const sourceMatches = !normalizedSource || String(data.configured_source || '').toLowerCase() === normalizedSource || (normalizedSource === 'hdmi' && data.configured_source === 'hdmi-capture') || (normalizedSource === 'camera' && data.configured_source === 'camera-capture');
+        const effectiveKind = String(data.effective_preferred_kind || data.preferred_video_kind || '').toLowerCase();
+        const kindMatches = targetKind === 'auto' || !targetKind || effectiveKind === targetKind;
+        const switchedDevice = !previousDevice || !activeDevice || activeDevice !== previousDevice || selectedMatches;
+        const ready = !requiresVideo || (Boolean(data.hdmi_available) && selectedMatches && kindMatches && switchedDevice);
+        if (sourceMatches && ready) {
+          return true;
+        }
+      }
+      await new Promise(resolve => window.setTimeout(resolve, 220));
+    }
+    throw new Error('Selected camera did not become ready in time');
   }
 
   function _pushPerfPoint(seriesName, value) {
@@ -2833,6 +3489,22 @@
   }
 
   async function startAudioStream() {
+    if (hdmiStreamRunning && hdmiWebRtcPeer && hdmiWebRtcHasAudio) {
+      const player = document.getElementById('hdmi-stream-player');
+      if (player) {
+        player.muted = false;
+        player.volume = 1.0;
+        player.play().catch(() => {});
+      }
+      const audioContainer = document.getElementById('audio-stream-container');
+      if (audioContainer) {
+        audioContainer.innerHTML = '<div class="empty-state" style="padding:0.5rem;">Audio is embedded in WebRTC stream.</div>';
+      }
+      document.getElementById('audio-toggle-btn').textContent = '■ Stop Audio';
+      document.getElementById('audio-toggle-btn').className = 'danger';
+      hdmiAudioRunning = true;
+      return;
+    }
     const resultEl = document.getElementById('manual-result');
     try {
       const status = await api('/audio/source');
@@ -2848,7 +3520,7 @@
     } catch (e) {
       if (resultEl) {
         resultEl.textContent = `✗ ${e.message}`;
-        resultEl.style.color = '#f87171';
+        setUiColor(resultEl, '--error');
       }
       return;
     }
@@ -2863,7 +3535,7 @@
         stopAudioStream();
         if (resultEl) {
           resultEl.textContent = '✗ Audio stream failed. Check /audio/source diagnostics and ffmpeg/device settings.';
-          resultEl.style.color = '#f87171';
+          setUiColor(resultEl, '--error');
         }
       });
       if (hdmiAudioLatencyTimer) {
@@ -2893,11 +3565,23 @@
     hdmiAudioRunning = true;
     if (resultEl) {
       resultEl.textContent = '✓ Audio stream started';
-      resultEl.style.color = '#4ade80';
+      setUiColor(resultEl, '--success');
     }
   }
 
   function stopAudioStream() {
+    if (hdmiStreamRunning && hdmiWebRtcPeer && hdmiWebRtcHasAudio) {
+      const player = document.getElementById('hdmi-stream-player');
+      if (player) {
+        player.muted = true;
+      }
+      document.getElementById('audio-stream-container').innerHTML =
+        '<div class="empty-state" style="padding:0.5rem;">WebRTC audio muted.</div>';
+      document.getElementById('audio-toggle-btn').textContent = '🔊 Start Audio';
+      document.getElementById('audio-toggle-btn').className = 'secondary';
+      hdmiAudioRunning = false;
+      return;
+    }
     if (hdmiAudioLatencyTimer) {
       clearInterval(hdmiAudioLatencyTimer);
       hdmiAudioLatencyTimer = null;
@@ -2989,14 +3673,14 @@
         } else {
           output.innerHTML = '✓ Discovered Devices:\n' + escHtml(lines.join('\n'));
         }
-        output.style.color = '#4ade80';
+        setUiColor(output, '--success');
       } else {
         output.innerHTML = '✗ Discovery failed:\n' + escHtml(data.stderr || data.stdout);
-        output.style.color = '#f87171';
+        setUiColor(output, '--error');
       }
     } catch (e) {
       output.textContent = `✗ Error: ${e.message}`;
-      output.style.color = '#f87171';
+      setUiColor(output, '--error');
     }
   }
 
@@ -3038,11 +3722,11 @@
     // Using a more structured HTML table
     let table = `<style>
       .yts-table { width:100%; border-collapse:collapse; font-size:0.78rem; }
-      .yts-table th, .yts-table td { padding: 0.45rem 0.6rem; text-align:left; border-bottom:1px solid #1e293b; }
-      .yts-table th { font-weight:600; color:#94a3b8; background: #0f172a; position: sticky; top: 0; }
+      .yts-table th, .yts-table td { padding: 0.45rem 0.6rem; text-align:left; border-bottom:1px solid #27272a; }
+      .yts-table th { font-weight:600; color:#b0b0b5; background: #18181b; position: sticky; top: 0; }
       .yts-table tr { cursor:pointer; }
-      .yts-table tr:hover { background: #132744; }
-      .yts-table .id { color:#7dd3fc; max-width:180px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      .yts-table tr:hover { background: #27272a; }
+      .yts-table .id { color:#e4e4e7; max-width:180px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
       .yts-table .suite { color:#fcd34d; }
     </style>
     <table class="yts-table">
@@ -3063,7 +3747,7 @@
     table += `</tbody></table>`;
     
     if (tests.length > 100) {
-      table += `<div style="padding:0.5rem; text-align:center; font-size:0.8rem; color:#64748b;">Showing 100 of ${tests.length} tests. Use search to refine.</div>`;
+      table += `<div style="padding:0.5rem; text-align:center; font-size:0.8rem; color:${uiColor('--text-dim')};">Showing 100 of ${tests.length} tests. Use search to refine.</div>`;
     }
 
     output.innerHTML = table;
@@ -3100,7 +3784,7 @@
     // Optional: flash the input field
     const input = document.getElementById('yts-run-test');
     input.style.transition = 'none';
-    input.style.background = '#38bdf8';
+    input.style.background = uiColor('--focus');
     setTimeout(() => {
       input.style.transition = 'background 0.3s';
       input.style.background = '';
@@ -3144,13 +3828,13 @@
     const saveJson = document.getElementById('yts-run-json-output').checked;
 
     if (!device || !test) {
-      document.getElementById('yts-run-status').innerHTML = '<span style="color:#f87171;">✗ Device ID and Test ID/Name are required.</span>';
+      document.getElementById('yts-run-status').innerHTML = statusHtml('--error', '✗ Device ID and Test ID/Name are required.');
       return;
     }
 
     const statusEl = document.getElementById('yts-run-status');
     const outputEl = document.getElementById('yts-run-output');
-    statusEl.innerHTML = '<span style="color:#38bdf8;">▌ Running test...</span>';
+    statusEl.innerHTML = statusHtml('--info', '▌ Running test...');
     outputEl.innerHTML = '';
 
     try {
@@ -3161,10 +3845,10 @@
       
       if (data.returncode === 0) {
         statusEl.innerHTML = '<span style="color:#4ade80;">✓ Test completed successfully</span>';
-        outputEl.style.color = '#4ade80';
+        setUiColor(outputEl, '--success');
       } else {
         statusEl.innerHTML = `<span style="color:#f87171;">✗ Test failed (exit code: ${data.returncode})</span>`;
-        outputEl.style.color = '#f87171';
+        setUiColor(outputEl, '--error');
       }
 
       // Display output
@@ -3181,7 +3865,7 @@
     } catch (e) {
       statusEl.innerHTML = `<span style="color:#f87171;">✗ Error: ${escHtml(e.message)}</span>`;
       outputEl.textContent = `Error: ${e.message}`;
-      outputEl.style.color = '#f87171';
+      setUiColor(outputEl, '--error');
     }
   }
 
@@ -3211,7 +3895,7 @@
       const data = await api('/yts/job', 'POST', body);
       
       outputEl.innerHTML = `✓ Job submitted successfully!\n\nRun ID: ${escHtml(data.run_id)}\nStatus: ${escHtml(data.status)}\n\n${JSON.stringify(data, null, 2)}`;
-      outputEl.style.color = '#4ade80';
+      setUiColor(outputEl, '--success');
       
       // Clear form
       document.getElementById('yts-job-goal').value = '';
@@ -3219,7 +3903,7 @@
       document.getElementById('yts-job-steps').value = '';
     } catch (e) {
       outputEl.textContent = `✗ Error: ${e.message}`;
-      outputEl.style.color = '#f87171';
+      setUiColor(outputEl, '--error');
     }
   }
 
@@ -3575,7 +4259,7 @@
         updateRemoteModeStatusBanner();
       }
       el.textContent = `✓ [${mode}] ${singleAction}`;
-      el.style.color = '#4ade80';
+      setUiColor(el, '--success');
     };
 
     if (mode !== 'IR') {
@@ -3583,7 +4267,7 @@
         await executeOnce(action);
       } catch (e) {
         el.textContent = `✗ ${e.message}`;
-        el.style.color = '#f87171';
+        setUiColor(el, '--error');
       }
       return;
     }
@@ -3606,7 +4290,7 @@
           lastIrSendResult = `${current} ✗`;
           updateRemoteModeStatusBanner();
           el.textContent = `✗ ${e.message}`;
-          el.style.color = '#f87171';
+          setUiColor(el, '--error');
         }
         nextAction = state.pending;
       }
@@ -3625,10 +4309,10 @@
           `<img id="screenshot-img" src="${src}" alt="screenshot" />`;
       }
       document.getElementById('manual-result').textContent = '✓ Screenshot captured';
-      document.getElementById('manual-result').style.color = '#4ade80';
+      setUiColor(document.getElementById('manual-result'), '--success');
     } catch (e) {
       document.getElementById('manual-result').textContent = `✗ ${e.message}`;
-      document.getElementById('manual-result').style.color = '#f87171';
+      setUiColor(document.getElementById('manual-result'), '--error');
     }
   }
 
@@ -3852,13 +4536,13 @@
 
     stopBtn.style.display = isRunning ? '' : 'none';
     if (isRunning) {
-      statusEl.innerHTML = '<span style="color:#38bdf8;">▌ YTS command running...</span>';
+      statusEl.innerHTML = statusHtml('--info', '▌ YTS command running...');
     } else if (data.status === 'completed') {
-      statusEl.innerHTML = '<span style="color:#4ade80;">✓ Command finished successfully</span>';
+      statusEl.innerHTML = statusHtml('--success', '✓ Command finished successfully');
     } else if (data.status === 'stopped') {
-      statusEl.innerHTML = '<span style="color:#fbbf24;">■ Command stopped</span>';
+      statusEl.innerHTML = statusHtml('--warning', '■ Command stopped');
     } else {
-      statusEl.innerHTML = `<span style="color:#f87171;">✗ Command failed${data.returncode !== null ? ` (exit code: ${data.returncode})` : ''}</span>`;
+      statusEl.innerHTML = statusHtml('--error', `✗ Command failed${data.returncode !== null ? ` (exit code: ${data.returncode})` : ''}`);
     }
 
     const liveLog = Array.isArray(data.logs) && data.logs.length
@@ -3884,6 +4568,7 @@
 
     outputEl.innerHTML = output;
   renderYtsInteractionLog(data);
+    renderYtsGeminiLivePreview(data);
 
     const pendingPrompt = data.pending_prompt;
     if (pendingPrompt && data.awaiting_input) {
@@ -3896,7 +4581,7 @@
         <div class="yts-prompt-box">
           <div><strong>Interactive Prompt</strong></div>
           <div style="margin-top:0.5rem; color:#e2e8f0;">${escHtml(pendingPrompt.text || '')}</div>
-          ${aiWatchingTv ? `<div class="yts-hint" style="margin-top:0.55rem; color:#7dd3fc;">👀 ${escHtml(aiStatusMessage)}</div>` : ''}
+          ${aiWatchingTv ? `<div class="yts-hint" style="margin-top:0.55rem; color:${uiColor('--info')};">👀 ${escHtml(aiStatusMessage)}</div>` : ''}
           <div class="yts-prompt-actions">
             ${buttonOptions.map(option => `<button class="secondary" onclick="respondToYtsPrompt(${JSON.stringify(option)})">${escHtml(option)}</button>`).join('')}
           </div>
@@ -3954,6 +4639,31 @@
     }
   }
 
+  function renderYtsGeminiLivePreview(data) {
+    const stage = document.getElementById('yts-gemini-live-preview-stage');
+    const statusEl = document.getElementById('yts-gemini-live-preview-status');
+    if (!stage || !statusEl) return;
+
+    const isActive = !!(data && data.interactive_ai && data.status === 'running');
+    if (!isActive) {
+      ytsGeminiPreviewCommandId = null;
+      stage.innerHTML = '<div class="yts-live-preview-empty">Live capture preview will appear here when Gemini interactive monitoring is active.</div>';
+      statusEl.textContent = 'Starts when interactive YTS is running.';
+      return;
+    }
+
+    const commandId = String(data.command_id || '');
+    const sourceText = data.latest_visual_analysis?.source || data.last_visual_context?.source || 'live-capture';
+    const summary = data.ai_status_message || 'Showing the same live capture source currently used for Gemini visual monitoring.';
+    statusEl.textContent = `${summary} Source: ${sourceText}`;
+
+    if (ytsGeminiPreviewCommandId !== commandId) {
+      ytsGeminiPreviewCommandId = commandId;
+      const url = `${apiBase}/stream/hdmi?ts=${Date.now()}`;
+      stage.innerHTML = `<img id="yts-gemini-live-preview-img" src="${url}" alt="Gemini live preview" />`;
+    }
+  }
+
   async function pollLiveYtsCommand(commandId) {
     try {
       const data = await api(`/yts/command/live/${commandId}`);
@@ -3967,7 +4677,7 @@
     } catch (e) {
       clearYtsCommandPolling();
       setCurrentYtsCommand(null);
-      document.getElementById('yts-command-status').innerHTML = `<span style="color:#f87171;">✗ API Error: ${escHtml(e.message)}</span>`;
+      document.getElementById('yts-command-status').innerHTML = statusHtml('--error', `✗ API Error: ${escHtml(e.message)}`);
       return null;
     }
   }
@@ -3988,7 +4698,7 @@
 
     if (!commandId) return;
 
-    document.getElementById('yts-command-status').innerHTML = '<span style="color:#38bdf8;">▌ Reconnecting to live YTS command...</span>';
+    document.getElementById('yts-command-status').innerHTML = statusHtml('--info', '▌ Reconnecting to live YTS command...');
     const data = await openYtsCommandHistoryItem(commandId, { startPollingIfRunning: false });
     if (data?.status === 'running') {
       startYtsCommandPolling(commandId);
@@ -4004,7 +4714,7 @@
       await pollLiveYtsCommand(currentYtsCommandId);
       await loadYtsCommandHistory(true);
     } catch (e) {
-      document.getElementById('yts-command-status').innerHTML = `<span style="color:#f87171;">✗ Failed to stop command: ${escHtml(e.message)}</span>`;
+      document.getElementById('yts-command-status').innerHTML = statusHtml('--error', `✗ Failed to stop command: ${escHtml(e.message)}`);
     }
   }
 
@@ -4261,7 +4971,7 @@
       </div>
       <label style="margin-top:0.75rem;"><input type="checkbox" id="yts-list-guided" style="width:auto; margin-right:0.45rem;" onchange="handleYtsGuidedModeChange('yts-list-guided')"> Show guided catalog only</label>
       
-      <div style="font-size:1.1rem; font-weight:600; color:#4ade80; margin:0.75rem 0;" id="yts-list-test-count">-- tests loaded</div>
+      <div style="font-size:1.1rem; font-weight:600; color:var(--success); margin:0.75rem 0;" id="yts-list-test-count">-- tests loaded</div>
 
       <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem; margin-bottom:0.75rem;">
         <div>
@@ -4307,13 +5017,13 @@
 
     const selectedDeviceId = requireSelectedDabDevice('yts-command-output', 'Select a DAB device before running YTS commands.');
     if (!selectedDeviceId) {
-      document.getElementById('yts-command-status').innerHTML = '<span style="color:#f87171;">✗ No DAB device selected.</span>';
+      document.getElementById('yts-command-status').innerHTML = statusHtml('--error', '✗ No DAB device selected.');
       return;
     }
 
     clearYtsCommandPolling();
     resultContainer.style.display = 'block';
-    document.getElementById('yts-command-status').innerHTML = `<span style="color:#38bdf8;">▌ Starting ${command}...</span>`;
+    document.getElementById('yts-command-status').innerHTML = statusHtml('--info', `▌ Starting ${command}...`);
     document.getElementById('yts-command-output').textContent = '';
     document.getElementById('yts-download-container').innerHTML = '';
     const reportViewer = document.getElementById('yts-report-viewer');
@@ -4341,7 +5051,7 @@
       }
       const device = deviceInput ? deviceInput.value.trim() : '';
       if (!device) {
-        document.getElementById('yts-command-status').innerHTML = '<span style="color:#f87171;">✗ Device ID is required.</span>';
+        document.getElementById('yts-command-status').innerHTML = statusHtml('--error', '✗ Device ID is required.');
         return;
       }
       body.params.push(device);
@@ -4370,7 +5080,7 @@
       body.ui_navigation_allowed = !!document.getElementById('yts-arg-test-ui-navigation-allowed')?.checked;
 
       if (!resolvedIds.length && !filterTokens.length && !guided && !extraArgs.length) {
-        document.getElementById('yts-command-status').innerHTML = '<span style="color:#f87171;">✗ Select tests, add test IDs, or choose a suite/category/name before running.</span>';
+        document.getElementById('yts-command-status').innerHTML = statusHtml('--error', '✗ Select tests, add test IDs, or choose a suite/category/name before running.');
         return;
       }
 
@@ -4390,7 +5100,7 @@
       const runTargetText = resolvedIds.length
         ? `${resolvedIds.length} test${resolvedIds.length === 1 ? '' : 's'}`
         : 'selected filters';
-      document.getElementById('yts-command-status').innerHTML = `<span style="color:#38bdf8;">▌ Running ${escHtml(runTargetText)}...</span>`;
+      document.getElementById('yts-command-status').innerHTML = statusHtml('--info', `▌ Running ${escHtml(runTargetText)}...`);
 
     } else {
       // Generic param handling for all other commands
@@ -4681,11 +5391,11 @@
     
     let table = `<style>
       .yts-table { width:100%; border-collapse:collapse; font-size:0.78rem; }
-      .yts-table th, .yts-table td { padding: 0.45rem 0.6rem; text-align:left; border-bottom:1px solid #1e293b; }
-      .yts-table th { font-weight:600; color:#94a3b8; background: #0f172a; position: sticky; top: 0; }
+      .yts-table th, .yts-table td { padding: 0.45rem 0.6rem; text-align:left; border-bottom:1px solid #27272a; }
+      .yts-table th { font-weight:600; color:#b0b0b5; background: #18181b; position: sticky; top: 0; }
       .yts-table tr { cursor:pointer; }
-      .yts-table tr:hover { background: #132744; }
-      .yts-table .id { color:#7dd3fc; max-width:180px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      .yts-table tr:hover { background: #27272a; }
+      .yts-table .id { color:#e4e4e7; max-width:180px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
       .yts-table .suite { color:#fcd34d; }
     </style>
     <table class="yts-table">
@@ -4706,7 +5416,7 @@
     table += `</tbody></table>`;
     
     if (tests.length > 200) {
-      table += `<div style="padding:0.5rem; text-align:center; font-size:0.8rem; color:#64748b;">Showing 200 of ${tests.length} tests. Use filters to refine.</div>`;
+      table += `<div style="padding:0.5rem; text-align:center; font-size:0.8rem; color:${uiColor('--text-dim')};">Showing 200 of ${tests.length} tests. Use filters to refine.</div>`;
     }
     output.innerHTML = table;
   }
@@ -4741,7 +5451,7 @@
       resultsContainer.innerHTML = filtered.map(t => 
           `<div class="yts-search-item" onmousedown="selectTestFromRunnerSelector(${JSON.stringify(t.test_id)})">
               <strong>${escHtml(t.test_id)}</strong><br>
-            <span style="font-size:0.8rem; color:#94a3b8;">${escHtml(t.test_suite || 'Unknown')} · ${escHtml(t.test_category || 'Uncategorized')} · ${escHtml(t.test_title || 'No title')}</span>
+            <span style="font-size:0.8rem; color:${uiColor('--text-muted')};">${escHtml(t.test_suite || 'Unknown')} · ${escHtml(t.test_category || 'Uncategorized')} · ${escHtml(t.test_title || 'No title')}</span>
            </div>`
       ).join('');
   }
@@ -5051,7 +5761,7 @@
         updateRemoteModeStatusBanner();
       }
       el.textContent = `✓ [${mode}] ${singleAction}`;
-      el.style.color = '#4ade80';
+      setUiColor(el, '--success');
     };
 
     if (mode !== 'IR') {
@@ -5059,7 +5769,7 @@
         await executeOnce(action);
       } catch (e) {
         el.textContent = `✗ ${e.message}`;
-        el.style.color = '#f87171';
+        setUiColor(el, '--error');
       }
       return;
     }
@@ -5082,7 +5792,7 @@
           lastIrSendResult = `${current} ✗`;
           updateRemoteModeStatusBanner();
           el.textContent = `✗ ${e.message}`;
-          el.style.color = '#f87171';
+          setUiColor(el, '--error');
         }
         nextAction = state.pending;
       }
@@ -5103,10 +5813,10 @@
           `<img id="screenshot-img" src="${src}" alt="screenshot" />`;
       }
       document.getElementById('manual-result').textContent = '✓ Screenshot captured';
-      document.getElementById('manual-result').style.color = '#4ade80';
+      setUiColor(document.getElementById('manual-result'), '--success');
     } catch (e) {
       document.getElementById('manual-result').textContent = `✗ ${e.message}`;
-      document.getElementById('manual-result').style.color = '#f87171';
+      setUiColor(document.getElementById('manual-result'), '--error');
     }
   }
 
@@ -5115,6 +5825,7 @@
   }
 
   async function initializeDashboard() {
+    initTheme();
     initApiBase();
     initDetailTabs();
     initYtsControlCenter();
@@ -5141,11 +5852,11 @@
   initializeDashboard();
   startCurrentSettingsRefreshLoop();
   setInterval(checkHealth, 30000);
-  setInterval(loadRuns, 5000);
-  setInterval(loadCaptureSource, 10000);
-  setInterval(refreshCaptureDevices, 15000);
-  setInterval(refreshStreamDiagnostics, 20000);
-  setInterval(refreshSystemMetrics, 1000);
+  setInterval(loadRuns, 12000);
+  setInterval(loadCaptureSource, 20000);
+  setInterval(refreshCaptureDevices, 30000);
+  setInterval(refreshStreamDiagnostics, 30000);
+  setInterval(refreshSystemMetrics, 5000);
   window.addEventListener('resize', drawPerfGraph);
 </script>
 </body>

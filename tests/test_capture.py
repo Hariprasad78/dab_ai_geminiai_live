@@ -77,3 +77,16 @@ def test_init_hdmi_session_does_not_fallback_when_explicit_device_selected(monke
 
     assert session is None
     assert FakeSession.attempts == ["/dev/video42"]
+
+
+def test_set_capture_preference_rejects_non_capture_endpoint(monkeypatch):
+    class FakeDab:
+        async def capture_screenshot(self):
+            return None
+
+    capture = ScreenCapture(FakeDab())
+    monkeypatch.setattr("vertex_live_dab_agent.capture.capture.os.path.exists", lambda _p: True)
+    monkeypatch.setattr(capture, "_is_capture_capable_device", lambda _dev: False)
+
+    with pytest.raises(ValueError, match="not capture-capable"):
+        capture.set_capture_preference(device="/dev/video5", persist=False)

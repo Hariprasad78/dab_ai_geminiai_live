@@ -576,6 +576,20 @@ class AdapterDABClient(DABClientBase):
         self._max_retries = (
             max_retries if max_retries is not None else config.dab_max_retries
         )
+        self._keypress_timeout = max(
+            0.2,
+            float(getattr(config, "dab_keypress_timeout", self._timeout)),
+        )
+        self._keypress_max_retries = max(
+            0,
+            int(getattr(config, "dab_keypress_max_retries", 0)),
+        )
+        self._key_dedupe_window_s = max(
+            0.0,
+            float(getattr(config, "manual_keypress_dedupe_window_ms", 180)) / 1000.0,
+        )
+        self._last_keypress_at: Dict[str, float] = {}
+        self._key_dedupe_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
     # Public DAB command methods
@@ -602,12 +616,46 @@ class AdapterDABClient(DABClientBase):
 
     async def key_press(self, key_code: str) -> DABResponse:
         """Send a key press event (``input/key-press``)."""
-        return await self._send_with_retry(TOPIC_INPUT_KEY_PRESS, {"keyCode": key_code})
+        key = str(key_code or "").strip().upper()
+        if not key:
+            raise DABError("key_code is required")
+        if await self._is_duplicate_key_event("press", key):
+            req_id = str(uuid.uuid4())
+            return DABResponse(
+                success=True,
+                status=202,
+                data={"deduped": True, "keyCode": key, "message": "duplicate key press dropped"},
+                topic=format_topic(TOPIC_INPUT_KEY_PRESS, self._device_id),
+                request_id=req_id,
+            )
+        return await self._send_with_retry(
+            TOPIC_INPUT_KEY_PRESS,
+            {"keyCode": key},
+            timeout_override=self._keypress_timeout,
+            max_retries_override=self._keypress_max_retries,
+        )
 
     async def long_key_press(self, key_code: str, duration_ms: int = 1500) -> DABResponse:
         """Send a long key press event (``input/long-key-press``)."""
-        payload = {"keyCode": key_code, "durationMs": int(duration_ms)}
-        return await self._send_with_retry(TOPIC_INPUT_LONG_KEY_PRESS, payload)
+        key = str(key_code or "").strip().upper()
+        if not key:
+            raise DABError("key_code is required")
+        if await self._is_duplicate_key_event("long", key):
+            req_id = str(uuid.uuid4())
+            return DABResponse(
+                success=True,
+                status=202,
+                data={"deduped": True, "keyCode": key, "message": "duplicate long key press dropped"},
+                topic=format_topic(TOPIC_INPUT_LONG_KEY_PRESS, self._device_id),
+                request_id=req_id,
+            )
+        payload = {"keyCode": key, "durationMs": int(duration_ms)}
+        return await self._send_with_retry(
+            TOPIC_INPUT_LONG_KEY_PRESS,
+            payload,
+            timeout_override=self._keypress_timeout,
+            max_retries_override=self._keypress_max_retries,
+        )
 
     async def list_keys(self) -> DABResponse:
         """List supported key codes (``input/key/list``)."""
@@ -775,6 +823,9 @@ class AdapterDABClient(DABClientBase):
         self,
         topic_template: str,
         payload: Dict[str, Any],
+        *,
+        timeout_override: Optional[float] = None,
+        max_retries_override: Optional[int] = None,
     ) -> DABResponse:
         """Resolve topic, send with timeout, retry on failure, return DABResponse.
 
@@ -788,25 +839,45 @@ class AdapterDABClient(DABClientBase):
         from vertex_live_dab_agent.dab.transport import TransportRequest
 
         topic = format_topic(topic_template, self._device_id)
-        return await self._send_resolved_topic_with_retry(topic, payload)
+        return await self._send_resolved_topic_with_retry(
+            topic,
+            payload,
+            timeout_override=timeout_override,
+            max_retries_override=max_retries_override,
+        )
 
     async def _send_resolved_topic_with_retry(
         self,
         topic: str,
         payload: Dict[str, Any],
+        *,
+        timeout_override: Optional[float] = None,
+        max_retries_override: Optional[int] = None,
     ) -> DABResponse:
         """Send using a fully-resolved topic with timeout/retry policy."""
         from vertex_live_dab_agent.dab.transport import TransportRequest
 
         last_exc: Optional[Exception] = None
+        timeout_s = (
+            float(timeout_override)
+            if timeout_override is not None
+            else float(self._timeout)
+        )
+        timeout_s = max(0.2, timeout_s)
+        max_retries = (
+            int(max_retries_override)
+            if max_retries_override is not None
+            else int(self._max_retries)
+        )
+        max_retries = max(0, max_retries)
 
-        for attempt in range(self._max_retries + 1):
+        for attempt in range(max_retries + 1):
             req_id = str(uuid.uuid4())
             request = TransportRequest(
                 topic=topic,
                 payload=payload,
                 request_id=req_id,
-                timeout=self._timeout,
+                timeout=timeout_s,
             )
             try:
                 logger.info(
@@ -814,12 +885,12 @@ class AdapterDABClient(DABClientBase):
                     topic,
                     req_id,
                     attempt + 1,
-                    self._max_retries + 1,
+                    max_retries + 1,
                     payload,
                 )
                 transport_resp = await asyncio.wait_for(
                     self._transport.send(request),
-                    timeout=self._timeout,
+                    timeout=timeout_s,
                 )
                 resp = DABResponse(
                     success=transport_resp.status < 400,
@@ -837,15 +908,15 @@ class AdapterDABClient(DABClientBase):
 
             except asyncio.TimeoutError:
                 last_exc = asyncio.TimeoutError(
-                    f"DAB request timed out after {self._timeout}s (topic={topic})"
+                    f"DAB request timed out after {timeout_s}s (topic={topic})"
                 )
                 logger.warning(
                     "DAB timeout: topic=%s req_id=%s attempt=%d/%d timeout=%.1fs",
                     topic,
                     req_id,
                     attempt + 1,
-                    self._max_retries + 1,
-                    self._timeout,
+                    max_retries + 1,
+                    timeout_s,
                 )
 
             except Exception as exc:
@@ -855,24 +926,34 @@ class AdapterDABClient(DABClientBase):
                     topic,
                     req_id,
                     attempt + 1,
-                    self._max_retries + 1,
+                    max_retries + 1,
                     exc,
                 )
 
-            if attempt < self._max_retries:
+            if attempt < max_retries:
                 back_off = 0.1 * (2**attempt)
                 logger.info(
                     "DAB retry in %.2fs (next attempt %d/%d)",
                     back_off,
                     attempt + 2,
-                    self._max_retries + 1,
+                    max_retries + 1,
                 )
                 await asyncio.sleep(back_off)
 
         raise DABError(
-            f"DAB request failed after {self._max_retries + 1} attempt(s) "
+            f"DAB request failed after {max_retries + 1} attempt(s) "
             f"(topic={topic}): {last_exc}"
         ) from last_exc
+
+    async def _is_duplicate_key_event(self, event_type: str, key_code: str) -> bool:
+        if self._key_dedupe_window_s <= 0.0:
+            return False
+        stamp_key = f"{event_type}:{key_code}"
+        now = time.monotonic()
+        async with self._key_dedupe_lock:
+            previous = self._last_keypress_at.get(stamp_key)
+            self._last_keypress_at[stamp_key] = now
+        return previous is not None and (now - previous) <= self._key_dedupe_window_s
 
     async def _discover_devices_broadcast(self, attempts: int = 1, wait_seconds: float = 1.0) -> list[Dict[str, Any]]:
         """Broadcast to dab/discovery and collect responses on unique response topic."""

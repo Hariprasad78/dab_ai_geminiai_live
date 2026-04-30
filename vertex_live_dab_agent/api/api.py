@@ -16,8 +16,10 @@ import sqlite3
 import threading
 import time
 import glob
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
+import uuid as uuidlib
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -92,10 +94,9 @@ logger = logging.getLogger(__name__)
 _ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
 _JPEG_WARNING_PREFIX = "Corrupt JPEG data:"
 
-# Path to the bundled static frontend
-_STATIC_DIR = Path(__file__).parent.parent.parent / "static"
-_YTS_TESTLIST_PATH = Path("/home/harry/youtube/ai_tool/testlist.json")
-_YTS_GUIDED_TESTLIST_PATH = Path("/home/harry/youtube/ai_tool/testlist_guided.json")
+# Path to the bundled static frontend and repo-local YTS workspace
+_REPO_ROOT = Path(__file__).parent.parent.parent.resolve()
+_STATIC_DIR = _REPO_ROOT / "static"
 _YTS_INTERACTIVE_CAPTURE_ATTEMPTS = 3
 _YTS_INTERACTIVE_CAPTURE_DELAY_SECONDS = 0.9
 _YTS_LIVE_VISUAL_MONITOR_INTERVAL_SECONDS = 1.0
@@ -135,6 +136,7 @@ _vertex_text_client: Optional[VertexPlannerClient] = None
 _vertex_live_visual_client: Optional[VertexPlannerClient] = None
 _ir_service: Optional[SamsungIrService] = None
 _runtime_vertex_planner_model_override: Optional[str] = None
+_runtime_vertex_live_model_override: Optional[str] = None
 _yts_live_commands: Dict[str, Dict[str, Any]] = {}
 _yts_live_tasks: Dict[str, asyncio.Task] = {}
 _yts_live_visual_tasks: Dict[str, asyncio.Task] = {}
@@ -163,6 +165,15 @@ _device_settings_values_ttl_seconds: float = 15.0
 _device_settings_values_min_interval_seconds: float = 15.0
 _device_settings_get_max_concurrency: int = 4
 _device_settings_get_semaphore = asyncio.Semaphore(_device_settings_get_max_concurrency)
+_device_settings_get_fallback_max_reads: int = 6
+_manual_keypress_last_sent_at: Dict[str, float] = {}
+_manual_keypress_lock = asyncio.Lock()
+_LIVE_AV_MP4_MIME = 'video/mp4; codecs="avc1.42E01F, mp4a.40.2"'
+_webrtc_lock = asyncio.Lock()
+_webrtc_peers: Dict[str, Any] = {}
+_webrtc_relay: Optional[Any] = None
+_webrtc_video_source: Optional[Any] = None
+_webrtc_audio_player: Optional[Any] = None
 
 _APP_ID_ALIASES: Dict[str, str] = {
     "com.netflix.ninja": "netflix",
@@ -185,6 +196,599 @@ _COMMON_VERTEX_MODELS: List[str] = [
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
 ]
+
+
+async def _is_manual_keypress_duplicate(
+    *,
+    device_id: str,
+    action: str,
+    key_code: str,
+) -> bool:
+    window_s = max(
+        0.0,
+        float(getattr(get_config(), "manual_keypress_dedupe_window_ms", 180)) / 1000.0,
+    )
+    if window_s <= 0.0:
+        return False
+    stamp_key = f"{device_id}:{action}:{key_code}"
+    now = time.monotonic()
+    async with _manual_keypress_lock:
+        previous = _manual_keypress_last_sent_at.get(stamp_key)
+        _manual_keypress_last_sent_at[stamp_key] = now
+    return previous is not None and (now - previous) <= window_s
+
+
+class WebRTCOfferRequest(BaseModel):
+    sdp: str
+    type: str
+
+
+class WebRTCOfferResponse(BaseModel):
+    peer_id: str
+    sdp: str
+    type: str
+    has_video: bool = True
+    has_audio: bool = False
+
+
+try:
+    from aiortc import RTCPeerConnection, RTCSessionDescription, VideoStreamTrack
+    from aiortc.contrib.media import MediaPlayer, MediaRelay
+    import numpy as np
+    from av import VideoFrame
+
+    _AIORTC_AVAILABLE = True
+except Exception:
+    RTCPeerConnection = None  # type: ignore[assignment]
+    RTCSessionDescription = None  # type: ignore[assignment]
+    VideoStreamTrack = object  # type: ignore[assignment]
+    MediaPlayer = None  # type: ignore[assignment]
+    MediaRelay = None  # type: ignore[assignment]
+    np = None  # type: ignore[assignment]
+    VideoFrame = None  # type: ignore[assignment]
+    _AIORTC_AVAILABLE = False
+
+
+def _ensure_aiortc_available() -> None:
+    if not _AIORTC_AVAILABLE:
+        raise RuntimeError("WebRTC dependencies missing on server. Install aiortc/av on Raspberry Pi host.")
+
+
+class _PiCaptureVideoTrack(VideoStreamTrack):
+    """WebRTC video track that always reads from Raspberry Pi capture devices."""
+
+    def __init__(self, capture: ScreenCapture, fps: float = 30.0) -> None:
+        super().__init__()
+        _ensure_aiortc_available()
+        self._capture = capture
+        self._fps = max(5.0, float(fps or 30.0))
+        self._placeholder = np.zeros((720, 1280, 3), dtype=np.uint8)
+        self._last_frame_ts = 0.0
+
+    async def recv(self) -> Any:
+        pts, time_base = await self.next_timestamp()
+        frame = await asyncio.to_thread(self._capture.get_hdmi_stream_frame_raw)
+        image = frame if frame is not None else self._placeholder
+        av_frame = VideoFrame.from_ndarray(image, format="bgr24")
+        av_frame.pts = pts
+        av_frame.time_base = time_base
+        self._last_frame_ts = time.monotonic()
+        return av_frame
+
+
+def _create_webrtc_video_source() -> Any:
+    fps = float(get_config().hdmi_capture_fps or 30.0)
+    return _PiCaptureVideoTrack(get_screen_capture(), fps=fps)
+
+
+def _is_alsa_hw_device_present(device: str) -> bool:
+    """Return True if `hw:X,Y` currently exists in ALSA capture devices."""
+    dev = str(device or "").strip()
+    if not dev:
+        return False
+    if not re.match(r"^hw:\d+,\d+$", dev, re.IGNORECASE):
+        return True
+    try:
+        available = {
+            str(item.get("alsa_device") or "").strip().lower()
+            for item in list_alsa_capture_devices()
+        }
+    except Exception:
+        return True
+    return dev.lower() in available
+
+
+def _create_webrtc_audio_player() -> Optional[Any]:
+    _ensure_aiortc_available()
+    config = get_config()
+    if not bool(config.hdmi_audio_enabled):
+        return None
+    candidates: List[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _add_candidate(fmt: Optional[str], dev: Optional[str]) -> None:
+        key = (str(fmt or "").strip(), str(dev or "").strip())
+        if key[0] not in {"alsa", "pulse"} or not key[1]:
+            return
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(key)
+
+    _, capture_status = _resolve_active_capture_video_device()
+    configured_device = str(config.hdmi_audio_device or "").strip() or (
+        _guess_audio_input_for_selected_capture(capture_status=capture_status) or ""
+    )
+    primary_format, primary_device = _resolve_audio_input(
+        allow_arecord=False,
+        capture_status=capture_status,
+    )
+    _add_candidate(primary_format, primary_device)
+    for forced_format in ("pulse", "alsa"):
+        fallback_format, fallback_device = resolve_audio_input(
+            preferred_format=forced_format,
+            configured_device=configured_device,
+        )
+        _add_candidate(fallback_format, fallback_device)
+
+    for audio_format, audio_device in candidates:
+        if audio_format == "alsa" and not _is_alsa_hw_device_present(audio_device):
+            logger.warning(
+                "Skipping unavailable ALSA capture device for WebRTC audio: %s",
+                audio_device,
+            )
+            continue
+        options: Dict[str, str] = {}
+        if audio_format == "alsa":
+            options["channels"] = str(int(config.hdmi_audio_channels))
+            options["sample_rate"] = str(int(config.hdmi_audio_sample_rate))
+        try:
+            return MediaPlayer(audio_device, format=audio_format, options=options or None)
+        except Exception as exc:
+            logger.warning(
+                "WebRTC audio source open failed: format=%s device=%s error=%s",
+                audio_format,
+                audio_device,
+                exc,
+            )
+
+    logger.warning("WebRTC audio disabled: no working ALSA/Pulse audio source on server")
+    return None
+
+
+async def _ensure_webrtc_media_locked() -> None:
+    global _webrtc_relay, _webrtc_video_source, _webrtc_audio_player
+    _ensure_aiortc_available()
+    if _webrtc_relay is None:
+        _webrtc_relay = MediaRelay()
+    if _webrtc_video_source is None:
+        _webrtc_video_source = _create_webrtc_video_source()
+    if _webrtc_audio_player is None:
+        _webrtc_audio_player = _create_webrtc_audio_player()
+
+
+async def _close_webrtc_peer(peer_id: str) -> None:
+    global _webrtc_audio_player, _webrtc_video_source, _webrtc_relay
+    async with _webrtc_lock:
+        pc = _webrtc_peers.pop(peer_id, None)
+        if pc is not None:
+            with contextlib.suppress(Exception):
+                await pc.close()
+        if _webrtc_peers:
+            return
+        if _webrtc_audio_player is not None:
+            with contextlib.suppress(Exception):
+                _webrtc_audio_player.audio.stop() if getattr(_webrtc_audio_player, "audio", None) else None
+            with contextlib.suppress(Exception):
+                _webrtc_audio_player.video.stop() if getattr(_webrtc_audio_player, "video", None) else None
+            _webrtc_audio_player = None
+        if _webrtc_video_source is not None:
+            with contextlib.suppress(Exception):
+                _webrtc_video_source.stop()
+            _webrtc_video_source = None
+        _webrtc_relay = None
+
+
+async def _close_all_webrtc_peers() -> None:
+    for peer_id in list(_webrtc_peers.keys()):
+        await _close_webrtc_peer(peer_id)
+
+
+def _ffmpeg_rotation_filter(rotation_degrees: Optional[int]) -> Optional[str]:
+    rotation = int(rotation_degrees or 0) % 360
+    if rotation == 90:
+        return "transpose=1"
+    if rotation == 180:
+        return "transpose=1,transpose=1"
+    if rotation == 270:
+        return "transpose=2"
+    return None
+
+
+def _resolve_active_capture_video_device() -> tuple[Optional[str], Dict[str, Any]]:
+    capture = get_screen_capture()
+    capture.ensure_hdmi_session(force=True)
+    status = capture.capture_source_status()
+    device = str(status.get("hdmi_device") or status.get("selected_video_device") or "").strip()
+    return (device or None), status
+
+
+def _build_ffmpeg_video_input_args(
+    *,
+    video_device: str,
+    video_status: Dict[str, Any],
+) -> List[str]:
+    config = get_config()
+    args = [
+        "-thread_queue_size",
+        "1024",
+        "-f",
+        "v4l2",
+        "-framerate",
+        str(float(config.hdmi_capture_fps)),
+        "-video_size",
+        f"{int(config.hdmi_capture_width)}x{int(config.hdmi_capture_height)}",
+    ]
+    fourcc = str(config.hdmi_capture_fourcc or "").strip().lower()
+    if fourcc == "mjpg":
+        args.extend(["-input_format", "mjpeg"])
+    args.extend(["-i", video_device])
+    return args
+
+
+def _build_ffmpeg_audio_input_args(
+    *,
+    audio_format: Optional[str],
+    audio_device: Optional[str],
+) -> List[str]:
+    if not audio_format or not audio_device:
+        return []
+    return [
+        "-thread_queue_size",
+        "1024",
+        "-f",
+        str(audio_format),
+        "-i",
+        str(audio_device),
+    ]
+
+
+def _build_live_av_ffmpeg_command(
+    *,
+    video_device: str,
+    video_status: Dict[str, Any],
+    audio_format: Optional[str],
+    audio_device: Optional[str],
+) -> List[str]:
+    config = get_config()
+    command: List[str] = [
+        "ffmpeg",
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-fflags",
+        "nobuffer",
+        "-flags",
+        "low_delay",
+        "-avioflags",
+        "direct",
+    ]
+    command.extend(_build_ffmpeg_video_input_args(video_device=video_device, video_status=video_status))
+    command.extend(_build_ffmpeg_audio_input_args(audio_format=audio_format, audio_device=audio_device))
+    command.extend(["-map", "0:v:0"])
+    if audio_format and audio_device:
+        command.extend(["-map", "1:a:0"])
+    rotation_filter = _ffmpeg_rotation_filter(video_status.get("rotation_degrees"))
+    if rotation_filter:
+        command.extend(["-vf", rotation_filter])
+    gop = max(10, int(round(float(config.hdmi_capture_fps or 30.0))))
+    command.extend(
+        [
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-tune",
+            "zerolatency",
+            "-pix_fmt",
+            "yuv420p",
+            "-profile:v",
+            "baseline",
+            "-level",
+            "3.1",
+            "-g",
+            str(gop),
+            "-keyint_min",
+            str(gop),
+            "-sc_threshold",
+            "0",
+        ]
+    )
+    if audio_format and audio_device:
+        command.extend(
+            [
+                "-c:a",
+                "aac",
+                "-b:a",
+                str(config.hdmi_audio_bitrate),
+                "-ac",
+                str(int(config.hdmi_audio_channels)),
+                "-ar",
+                str(int(config.hdmi_audio_sample_rate)),
+            ]
+        )
+    else:
+        command.extend(["-an"])
+    command.extend(
+        [
+            "-movflags",
+            "+frag_keyframe+empty_moov+default_base_moof+omit_tfhd_offset",
+            "-frag_duration",
+            "500000",
+            "-muxdelay",
+            "0",
+            "-muxpreload",
+            "0",
+            "-f",
+            "mp4",
+            "pipe:1",
+        ]
+    )
+    return command
+
+
+def _build_recording_ffmpeg_command(
+    *,
+    output_path: Path,
+    video_status: Dict[str, Any],
+    audio_format: Optional[str],
+    audio_device: Optional[str],
+) -> List[str]:
+    config = get_config()
+    command: List[str] = [
+        "ffmpeg",
+        "-y",
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-thread_queue_size",
+        "1024",
+        "-f",
+        "image2pipe",
+        "-framerate",
+        str(float(config.hdmi_capture_fps)),
+        "-vcodec",
+        "mjpeg",
+        "-i",
+        "pipe:0",
+    ]
+    command.extend(_build_ffmpeg_audio_input_args(audio_format=audio_format, audio_device=audio_device))
+    command.extend(["-map", "0:v:0"])
+    if audio_format and audio_device:
+        command.extend(["-map", "1:a:0"])
+    rotation_filter = _ffmpeg_rotation_filter(video_status.get("rotation_degrees"))
+    if rotation_filter:
+        command.extend(["-vf", rotation_filter])
+    gop = max(10, int(round(float(config.hdmi_capture_fps or 30.0))))
+    command.extend(
+        [
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-pix_fmt",
+            "yuv420p",
+            "-g",
+            str(gop),
+            "-keyint_min",
+            str(gop),
+            "-sc_threshold",
+            "0",
+        ]
+    )
+    if audio_format and audio_device:
+        command.extend(
+            [
+                "-c:a",
+                "aac",
+                "-b:a",
+                str(config.hdmi_audio_bitrate),
+                "-ac",
+                str(int(config.hdmi_audio_channels)),
+                "-ar",
+                str(int(config.hdmi_audio_sample_rate)),
+            ]
+        )
+    else:
+        command.extend(["-an"])
+    command.extend(["-movflags", "+faststart", str(output_path)])
+    return command
+
+
+class LiveAVStreamManager:
+    """Shared low-latency AV stream for multiple websocket viewers."""
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self._process: Optional[asyncio.subprocess.Process] = None
+        self._stdout_task: Optional[asyncio.Task] = None
+        self._stderr_task: Optional[asyncio.Task] = None
+        self._idle_stop_task: Optional[asyncio.Task] = None
+        self._subscribers: set[asyncio.Queue[Optional[bytes]]] = set()
+        self._init_segment = bytearray()
+        self._init_segment_complete = False
+        self._started_at: Optional[str] = None
+        self._last_error = ""
+        self._last_command: List[str] = []
+
+    async def subscribe(self) -> asyncio.Queue[Optional[bytes]]:
+        async with self._lock:
+            await self._ensure_running_locked()
+            queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue(maxsize=48)
+            if self._init_segment:
+                queue.put_nowait(bytes(self._init_segment))
+            self._subscribers.add(queue)
+            if self._idle_stop_task is not None:
+                self._idle_stop_task.cancel()
+                self._idle_stop_task = None
+            return queue
+
+    async def unsubscribe(self, queue: asyncio.Queue[Optional[bytes]]) -> None:
+        async with self._lock:
+            self._subscribers.discard(queue)
+            if not self._subscribers and self._process is not None and self._idle_stop_task is None:
+                self._idle_stop_task = asyncio.create_task(self._delayed_stop())
+
+    def status(self) -> Dict[str, Any]:
+        process = self._process
+        return {
+            "enabled": True,
+            "transport": "websocket-fmp4",
+            "mime_type": _LIVE_AV_MP4_MIME,
+            "running": process is not None and process.returncode is None,
+            "subscriber_count": len(self._subscribers),
+            "started_at": self._started_at,
+            "last_error": self._last_error or None,
+            "audio_enabled": bool(get_config().hdmi_audio_enabled),
+        }
+
+    async def _delayed_stop(self) -> None:
+        try:
+            await asyncio.sleep(10.0)
+            await self.stop()
+        except asyncio.CancelledError:
+            raise
+
+    async def stop(self) -> None:
+        async with self._lock:
+            await self._stop_locked()
+
+    async def _ensure_running_locked(self) -> None:
+        if not ffmpeg_available():
+            raise RuntimeError("ffmpeg not found on host")
+        video_device, video_status = _resolve_active_capture_video_device()
+        if not video_device:
+            raise RuntimeError("No active capture video device is available")
+        audio_format: Optional[str] = None
+        audio_device: Optional[str] = None
+        if get_config().hdmi_audio_enabled:
+            audio_format, audio_device = _resolve_audio_input(
+                allow_arecord=False,
+                capture_status=video_status,
+            )
+        command = _build_live_av_ffmpeg_command(
+            video_device=video_device,
+            video_status=video_status,
+            audio_format=audio_format,
+            audio_device=audio_device,
+        )
+
+        if self._process is not None and self._process.returncode is None:
+            # Reuse running process only when exact AV source/codec command
+            # remains unchanged; otherwise recycle so source switches apply.
+            if command == self._last_command:
+                return
+            await self._stop_locked()
+
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        self._process = process
+        self._last_command = command
+        self._started_at = _utc_now_iso()
+        self._last_error = ""
+        self._init_segment = bytearray()
+        self._init_segment_complete = False
+        self._stdout_task = asyncio.create_task(self._pump_stdout(process))
+        self._stderr_task = asyncio.create_task(self._pump_stderr(process))
+
+    async def _stop_locked(self) -> None:
+        if self._idle_stop_task is not None:
+            self._idle_stop_task.cancel()
+            self._idle_stop_task = None
+        process = self._process
+        stdout_task = self._stdout_task
+        stderr_task = self._stderr_task
+        self._process = None
+        self._stdout_task = None
+        self._stderr_task = None
+        self._init_segment = bytearray()
+        self._init_segment_complete = False
+        for queue in list(self._subscribers):
+            with contextlib.suppress(asyncio.QueueFull):
+                queue.put_nowait(None)
+        if process is not None and process.returncode is None:
+            process.terminate()
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(process.wait(), timeout=3)
+        for task in (stdout_task, stderr_task):
+            if task is not None and not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
+    async def _pump_stdout(self, process: asyncio.subprocess.Process) -> None:
+        try:
+            while True:
+                chunk = await process.stdout.read(65536) if process.stdout is not None else b""
+                if not chunk:
+                    break
+                pending = bytes(chunk)
+                if not self._init_segment_complete:
+                    combined = bytes(self._init_segment) + pending
+                    moof_idx = combined.find(b"moof")
+                    if moof_idx == -1:
+                        self._init_segment = bytearray(combined[:512 * 1024])
+                        continue
+                    boundary = max(0, moof_idx - 4)
+                    self._init_segment = bytearray(combined[:boundary])
+                    self._init_segment_complete = True
+                    pending = combined[boundary:]
+                if pending:
+                    await self._broadcast(pending)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._last_error = str(exc)
+        finally:
+            await self._broadcast(None)
+
+    async def _pump_stderr(self, process: asyncio.subprocess.Process) -> None:
+        try:
+            while True:
+                line = await process.stderr.readline() if process.stderr is not None else b""
+                if not line:
+                    break
+                message = line.decode(errors="replace").strip()
+                if message:
+                    self._last_error = message
+        except asyncio.CancelledError:
+            raise
+
+    async def _broadcast(self, chunk: Optional[bytes]) -> None:
+        stale: List[asyncio.Queue[Optional[bytes]]] = []
+        for queue in list(self._subscribers):
+            try:
+                if chunk is None:
+                    queue.put_nowait(None)
+                    continue
+                if queue.full():
+                    with contextlib.suppress(asyncio.QueueEmpty):
+                        queue.get_nowait()
+                queue.put_nowait(chunk)
+            except Exception:
+                stale.append(queue)
+        if stale:
+            async with self._lock:
+                for queue in stale:
+                    self._subscribers.discard(queue)
+
+
+_live_av_stream_manager = LiveAVStreamManager()
 
 
 def _shared_ai_prompt_preamble() -> str:
@@ -316,7 +920,8 @@ def _sample_cpu_temperature_c() -> Optional[float]:
 
 def _device_context_path() -> Path:
     base_dir = os.getenv("ARTIFACTS_BASE_DIR")
-    root = Path(base_dir) if base_dir else Path("/home/harry/youtube/ai_tool/artifacts")
+    root = Path(base_dir).expanduser() if base_dir else Path(get_config().artifacts_base_dir).expanduser()
+    root = root.resolve()
     root.mkdir(parents=True, exist_ok=True)
     return root / "device_context.json"
 
@@ -367,14 +972,16 @@ class IrSendRequest(BaseModel):
 
 def _device_capabilities_cache_path() -> Path:
     base_dir = os.getenv("ARTIFACTS_BASE_DIR")
-    root = Path(base_dir) if base_dir else Path("/home/harry/youtube/ai_tool/artifacts")
+    root = Path(base_dir).expanduser() if base_dir else Path(get_config().artifacts_base_dir).expanduser()
+    root = root.resolve()
     root.mkdir(parents=True, exist_ok=True)
     return root / "device_capabilities_cache.json"
 
 
 def _device_system_state_path(device_id: str) -> Path:
     base_dir = os.getenv("ARTIFACTS_BASE_DIR")
-    root = Path(base_dir) if base_dir else Path("/home/harry/youtube/ai_tool/artifacts")
+    root = Path(base_dir).expanduser() if base_dir else Path(get_config().artifacts_base_dir).expanduser()
+    root = root.resolve()
     root.mkdir(parents=True, exist_ok=True)
     safe_device_id = re.sub(r"[^A-Za-z0-9._-]+", "_", str(device_id or "unknown").strip())
     safe_device_id = safe_device_id.strip("._-") or "unknown"
@@ -939,6 +1546,8 @@ async def _refresh_device_settings_values(device_id: str, *, settings_entries: O
                 return row
 
     values: List[Dict[str, Any]] = []
+    bulk_failed_timeout = False
+    bulk_failure_error = ""
 
     bulk_reader = getattr(dab, "get_all_settings_values", None)
     if callable(bulk_reader):
@@ -977,11 +1586,67 @@ async def _refresh_device_settings_values(device_id: str, *, settings_entries: O
                         }
                     )
                 logger.info("DAB settings/get refresh used bulk request without settings/list: device=%s keys=%s", device_id, len(values))
+            elif not bool(getattr(bulk_resp, "success", False)):
+                bulk_failure_error = str((bulk_data or {}).get("error") or "")
+                bulk_failed_timeout = "timed out" in bulk_failure_error.lower()
         except Exception as exc:
+            bulk_failure_error = str(exc)
+            bulk_failed_timeout = "timed out" in bulk_failure_error.lower()
             logger.warning("Bulk settings/get request failed for %s: %s", device_id, exc)
 
     if not values and settings_entries:
-        values = list(await asyncio.gather(*[_read_setting(item) for item in settings_entries]))
+        # Prevent large per-key fan-out when the bridge/device is already timing out.
+        if bulk_failed_timeout:
+            values = [
+                {
+                    **dict(item or {}),
+                    "key": str((item or {}).get("key") or "").strip(),
+                    "read_success": False,
+                    "read_status": 504,
+                    "read_error": (
+                        "Bulk settings/get timed out; per-key fallback skipped to avoid DAB overload"
+                    ),
+                    "current_value": None,
+                    "read_raw": {},
+                }
+                for item in settings_entries
+            ]
+            logger.warning(
+                "DAB settings/get per-key fallback skipped after bulk timeout: device=%s keys=%s error=%s",
+                device_id,
+                len(settings_entries),
+                bulk_failure_error,
+            )
+        else:
+            entries_to_read = list(settings_entries)
+            if len(entries_to_read) > int(_device_settings_get_fallback_max_reads):
+                limited = entries_to_read[: int(_device_settings_get_fallback_max_reads)]
+                skipped = entries_to_read[int(_device_settings_get_fallback_max_reads):]
+                values = list(await asyncio.gather(*[_read_setting(item) for item in limited]))
+                values.extend(
+                    [
+                        {
+                            **dict(item or {}),
+                            "key": str((item or {}).get("key") or "").strip(),
+                            "read_success": False,
+                            "read_status": 429,
+                            "read_error": (
+                                "Skipped to avoid DAB overload (limited per-key fallback reads)"
+                            ),
+                            "current_value": None,
+                            "read_raw": {},
+                        }
+                        for item in skipped
+                    ]
+                )
+                logger.info(
+                    "DAB settings/get per-key fallback capped: device=%s attempted=%s skipped=%s",
+                    device_id,
+                    len(limited),
+                    len(skipped),
+                )
+            else:
+                values = list(await asyncio.gather(*[_read_setting(item) for item in entries_to_read]))
 
     payload = {
         "success": True,
@@ -1697,6 +2362,21 @@ def _normalize_video_device_path(value: Any) -> str:
         return dev
 
 
+def _video_device_identity(value: Any) -> str:
+    dev = _normalize_video_device_path(value)
+    if not dev:
+        return ""
+    match = re.match(r"^/dev/video(\d+)$", dev)
+    if not match:
+        return dev
+    sysfs_device = f"/sys/class/video4linux/video{match.group(1)}/device"
+    try:
+        resolved = os.path.realpath(sysfs_device)
+    except Exception:
+        resolved = ""
+    return resolved or dev
+
+
 def _is_hdmi_capture_device_mismatch(status: Dict[str, Any]) -> bool:
     configured_source = str(status.get("configured_source") or "").strip().lower()
     if configured_source != "hdmi-capture":
@@ -1705,6 +2385,12 @@ def _is_hdmi_capture_device_mismatch(status: Dict[str, Any]) -> bool:
     active = _normalize_video_device_path(status.get("hdmi_device"))
     if not selected or not active:
         return False
+    if selected == active:
+        return False
+    selected_identity = _video_device_identity(selected)
+    active_identity = _video_device_identity(active)
+    if selected_identity and active_identity:
+        return selected_identity != active_identity
     return selected != active
 
 
@@ -1723,61 +2409,15 @@ def _persist_yts_checkpoint_image(command_id: str, image_b64: str, label: str) -
 
 
 def _persist_yts_ai_evidence_image(command_id: str, prompt_id: Optional[int], image_b64: str) -> Optional[Dict[str, str]]:
-    if not str(image_b64 or "").strip():
-        return None
-    prompt_token = int(prompt_id) if prompt_id is not None else 0
-    image_path = _persist_yts_checkpoint_image(command_id, image_b64, f"prompt-{prompt_token:03d}-ai-evidence")
-    if not image_path:
-        return None
-    return {
-        "captured_at": _utc_now_iso(),
-        "image_name": image_path.name,
-        "image_path": str(image_path),
-    }
+    # YTS interactive AI should observe the live TV feed without persisting
+    # prompt screenshots as artifacts on disk.
+    return None
 
 
 async def _capture_yts_prompt_checkpoint(command_id: str, prompt_id: int) -> Optional[Dict[str, Any]]:
-    try:
-        capture = get_screen_capture()
-        status = capture.capture_source_status()
-        if _is_hdmi_capture_device_mismatch(status):
-            logger.warning(
-                "Skipping prompt checkpoint due to HDMI device mismatch: command=%s selected=%s active=%s",
-                command_id,
-                status.get("selected_video_device"),
-                status.get("hdmi_device"),
-            )
-            return None
-        use_live_stream_only = bool(status.get("hdmi_available")) and str(status.get("configured_source") or "").lower() != "dab"
-        if use_live_stream_only and hasattr(capture, "capture_live_stream_frame"):
-            result = await capture.capture_live_stream_frame()
-        else:
-            result = await capture.capture()
-        refreshed_status = capture.capture_source_status()
-        if _is_hdmi_capture_device_mismatch(refreshed_status):
-            logger.warning(
-                "Discarding prompt checkpoint frame due to HDMI device mismatch: command=%s selected=%s active=%s",
-                command_id,
-                refreshed_status.get("selected_video_device"),
-                refreshed_status.get("hdmi_device"),
-            )
-            return None
-        image_b64 = str(getattr(result, "image_b64", "") or "").strip()
-        if not image_b64:
-            return None
-        source = str(getattr(result, "source", "") or status.get("configured_source") or "unknown")
-        image_path = _persist_yts_checkpoint_image(command_id, image_b64, f"prompt-{int(prompt_id):03d}")
-        if not image_path:
-            return None
-        return {
-            "captured_at": _utc_now_iso(),
-            "source": source,
-            "image_name": image_path.name,
-            "image_path": str(image_path),
-        }
-    except Exception as exc:
-        logger.warning("Failed to capture YTS prompt checkpoint screenshot: command=%s prompt=%s error=%s", command_id, prompt_id, exc)
-        return None
+    # Keep YTS interactive mode video-only. We do not persist prompt
+    # screenshots/checkpoints for Gemini or reports.
+    return None
 
 
 def _build_yts_prompt_justification(prompt_entry: Dict[str, Any]) -> str:
@@ -2590,14 +3230,18 @@ async def _start_yts_video_recording(command_id: str) -> None:
 
     if not ffmpeg_available():
         state["video_recording_status"] = "unavailable"
+        if state.get("record_audio"):
+            state["audio_recording_status"] = "unavailable"
         state["logs"].append({"stream": "stderr", "message": "Video recording unavailable: ffmpeg not found"})
         _write_yts_terminal_log_artifact(state)
         _persist_yts_live_state(state)
         return
 
-    capture_status = get_screen_capture().capture_source_status()
-    if not capture_status.get("hdmi_available"):
+    video_device, capture_status = _resolve_active_capture_video_device()
+    if not video_device:
         state["video_recording_status"] = "unavailable"
+        if state.get("record_audio"):
+            state["audio_recording_status"] = "unavailable"
         state["logs"].append({"stream": "stderr", "message": "Video recording unavailable: no active capture session found"})
         _write_yts_terminal_log_artifact(state)
         _persist_yts_live_state(state)
@@ -2610,7 +3254,10 @@ async def _start_yts_video_recording(command_id: str) -> None:
     audio_format: Optional[str] = None
     audio_device: Optional[str] = None
     if include_audio:
-        resolved_format, resolved_device = _resolve_audio_input()
+        resolved_format, resolved_device = _resolve_audio_input(
+            allow_arecord=False,
+            capture_status=capture_status,
+        )
         if resolved_format in {"alsa", "pulse"} and resolved_device:
             audio_format = resolved_format
             audio_device = resolved_device
@@ -2624,74 +3271,28 @@ async def _start_yts_video_recording(command_id: str) -> None:
                 }
             )
 
-    command = [
-        "ffmpeg",
-        "-y",
-        "-f",
-        "image2pipe",
-        "-vcodec",
-        "mjpeg",
-        "-r",
-        "5",
-        "-i",
-        "-",
-    ]
-
-    if audio_format and audio_device:
-        command.extend(
-            [
-                "-thread_queue_size",
-                "512",
-                "-f",
-                audio_format,
-                "-i",
-                audio_device,
-            ]
-        )
-
-    command.extend(
-        [
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-pix_fmt",
-        "yuv420p",
-        ]
-    )
-
-    if audio_format and audio_device:
-        command.extend(
-            [
-                "-c:a",
-                "aac",
-                "-b:a",
-                "128k",
-                "-ac",
-                str(get_config().hdmi_audio_channels),
-                "-ar",
-                str(get_config().hdmi_audio_sample_rate),
-                "-shortest",
-            ]
-        )
-    else:
-        command.extend(["-an"])
-
-    command.extend(
-        [
-        str(output_path),
-        ]
+    command = _build_recording_ffmpeg_command(
+        output_path=output_path,
+        video_status=capture_status,
+        audio_format=audio_format,
+        audio_device=audio_device,
     )
     try:
         process = await asyncio.create_subprocess_exec(
             *command,
-            cwd="/home/harry/youtube/ai_tool",
+            cwd=str(_get_yts_workspace_dir()),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
         stderr_task = asyncio.create_task(_capture_yts_recording_stderr(command_id, process.stderr))
-        pump_task = asyncio.create_task(_pump_yts_video_recording_frames(command_id, process, fps=5.0))
+        pump_task = asyncio.create_task(
+            _pump_yts_video_recording_frames(
+                command_id,
+                process,
+                fps=max(1.0, float(get_config().hdmi_capture_fps or 30.0)),
+            )
+        )
         _yts_live_recording_processes[command_id] = {
             "process": process,
             "stderr_task": stderr_task,
@@ -2702,7 +3303,7 @@ async def _start_yts_video_recording(command_id: str) -> None:
         state["video_file_name"] = output_path.name
         state["logs"].append({
             "stream": "system",
-            "message": f"Started video recording using active capture session: {shlex.join(command)}",
+            "message": f"Started synchronized AV recording from active capture session: {shlex.join(command)}",
         })
         if include_audio and not (audio_format and audio_device):
             state["logs"].append(
@@ -2896,7 +3497,8 @@ def _mark_stale_yts_live_commands() -> None:
         _persist_yts_live_state(state)
 
 
-def _read_yts_test_catalog(path: Path = _YTS_TESTLIST_PATH) -> List[Dict[str, str]]:
+def _read_yts_test_catalog(path: Optional[Path] = None) -> List[Dict[str, str]]:
+    path = path or _catalog_path_for_mode(False)
     if not path.exists():
         return []
 
@@ -2909,23 +3511,50 @@ def _read_yts_test_catalog(path: Path = _YTS_TESTLIST_PATH) -> List[Dict[str, st
     return []
 
 
+def _get_yts_workspace_dir() -> Path:
+    explicit = str(os.getenv("YTS_WORKSPACE_DIR", "")).strip()
+    workspace = Path(explicit).expanduser() if explicit else (_REPO_ROOT / "artifacts" / "yts_workspace")
+    workspace = workspace.resolve()
+    workspace.mkdir(parents=True, exist_ok=True)
+    return workspace
+
+
+def _get_yts_entrypoint_path() -> Path:
+    return (_REPO_ROOT / "yts.py").resolve()
+
+
+def _get_yts_command_prefix() -> List[str]:
+    entrypoint = _get_yts_entrypoint_path()
+    if entrypoint.exists():
+        return [sys.executable, str(entrypoint)]
+    return ["yts"]
+
+
+def _get_yts_catalog_dir() -> Path:
+    catalog_dir = _get_yts_workspace_dir() / "catalog"
+    catalog_dir.mkdir(parents=True, exist_ok=True)
+    return catalog_dir
+
+
 def _catalog_path_for_mode(guided: bool = False) -> Path:
-    return _YTS_GUIDED_TESTLIST_PATH if guided else _YTS_TESTLIST_PATH
+    filename = "testlist_guided.json" if guided else "testlist.json"
+    return _get_yts_catalog_dir() / filename
 
 
 def _refresh_yts_test_catalog(
-    path: Path = _YTS_TESTLIST_PATH,
+    path: Optional[Path] = None,
     guided: bool = False,
     raise_on_error: bool = False,
 ) -> List[Dict[str, str]]:
+    path = path or _catalog_path_for_mode(guided)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
-        discover_res = _run_yts_command(["yts", "discover", "--list"])
+        discover_res = _run_yts_command(_get_yts_command_prefix() + ["discover", "--list"])
         if discover_res["returncode"] != 0:
             raise RuntimeError(f"YTS discover failed: {discover_res['stderr']}")
 
-        list_cmd = ["yts", "list"]
+        list_cmd = _get_yts_command_prefix() + ["list"]
         if guided:
             list_cmd.append("--guided")
         list_cmd.extend(["--json-output", str(path)])
@@ -2948,7 +3577,7 @@ def _refresh_yts_test_catalog(
 
 
 def _build_yts_command(request: "YtsCommandRequest") -> List[str]:
-    cmd = ["yts"]
+    cmd = _get_yts_command_prefix()
 
     for option, value in request.global_options.items():
         if isinstance(value, bool) and value:
@@ -3011,7 +3640,7 @@ async def _get_yts_discovered_devices(max_age_seconds: float = 30.0) -> List[Dic
     if _yts_discover_cache and (now - _yts_discover_cache_at) <= max(0.0, float(max_age_seconds)):
         return list(_yts_discover_cache)
 
-    discover_res = await asyncio.to_thread(_run_yts_command, ["yts", "discover", "--list"])
+    discover_res = await asyncio.to_thread(_run_yts_command, _get_yts_command_prefix() + ["discover", "--list"])
     if discover_res.get("returncode") != 0:
         raise HTTPException(status_code=500, detail=f"YTS discover failed: {discover_res.get('stderr')}")
 
@@ -3451,6 +4080,60 @@ def _merge_yts_prompt_entry(prompt_entry: Dict[str, Any], line: str, stream_name
     return prompt_entry
 
 
+def _is_yts_prompt_context_signal_line(text: str) -> bool:
+    line = _strip_terminal_ansi(str(text or "")).strip()
+    if not line:
+        return False
+    lowered = line.lower()
+    if _parse_yts_prompt_option(line) or _is_prompt_scaffolding_line(line):
+        return False
+    if re.match(r"^-{3,}$", line):
+        return False
+    if lowered in {"etc", "etc localization"}:
+        return False
+    if lowered.startswith("launching guided test") or lowered.startswith("attempting relaunch"):
+        return False
+    if re.fullmatch(r"[A-Z0-9\s]+", line) and len(line.split()) <= 4:
+        return False
+    return True
+
+
+def _seed_yts_prompt_with_recent_context(
+    state: Dict[str, Any],
+    prompt_entry: Dict[str, Any],
+    *,
+    stream_name: str,
+    trigger_line: str,
+    max_lines: int = 24,
+) -> None:
+    if str(prompt_entry.get("text") or "").strip():
+        return
+    cleaned_trigger = _strip_terminal_ansi(str(trigger_line or "")).strip()
+    if not cleaned_trigger:
+        return
+    if not (_is_prompt_scaffolding_line(cleaned_trigger) or bool(_parse_yts_prompt_option(cleaned_trigger))):
+        return
+
+    logs = list(state.get("logs") or [])
+    if len(logs) < 2:
+        return
+
+    context_lines: List[str] = []
+    start = max(0, len(logs) - max(1, int(max_lines or 24)) - 1)
+    for entry in logs[start:-1]:
+        if str(entry.get("stream") or "") != stream_name:
+            continue
+        candidate = _strip_terminal_ansi(str(entry.get("raw_message", entry.get("message", "")))).strip()
+        if not _is_yts_prompt_context_signal_line(candidate):
+            continue
+        if candidate in context_lines:
+            continue
+        context_lines.append(candidate)
+
+    for candidate in context_lines:
+        _merge_yts_prompt_entry(prompt_entry, candidate, stream_name)
+
+
 def _prompt_ready_for_ai_response(prompt_entry: Dict[str, Any]) -> bool:
     prompt_text = str(prompt_entry.get("text") or "")
     lowered_prompt = prompt_text.lower()
@@ -3685,7 +4368,7 @@ def _load_yts_guided_test_context(test_id: str) -> str:
     if not tid:
         return ""
     try:
-        tests = _read_yts_test_catalog(_YTS_GUIDED_TESTLIST_PATH)
+        tests = _read_yts_test_catalog(_catalog_path_for_mode(True))
     except Exception:
         return ""
     if not tests:
@@ -3850,23 +4533,33 @@ async def _capture_yts_visual_context(command_id: str, force_fresh: bool = False
         return visual_context
 
     capture_status: Dict[str, Any] = {}
-    summary = "No TV visual context captured yet."
+    summary = "No live TV frame captured yet."
     screenshot_b64: Optional[str] = None
     source = "unknown"
     observations: List[Dict[str, Any]] = []
-    use_live_stream_only = False
+    use_live_stream_only = True
     mismatch_detected = False
 
     try:
         capture = get_screen_capture()
         capture_status = capture.capture_source_status()
         mismatch_detected = _is_hdmi_capture_device_mismatch(capture_status)
-        use_live_stream_only = bool(capture_status.get("hdmi_available")) and str(capture_status.get("configured_source") or "").lower() != "dab"
+        live_stream_available = bool(capture_status.get("hdmi_available")) and hasattr(capture, "capture_live_stream_frame")
         for attempt in range(_YTS_INTERACTIVE_CAPTURE_ATTEMPTS):
-            if use_live_stream_only and hasattr(capture, "capture_live_stream_frame"):
+            if live_stream_available:
                 result = await capture.capture_live_stream_frame()
             else:
-                result = await capture.capture()
+                observations.append(
+                    {
+                        "attempt": attempt + 1,
+                        "source": "live-stream-unavailable",
+                        "has_screenshot": False,
+                        "device_mismatch": bool(mismatch_detected),
+                    }
+                )
+                if attempt < (_YTS_INTERACTIVE_CAPTURE_ATTEMPTS - 1):
+                    await asyncio.sleep(_YTS_INTERACTIVE_CAPTURE_DELAY_SECONDS)
+                continue
             source = str(result.source or capture_status.get("configured_source") or "unknown")
             image_b64 = result.image_b64
             latest_status = capture.capture_source_status()
@@ -3893,17 +4586,22 @@ async def _capture_yts_visual_context(command_id: str, force_fresh: bool = False
         if mismatch_detected and not screenshot_b64:
             summary = (
                 "Capture device mismatch detected: selected HDMI device does not match active capture session. "
-                "Gemini screenshot analysis was blocked to prevent wrong-screen justification."
+                "Gemini live-frame analysis was blocked to prevent wrong-screen justification."
             )
         elif screenshot_b64:
             summary = (
-                f"Captured {capture_count} TV frame(s) from {source}; "
-                f"{screenshot_count} frame(s) included screenshots. "
-                "Use the attached screenshot directly as the visual source of truth."
+                f"Captured {capture_count} live TV frame(s) from {source}; "
+                f"{screenshot_count} frame(s) were usable. "
+                "Use the attached live frame directly as the visual source of truth."
+            )
+        elif not live_stream_available:
+            summary = (
+                "No live HDMI/camera stream is available for YTS interactive AI. "
+                "Gemini was not given any visual input to avoid falling back to screenshots."
             )
         else:
             summary = (
-                f"No screenshot could be captured over {capture_count} attempts from {source}. "
+                f"No live TV frame could be captured over {capture_count} attempts from {source}. "
                 "Use the terminal guide and choose the safest option."
             )
     except Exception as exc:
@@ -3981,8 +4679,7 @@ def _is_live_preview_vertex_model(model_name: Optional[str]) -> bool:
 
 
 def _select_vertex_visual_model() -> str:
-    c = get_config()
-    live_model = str(c.vertex_live_model or "").strip()
+    live_model = _get_active_vertex_live_model()
     planner_model = _get_active_vertex_planner_model()
     if live_model and not _is_live_preview_vertex_model(live_model):
         return live_model
@@ -4030,15 +4727,27 @@ async def _capture_yts_live_monitor_frame(command_id: str) -> Dict[str, Any]:
                 "selected_video_device": capture_status.get("selected_video_device"),
                 "hdmi_device": capture_status.get("hdmi_device"),
                 "hdmi_available": capture_status.get("hdmi_available"),
-                "live_stream_only": False,
+                "live_stream_only": True,
                 "device_mismatch": True,
             },
         }
-    use_live_stream_only = bool(capture_status.get("hdmi_available")) and str(capture_status.get("configured_source") or "").lower() != "dab"
-    if use_live_stream_only and hasattr(capture, "capture_live_stream_frame"):
+    use_live_stream_only = bool(capture_status.get("hdmi_available")) and hasattr(capture, "capture_live_stream_frame")
+    if use_live_stream_only:
         result = await capture.capture_live_stream_frame()
     else:
-        result = await capture.capture()
+        return {
+            "source": "live-stream-unavailable",
+            "screenshot_b64": None,
+            "observations": [{"attempt": 1, "source": "live-stream-unavailable", "has_screenshot": False}],
+            "capture_status": {
+                "configured_source": capture_status.get("configured_source"),
+                "selected_video_device": capture_status.get("selected_video_device"),
+                "hdmi_device": capture_status.get("hdmi_device"),
+                "hdmi_available": capture_status.get("hdmi_available"),
+                "live_stream_only": True,
+                "device_mismatch": False,
+            },
+        }
     source = str(result.source or capture_status.get("configured_source") or "unknown")
     return {
         "source": source,
@@ -4092,9 +4801,9 @@ async def _refresh_yts_live_visual_monitor(command_id: str) -> Optional[Dict[str
         prompt = "\n\n".join(
             [
                 _shared_ai_prompt_preamble(),
-                "Task: monitor Android TV guided validation state from the attached screenshot.",
+                "Task: monitor Android TV guided validation state from the attached live TV frame.",
                 "Return strict JSON with keys: summary, playback_visible, player_controls_visible, settings_gear_visible, stats_for_nerds_visible, focus_target, confidence.",
-                "Rules: use screenshot as source of truth; Do not rely on OCR or local text extraction; keep summary short and factual; mention selected menu item only when clearly visible; request a UI navigation checkpoint when commit path is uncertain.",
+                "Rules: use the attached live TV frame as source of truth; Do not rely on OCR or local text extraction; keep summary short and factual; mention selected menu item only when clearly visible; request a UI navigation checkpoint when commit path is uncertain.",
                 f"YTS command: {state.get('command') or 'unknown'}",
                 f"Recent terminal logs:\n{log_text or '(no recent logs)'}",
             ]
@@ -4248,7 +4957,7 @@ async def _suggest_yts_prompt_response(command_id: str, prompt_text: str, option
             return {
                 "response": None,
                 "source": "deferred-no-visual",
-                "deferred_reason": "No fresh TV screenshot available. AI response deferred to avoid blind input.",
+                "deferred_reason": "No fresh live TV frame available. AI response deferred to avoid blind input.",
                 "visual_summary": visual_context.get("summary"),
                 "visual_source": visual_context.get("source"),
                 "ai_evidence": ai_evidence,
@@ -4285,7 +4994,7 @@ async def _suggest_yts_prompt_response(command_id: str, prompt_text: str, option
                 response_instruction.strip(),
                 f"Interactive prompt: {prompt_text}",
                 f"Allowed options: {', '.join(options) if options else 'infer from prompt'}",
-                "Rules: attached screenshot is the primary visual context; prefer non-destructive option when uncertain; if UI path is unclear, favor response that allows a UI navigation checkpoint first; return only the response token.",
+                "Rules: the attached live TV frame is the primary visual context; prefer non-destructive option when uncertain; if UI path is unclear, favor response that allows a UI navigation checkpoint first; return only the response token.",
                 "Never return remote-control or planner actions (examples: PRESS_DOWN, KEYCODE_DPAD_DOWN, SET_SETTING, LAUNCH_APP). Return only terminal input token.",
                 f"Active test terminal context:\n{active_test_log_text or '(active test context unavailable)'}",
                 f"Guided test metadata:\n{guided_test_context or '(guided metadata unavailable)'}",
@@ -4295,7 +5004,7 @@ async def _suggest_yts_prompt_response(command_id: str, prompt_text: str, option
                 f"TV visual context source: {visual_context.get('source', 'unknown')}",
                 f"TV observation sequence: {json.dumps(visual_context.get('observations') or [], ensure_ascii=False)}",
                 f"Latest Gemini live visual analysis: {json.dumps(visual_context.get('analysis') or state.get('latest_visual_analysis') or {}, ensure_ascii=False)}",
-                f"TV capture summary:\n{visual_context.get('summary', 'No TV screenshot available.')}",
+                f"TV capture summary:\n{visual_context.get('summary', 'No live TV frame available.')}",
                 f"Capture status: {json.dumps(visual_context.get('capture_status') or {}, ensure_ascii=False)}",
             ]
         )
@@ -4407,6 +5116,12 @@ async def _append_yts_stream_output(command_id: str, stream_name: str, stream) -
                 if checkpoint:
                     prompt_entry["checkpoint"] = checkpoint
 
+            _seed_yts_prompt_with_recent_context(
+                state,
+                prompt_entry,
+                stream_name=stream_name,
+                trigger_line=stripped,
+            )
             _merge_yts_prompt_entry(prompt_entry, stripped, stream_name)
             _persist_yts_live_state(state)
 
@@ -4463,6 +5178,8 @@ async def _run_yts_command_live(command_id: str, request: "YtsCommandRequest") -
     state["command"] = " ".join(cmd)
     if state.get("record_video"):
         state["video_recording_status"] = "pending"
+        if state.get("record_audio"):
+            state["audio_recording_status"] = "pending"
     _persist_yts_live_state(state)
 
     recording_started = False
@@ -4474,7 +5191,7 @@ async def _run_yts_command_live(command_id: str, request: "YtsCommandRequest") -
     try:
         process = await asyncio.create_subprocess_exec(
             *cmd,
-            cwd="/home/harry/youtube/ai_tool",
+            cwd=str(_get_yts_workspace_dir()),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -5102,13 +5819,157 @@ def _plan_task_macro_actions(instruction: str) -> List[ManualActionRequest]:
     return actions
 
 
-def _resolve_audio_input() -> tuple[Optional[str], Optional[str]]:
+def _resolve_audio_input(
+    *,
+    allow_arecord: bool = True,
+    capture_status: Optional[Dict[str, Any]] = None,
+) -> tuple[Optional[str], Optional[str]]:
     """Resolve `(input_format, device)` for HDMI audio stream."""
     config = get_config()
-    return resolve_audio_input(
+    configured_device = str(config.hdmi_audio_device or "").strip()
+    if configured_device.lower() == "auto":
+        configured_device = ""
+    guessed_device = _guess_audio_input_for_selected_capture(capture_status=capture_status) or ""
+    follow_active_video = bool(getattr(config, "hdmi_audio_follow_active_video", True))
+    active_video_device = str((capture_status or {}).get("hdmi_device") or "").strip()
+    if follow_active_video and active_video_device and not guessed_device:
+        logger.warning(
+            "No audio device matched active video source %s; refusing fallback to unrelated audio input",
+            active_video_device,
+        )
+        return None, None
+    if follow_active_video and guessed_device:
+        if configured_device and configured_device != guessed_device:
+            logger.info(
+                "Overriding configured HDMI audio device to follow active video source: configured=%s resolved=%s",
+                configured_device,
+                guessed_device,
+            )
+        configured_device = guessed_device
+    elif not configured_device:
+        configured_device = guessed_device
+    input_format, device = resolve_audio_input(
         preferred_format=config.hdmi_audio_input_format,
-        configured_device=config.hdmi_audio_device,
+        configured_device=configured_device,
     )
+    if allow_arecord or input_format != "arecord":
+        return input_format, device
+    # For WebRTC/PyAV paths, avoid "arecord" pseudo-format.
+    for forced_format in ("alsa", "pulse"):
+        fallback_format, fallback_device = resolve_audio_input(
+            preferred_format=forced_format,
+            configured_device=configured_device,
+        )
+        if fallback_format in {"alsa", "pulse"} and fallback_device:
+            return fallback_format, fallback_device
+    return None, None
+
+
+def _guess_audio_input_for_selected_capture(*, capture_status: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """Best-effort match between selected HDMI capture card and ALSA input."""
+    try:
+        status = capture_status or get_screen_capture().capture_source_status()
+    except Exception:
+        return None
+
+    # Prefer the currently active streaming device over a saved selection.
+    selected_video_device = str(status.get("hdmi_device") or status.get("selected_video_device") or "").strip()
+    if not selected_video_device:
+        return None
+
+    details = list(status.get("video_device_details") or [])
+    selected_detail = next(
+        (item for item in details if str(item.get("device") or "").strip() == selected_video_device),
+        None,
+    )
+
+    audio_devices = list_alsa_capture_devices()
+    if not audio_devices:
+        return None
+    if len(audio_devices) == 1:
+        return str(audio_devices[0].get("alsa_device") or "").strip() or None
+
+    def _sysfs_common_prefix_depth(a: str, b: str) -> int:
+        try:
+            a_parts = [p for p in os.path.realpath(a).split("/") if p]
+            b_parts = [p for p in os.path.realpath(b).split("/") if p]
+        except Exception:
+            return 0
+        depth = 0
+        for left, right in zip(a_parts, b_parts):
+            if left != right:
+                break
+            depth += 1
+        return depth
+
+    # Strongest signal: video and ALSA card share the same sysfs USB parent.
+    video_name = os.path.basename(selected_video_device)
+    video_sysfs = f"/sys/class/video4linux/{video_name}/device"
+    best_sysfs_device: Optional[str] = None
+    best_sysfs_depth = -1
+    for item in audio_devices:
+        card = str(item.get("card") or "").strip()
+        if not card.isdigit():
+            continue
+        audio_sysfs = f"/sys/class/sound/card{card}/device"
+        if not os.path.exists(audio_sysfs):
+            continue
+        depth = _sysfs_common_prefix_depth(video_sysfs, audio_sysfs)
+        # Ignore trivial common roots like "/sys/devices".
+        if depth >= 6 and depth > best_sysfs_depth:
+            best_sysfs_depth = depth
+            best_sysfs_device = str(item.get("alsa_device") or "").strip() or None
+    if best_sysfs_device:
+        return best_sysfs_device
+
+    name_parts = [
+        str((selected_detail or {}).get("name") or "").strip(),
+        str(status.get("configured_source") or "").strip(),
+    ]
+    haystack_tokens = {
+        token
+        for part in name_parts
+        for token in re.split(r"[^a-z0-9]+", part.lower())
+        if len(token) >= 3 and token not in {
+            "video", "audio", "camera", "capture", "device", "usb", "uvc", "card", "with", "and", "the", "for",
+            "hdmi",
+        }
+    }
+
+    best_device: Optional[str] = None
+    best_score = -1
+    for item in audio_devices:
+        haystack = " ".join(
+            [
+                str(item.get("card_name") or ""),
+                str(item.get("device_name") or ""),
+                str(item.get("description") or ""),
+            ]
+        ).lower()
+        score = sum(2 for token in haystack_tokens if token and token in haystack)
+        if any(marker in haystack for marker in ("usb", "hdmi", "capture")):
+            score += 1
+        if score > best_score:
+            best_score = score
+            best_device = str(item.get("alsa_device") or "").strip() or None
+
+    if best_score <= 0:
+        preferred = next(
+            (
+                str(item.get("alsa_device") or "").strip()
+                for item in audio_devices
+                if any(marker in " ".join(
+                    [
+                        str(item.get("card_name") or ""),
+                        str(item.get("device_name") or ""),
+                        str(item.get("description") or ""),
+                    ]
+                ).lower() for marker in ("usb", "hdmi", "capture"))
+            ),
+            "",
+        )
+        return preferred or None
+    return best_device
 
 
 def _resolve_vertex_project(explicit_project: str) -> str:
@@ -5156,6 +6017,13 @@ def _get_active_vertex_planner_model() -> str:
     if override:
         return override
     return str(get_config().vertex_planner_model or "").strip()
+
+
+def _get_active_vertex_live_model() -> str:
+    override = str(_runtime_vertex_live_model_override or "").strip()
+    if override:
+        return override
+    return str(get_config().vertex_live_model or "").strip()
 
 
 def _get_available_vertex_models() -> List[str]:
@@ -5288,8 +6156,8 @@ async def _lifespan(_app: FastAPI):
         get_config().dab_device_id = loaded_device
 
     await asyncio.to_thread(_mark_stale_yts_live_commands)
-    await asyncio.to_thread(_refresh_yts_test_catalog, _YTS_TESTLIST_PATH, False, False)
-    await asyncio.to_thread(_refresh_yts_test_catalog, _YTS_GUIDED_TESTLIST_PATH, True, False)
+    await asyncio.to_thread(_refresh_yts_test_catalog, _catalog_path_for_mode(False), False, False)
+    await asyncio.to_thread(_refresh_yts_test_catalog, _catalog_path_for_mode(True), True, False)
     try:
         _loaded_cap = _load_device_capabilities_cache()
         if _loaded_cap:
@@ -5321,6 +6189,8 @@ async def _lifespan(_app: FastAPI):
                 except asyncio.CancelledError:
                     pass
             _yts_live_tasks.pop(command_id, None)
+        await _close_all_webrtc_peers()
+        await _live_av_stream_manager.stop()
         await _stop_livekit_agent()
         await asyncio.to_thread(_close_yts_live_db)
 
@@ -5497,6 +6367,84 @@ async def ws_status(websocket: WebSocket) -> None:
         return
 
 
+@app.websocket("/ws/stream/av")
+async def ws_stream_av(websocket: WebSocket) -> None:
+    await websocket.accept()
+    queue: Optional[asyncio.Queue[Optional[bytes]]] = None
+    try:
+        queue = await _live_av_stream_manager.subscribe()
+        while True:
+            chunk = await queue.get()
+            if chunk is None:
+                break
+            await websocket.send_bytes(chunk)
+    except WebSocketDisconnect:
+        return
+    except RuntimeError as exc:
+        await websocket.send_json({"error": str(exc)})
+    finally:
+        if queue is not None:
+            await _live_av_stream_manager.unsubscribe(queue)
+
+
+@app.post("/webrtc/offer", response_model=WebRTCOfferResponse)
+async def webrtc_offer(request: WebRTCOfferRequest) -> WebRTCOfferResponse:
+    """Negotiate backend-captured WebRTC stream (Raspberry Pi devices only)."""
+    try:
+        async with _webrtc_lock:
+            await _ensure_webrtc_media_locked()
+            pc = RTCPeerConnection()
+            peer_id = str(uuidlib.uuid4())
+            _webrtc_peers[peer_id] = pc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @pc.on("connectionstatechange")
+    async def _on_connectionstatechange() -> None:
+        state = str(pc.connectionState or "").lower()
+        if state in {"failed", "closed", "disconnected"}:
+            await _close_webrtc_peer(peer_id)
+
+    try:
+        has_audio = False
+        if _webrtc_relay is not None and _webrtc_video_source is not None:
+            pc.addTrack(_webrtc_relay.subscribe(_webrtc_video_source))
+        if _webrtc_relay is not None and _webrtc_audio_player is not None and getattr(_webrtc_audio_player, "audio", None):
+            pc.addTrack(_webrtc_relay.subscribe(_webrtc_audio_player.audio))
+            has_audio = True
+
+        await pc.setRemoteDescription(RTCSessionDescription(sdp=request.sdp, type=request.type))
+        answer = await pc.createAnswer()
+        await pc.setLocalDescription(answer)
+        local = pc.localDescription
+        return WebRTCOfferResponse(
+            peer_id=peer_id,
+            sdp=str(getattr(local, "sdp", "") or ""),
+            type=str(getattr(local, "type", "answer") or "answer"),
+            has_video=True,
+            has_audio=has_audio,
+        )
+    except Exception as exc:
+        await _close_webrtc_peer(peer_id)
+        raise HTTPException(status_code=500, detail=f"WebRTC negotiation failed: {exc}") from exc
+
+
+@app.post("/webrtc/close/{peer_id}")
+async def webrtc_close(peer_id: str) -> dict:
+    await _close_webrtc_peer(str(peer_id or "").strip())
+    return {"closed": True, "peer_id": peer_id}
+
+
+@app.get("/webrtc/status")
+async def webrtc_status() -> dict:
+    return {
+        "available": bool(_AIORTC_AVAILABLE),
+        "peer_count": len(_webrtc_peers),
+        "has_audio_source": bool(_webrtc_audio_player and getattr(_webrtc_audio_player, "audio", None)),
+        "has_video_source": _webrtc_video_source is not None,
+    }
+
+
 @app.get("/config", response_model=ConfigSummaryResponse)
 async def config_summary() -> ConfigSummaryResponse:
     """Configuration summary (non-sensitive values only)."""
@@ -5525,48 +6473,72 @@ async def config_summary() -> ConfigSummaryResponse:
 @app.get("/config/runtime-model", response_model=RuntimeModelResponse)
 async def runtime_model_summary() -> RuntimeModelResponse:
     c = get_config()
-    active = _get_active_vertex_planner_model()
-    configured = str(c.vertex_planner_model or "").strip()
+    active_planner = _get_active_vertex_planner_model()
+    configured_planner = str(c.vertex_planner_model or "").strip()
+    active_live = _get_active_vertex_live_model()
+    configured_live = str(c.vertex_live_model or "").strip()
     return RuntimeModelResponse(
         success=True,
-        active_vertex_planner_model=active,
-        configured_vertex_planner_model=configured,
+        active_vertex_planner_model=active_planner,
+        configured_vertex_planner_model=configured_planner,
+        active_vertex_live_model=active_live,
+        configured_vertex_live_model=configured_live,
         available_models=_get_available_vertex_models(),
-        message=("runtime override active" if active and active != configured else "using configured model"),
+        message=(
+            "runtime override active"
+            if (active_planner and active_planner != configured_planner) or (active_live and active_live != configured_live)
+            else "using configured model"
+        ),
     )
 
 
 @app.post("/config/runtime-model", response_model=RuntimeModelResponse)
 async def runtime_model_update(request: RuntimeModelUpdateRequest) -> RuntimeModelResponse:
-    global _runtime_vertex_planner_model_override
+    global _runtime_vertex_planner_model_override, _runtime_vertex_live_model_override
     requested = str(request.model or "").strip()
+    target = str(request.target or "planner").strip().lower()
     c = get_config()
-    configured = str(c.vertex_planner_model or "").strip()
+    configured_planner = str(c.vertex_planner_model or "").strip()
+    configured_live = str(c.vertex_live_model or "").strip()
 
     if not requested:
         raise HTTPException(status_code=400, detail="model is required")
+    if target not in {"planner", "live"}:
+        raise HTTPException(status_code=400, detail="target must be 'planner' or 'live'")
 
     if requested.lower() in {"default", "configured", "reset"}:
-        _runtime_vertex_planner_model_override = None
+        if target == "live":
+            _runtime_vertex_live_model_override = None
+        else:
+            _runtime_vertex_planner_model_override = None
         _reset_runtime_model_clients()
-        active = _get_active_vertex_planner_model()
+        active_planner = _get_active_vertex_planner_model()
+        active_live = _get_active_vertex_live_model()
         return RuntimeModelResponse(
             success=True,
-            active_vertex_planner_model=active,
-            configured_vertex_planner_model=configured,
+            active_vertex_planner_model=active_planner,
+            configured_vertex_planner_model=configured_planner,
+            active_vertex_live_model=active_live,
+            configured_vertex_live_model=configured_live,
             available_models=_get_available_vertex_models(),
-            message="runtime override cleared; using configured model",
+            message=f"{target} runtime override cleared; using configured model",
         )
 
-    _runtime_vertex_planner_model_override = requested
+    if target == "live":
+        _runtime_vertex_live_model_override = requested
+    else:
+        _runtime_vertex_planner_model_override = requested
     _reset_runtime_model_clients()
-    active = _get_active_vertex_planner_model()
+    active_planner = _get_active_vertex_planner_model()
+    active_live = _get_active_vertex_live_model()
     return RuntimeModelResponse(
         success=True,
-        active_vertex_planner_model=active,
-        configured_vertex_planner_model=configured,
+        active_vertex_planner_model=active_planner,
+        configured_vertex_planner_model=configured_planner,
+        active_vertex_live_model=active_live,
+        configured_vertex_live_model=configured_live,
         available_models=_get_available_vertex_models(),
-        message="runtime model updated",
+        message=f"{target} runtime model updated",
     )
 
 
@@ -5846,7 +6818,8 @@ async def capture_devices() -> dict:
 async def capture_select(request: CaptureSelectRequest) -> CaptureSourceResponse:
     """Select capture source and /dev/video device (HDMI card or camera)."""
     try:
-        status = get_screen_capture().set_capture_preference(
+        capture = get_screen_capture()
+        status = capture.set_capture_preference(
             source=request.source,
             device=request.device,
             preferred_kind=request.preferred_kind,
@@ -5855,47 +6828,98 @@ async def capture_select(request: CaptureSelectRequest) -> CaptureSourceResponse
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+    # Source/device switch must reset active live stream workers so they do
+    # not keep stale FFmpeg/WebRTC bindings to previous camera/audio nodes.
+    with contextlib.suppress(Exception):
+        await _live_av_stream_manager.stop()
+    with contextlib.suppress(Exception):
+        await _close_all_webrtc_peers()
+
+    if bool(status.get("hdmi_configured")):
+        async def _warm_capture_session() -> None:
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(capture.ensure_hdmi_session, True)
+
+        asyncio.create_task(_warm_capture_session())
     return CaptureSourceResponse(**status)
 
 
 @app.get("/audio/source", response_model=dict)
-async def audio_source() -> dict:
+async def audio_source(verbose: bool = False) -> dict:
     """Return HDMI audio stream diagnostics."""
+    return _audio_source_payload(include_probe_details=bool(verbose))
+
+
+def _audio_source_payload(*, include_probe_details: bool) -> dict:
+    """Return HDMI audio stream diagnostics with optional expensive probe details."""
     c = get_config()
-    devices = list_alsa_capture_devices()
-    input_format, device = _resolve_audio_input()
+    capture_status = get_screen_capture().capture_source_status()
+    guessed_device = _guess_audio_input_for_selected_capture(capture_status=capture_status)
+    input_format, device = _resolve_audio_input(capture_status=capture_status)
+    follow_active_video = bool(getattr(c, "hdmi_audio_follow_active_video", True))
+    active_video_device = str(capture_status.get("hdmi_device") or "").strip()
+    strict_match_blocked = bool(follow_active_video and active_video_device and not guessed_device)
     try:
         audio_gid = grp.getgrnam("audio").gr_gid
         user_in_audio_group = audio_gid in os.getgroups()
     except Exception:
         user_in_audio_group = None
 
-    return {
+    payload = {
         "enabled": c.hdmi_audio_enabled,
+        "follow_active_video": follow_active_video,
         "ffmpeg_available": ffmpeg_available(),
         "arecord_available": arecord_available(),
         "user_in_audio_group": user_in_audio_group,
-        "ffmpeg_alsa": ffmpeg_has_input_format("alsa"),
-        "ffmpeg_pulse": ffmpeg_has_input_format("pulse"),
         "input_format": input_format,
         "device": device,
-        "has_devices": len(devices) > 0,
-        "devices": devices,
+        "guessed_device": guessed_device,
+        "active_video_device": capture_status.get("hdmi_device"),
+        "strict_match_blocked": strict_match_blocked,
+        "selected_video_device": capture_status.get("selected_video_device"),
         "sample_rate": c.hdmi_audio_sample_rate,
         "channels": c.hdmi_audio_channels,
         "bitrate": c.hdmi_audio_bitrate,
     }
+    if include_probe_details:
+        devices = list_alsa_capture_devices()
+        payload.update(
+            {
+                "ffmpeg_alsa": ffmpeg_has_input_format("alsa"),
+                "ffmpeg_pulse": ffmpeg_has_input_format("pulse"),
+                "has_devices": len(devices) > 0,
+                "devices": devices,
+            }
+        )
+    else:
+        payload.update(
+            {
+                "ffmpeg_alsa": None,
+                "ffmpeg_pulse": None,
+                "has_devices": None,
+                "devices": [],
+            }
+        )
+    return payload
 
 
 @app.get("/stream/status", response_model=dict)
 async def stream_status() -> dict:
     """Return a consolidated status report for video and audio streaming."""
     video_status = get_screen_capture().capture_source_status()
-    audio_status = await audio_source()
+    audio_status = _audio_source_payload(include_probe_details=False)
     return {
         "video": video_status,
         "audio": audio_status,
+        "av": _live_av_stream_manager.status(),
     }
+
+
+@app.get("/stream/av/status", response_model=dict)
+async def stream_av_status() -> dict:
+    """Return shared AV stream status for the synchronized live player."""
+    return _live_av_stream_manager.status()
 
 
 # ---------------------------------------------------------------------------
@@ -5991,7 +7015,7 @@ def _run_yts_command(args_list, cwd=None):
             args_list,
             capture_output=True,
             text=True,
-            cwd=cwd or '/home/harry/youtube/ai_tool',
+            cwd=cwd or str(_get_yts_workspace_dir()),
             check=False,
         )
     except FileNotFoundError:
@@ -6008,7 +7032,7 @@ def _run_yts_command(args_list, cwd=None):
 async def yts_discover() -> dict:
     """Run YTS discover and return discovered devices."""
     # --list gives previously discovered devices and new discovery.
-    res = _run_yts_command(['yts', 'discover', '--list'])
+    res = _run_yts_command(_get_yts_command_prefix() + ['discover', '--list'])
     return res
 
 
@@ -6358,7 +7382,7 @@ async def yts_test(request: TestRequest) -> dict:
     result_file = Path(request.json_output or '/tmp/yts_test_result.json')
     result_file.unlink(missing_ok=True)
 
-    cmd = ['yts', 'test', resolved_test_device, request.test]
+    cmd = _get_yts_command_prefix() + ['test', resolved_test_device, request.test]
     if request.filters:
         cmd.extend(request.filters)
     if request.args:
@@ -6650,26 +7674,35 @@ async def stream_hdmi() -> StreamingResponse:
             detail="HDMI capture is disabled. Set IMAGE_SOURCE=auto or IMAGE_SOURCE=hdmi-capture.",
         )
 
+    # Keep the stream endpoint tolerant of transient startup issues. The
+    # capture helpers below already lazily retry session creation and emit
+    # frames as soon as the selected device becomes ready.
+
     async def frame_generator():
         boundary = b"--frame\r\n"
         while True:
-            # Offload the blocking frame capture to a separate thread
+            # Offload the blocking frame capture to a separate thread.
             frame = await asyncio.to_thread(
                 capture.get_hdmi_stream_frame_jpeg, quality=config.hdmi_stream_jpeg_quality
             )
             if frame is None:
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(0.08)
                 continue
             headers = (
                 b"Content-Type: image/jpeg\r\n"
                 + f"Content-Length: {len(frame)}\r\n\r\n".encode("ascii")
             )
             yield boundary + headers + frame + b"\r\n"
-            await asyncio.sleep(0.03)
+            await asyncio.sleep(0.01)
 
     return StreamingResponse(
         frame_generator(),
         media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
@@ -6683,7 +7716,13 @@ async def stream_audio() -> StreamingResponse:
     if not ffmpeg_available():
         raise HTTPException(status_code=500, detail="ffmpeg not found on host; required for /stream/audio")
 
-    input_format, device = _resolve_audio_input()
+    capture = get_screen_capture()
+    capture.ensure_hdmi_session(force=True)
+    capture_status = capture.capture_source_status()
+    strict_source_lock = bool(getattr(c, "hdmi_audio_follow_active_video", True)) and bool(
+        str(capture_status.get("hdmi_device") or "").strip()
+    )
+    input_format, device = _resolve_audio_input(capture_status=capture_status)
     if not input_format or not device:
         raise HTTPException(status_code=404, detail="No supported audio input source (alsa/pulse) found")
 
@@ -6723,8 +7762,27 @@ async def stream_audio() -> StreamingResponse:
 
     session, started, used_channels, used_sample_rate, _ = _try_start_audio_session(input_format, device)
     if not started:
+        # If arecord pipeline fails, retry with direct ffmpeg demuxers for lower fragility.
+        if input_format == "arecord":
+            for forced_format in ("alsa", "pulse"):
+                fallback_format, fallback_device = resolve_audio_input(
+                    preferred_format=forced_format,
+                    configured_device=device,
+                )
+                if not fallback_format or not fallback_device:
+                    continue
+                session, started, used_channels, used_sample_rate, _ = _try_start_audio_session(
+                    fallback_format,
+                    fallback_device,
+                )
+                if started:
+                    input_format = fallback_format
+                    device = fallback_device
+                    break
+
+    if not started:
         # If a fixed device is configured and failed, try one auto-resolve retry.
-        if c.hdmi_audio_device:
+        if c.hdmi_audio_device and not strict_source_lock:
             fallback_format, fallback_device = resolve_audio_input(
                 preferred_format=c.hdmi_audio_input_format,
                 configured_device="",
@@ -6812,15 +7870,39 @@ async def manual_action(request: ManualActionRequest) -> ManualActionResponse:
         await _ensure_selected_device_context(request.device_id, persist=bool(request.device_id))
         dab = get_dab_client()
         if action in KEY_MAP:
-            resp = await dab.key_press(KEY_MAP[action])
+            selected_device_id = _resolve_selected_device_id(request.device_id)
+            key_code = KEY_MAP[action]
+            if await _is_manual_keypress_duplicate(
+                device_id=selected_device_id,
+                action=action,
+                key_code=key_code,
+            ):
+                return ManualActionResponse(
+                    success=True,
+                    action=action,
+                    result={"deduped": True, "keyCode": key_code},
+                )
+            resp = await dab.key_press(key_code)
             return ManualActionResponse(success=resp.success, action=action, result=resp.data)
         elif action == "KEY_PRESS_CODE":
+            selected_device_id = _resolve_selected_device_id(request.device_id)
             key_code = str(params.get("key_code") or params.get("keyCode") or "").strip().upper()
             if not key_code:
                 raise HTTPException(status_code=400, detail="key_code is required for KEY_PRESS_CODE")
+            if await _is_manual_keypress_duplicate(
+                device_id=selected_device_id,
+                action=action,
+                key_code=key_code,
+            ):
+                return ManualActionResponse(
+                    success=True,
+                    action=action,
+                    result={"deduped": True, "keyCode": key_code},
+                )
             resp = await dab.key_press(key_code)
             return ManualActionResponse(success=resp.success, action=action, result=resp.data)
         elif action == "LONG_KEY_PRESS":
+            selected_device_id = _resolve_selected_device_id(request.device_id)
             key_action = str(params.get("key_action", "")).strip().upper()
             key_code = str(params.get("key_code") or params.get("keyCode") or "").strip().upper()
             duration_ms = int(params.get("duration_ms") or params.get("durationMs") or 1500)
@@ -6829,6 +7911,16 @@ async def manual_action(request: ManualActionRequest) -> ManualActionResponse:
                 raise HTTPException(
                     status_code=400,
                     detail="LONG_KEY_PRESS requires params.key_action or params.key_code",
+                )
+            if await _is_manual_keypress_duplicate(
+                device_id=selected_device_id,
+                action=action,
+                key_code=f"{resolved_key}:{duration_ms}",
+            ):
+                return ManualActionResponse(
+                    success=True,
+                    action=action,
+                    result={"deduped": True, "keyCode": resolved_key, "durationMs": duration_ms},
                 )
             resp = await dab.long_key_press(resolved_key, duration_ms=duration_ms)
             return ManualActionResponse(success=resp.success, action=action, result=resp.data)
@@ -7301,10 +8393,10 @@ class TestRequest(BaseModel):
 async def yts_discover():
     """Run YTS discover command."""
     result = subprocess.run(
-        ['python3', 'yts.py', 'discover'],
+        _get_yts_command_prefix() + ['discover'],
         capture_output=True,
         text=True,
-        cwd='/home/harry/youtube/ai_tool'
+        cwd=str(_get_yts_workspace_dir())
     )
     return {'output': result.stdout.strip(), 'error': result.stderr.strip()}
 
@@ -7313,10 +8405,10 @@ async def yts_discover():
 async def yts_list():
     """Run YTS list command."""
     result = subprocess.run(
-        ['python3', 'yts.py', 'list'],
+        _get_yts_command_prefix() + ['list'],
         capture_output=True,
         text=True,
-        cwd='/home/harry/youtube/ai_tool'
+        cwd=str(_get_yts_workspace_dir())
     )
     return {'output': result.stdout.strip(), 'error': result.stderr.strip()}
 
@@ -7325,12 +8417,12 @@ async def yts_list():
 async def yts_test(request: TestRequest) -> dict:
     """Run YTS test command."""
     resolved_test_device = await _resolve_yts_runner_device_id(request.device)
-    cmd = ['python3', 'yts.py', 'test', resolved_test_device, request.test]
+    cmd = _get_yts_command_prefix() + ['test', resolved_test_device, request.test]
     result = subprocess.run(
         cmd,
         capture_output=True,
         text=True,
-        cwd='/home/harry/youtube/ai_tool'
+        cwd=str(_get_yts_workspace_dir())
     )
     return {'output': result.stdout.strip(), 'error': result.stderr.strip(), 'device_id': resolved_test_device}
 

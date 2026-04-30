@@ -26,6 +26,7 @@ def reset_api_state(tmp_path, monkeypatch):
     api_mod._device_settings_values_cache.clear()
     api_mod._device_settings_values_inflight.clear()
     api_mod._device_settings_values_last_request_at.clear()
+    api_mod._manual_keypress_last_sent_at.clear()
     api_mod._dab_client = None
     api_mod._planner = None
     api_mod._screen_capture = None
@@ -50,6 +51,7 @@ def reset_api_state(tmp_path, monkeypatch):
     api_mod._device_settings_values_cache.clear()
     api_mod._device_settings_values_inflight.clear()
     api_mod._device_settings_values_last_request_at.clear()
+    api_mod._manual_keypress_last_sent_at.clear()
     api_mod._dab_client = None
     api_mod._planner = None
     api_mod._screen_capture = None
@@ -134,6 +136,30 @@ async def test_capture_devices_status(client):
 
 
 @pytest.mark.asyncio
+async def test_stream_hdmi_tolerates_capture_warmup(monkeypatch):
+    class FakeCapture:
+        def capture_source_status(self):
+            return {
+                "hdmi_configured": True,
+                "hdmi_available": False,
+                "hdmi_last_error": "warming up",
+            }
+
+        def ensure_hdmi_session(self, force=False):
+            return False
+
+        def get_hdmi_stream_frame_jpeg(self, quality=None):
+            return None
+
+    monkeypatch.setattr(api_mod, "get_screen_capture", lambda: FakeCapture())
+
+    response = await api_mod.stream_hdmi()
+
+    assert isinstance(response, api_mod.StreamingResponse)
+    assert response.media_type == "multipart/x-mixed-replace; boundary=frame"
+
+
+@pytest.mark.asyncio
 async def test_capture_select_updates_source(client):
     resp = await client.post(
         "/capture/select",
@@ -214,6 +240,15 @@ async def test_audio_source_status(client):
 async def test_stream_audio_disabled_by_default(client):
     resp = await client.get("/stream/audio")
     assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_stream_av_status_exposes_shared_av_transport(client):
+    resp = await client.get("/stream/av/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["transport"] == "websocket-fmp4"
+    assert "subscriber_count" in data
 
 
 def test_get_planner_auto_uses_vertex_when_project_available(monkeypatch):
@@ -537,13 +572,26 @@ async def test_yts_video_recording_uses_absolute_output_path(monkeypatch, tmp_pa
 
     async def fake_create_subprocess_exec(*args, **kwargs):
         captured["args"] = args
+        captured["kwargs"] = kwargs
         return FakeProcess()
 
     monkeypatch.setattr(api_mod, "ffmpeg_available", lambda: True)
     monkeypatch.setattr(
         api_mod,
         "get_screen_capture",
-        lambda: type("FakeCapture", (), {"capture_source_status": lambda self: {"hdmi_available": True}})(),
+        lambda: type(
+            "FakeCapture",
+            (),
+            {
+                "ensure_hdmi_session": lambda self, force=False: True,
+                "capture_source_status": lambda self: {
+                    "hdmi_available": True,
+                    "hdmi_device": "/dev/video9",
+                    "rotation_degrees": 0,
+                },
+                "get_hdmi_stream_frame_jpeg": lambda self, quality=85: b"jpeg-frame",
+            },
+        )(),
     )
     monkeypatch.setattr(api_mod.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
 
@@ -552,6 +600,9 @@ async def test_yts_video_recording_uses_absolute_output_path(monkeypatch, tmp_pa
     output_path = pathlib.Path(captured["args"][-1])
     assert output_path.is_absolute()
     assert output_path.parent == api_mod._get_yts_live_artifacts_dir(command_id)
+    assert "pipe:0" in captured["args"]
+    assert captured["kwargs"]["stdin"] is api_mod.asyncio.subprocess.PIPE
+    assert api_mod._yts_live_recording_processes[command_id]["pump_task"] is not None
 
 
 @pytest.mark.asyncio
@@ -1048,6 +1099,29 @@ async def test_yts_visual_context_blocks_mismatched_hdmi_device(monkeypatch):
     assert "mismatch" in str(visual_context["summary"]).lower()
 
 
+def test_hdmi_capture_device_mismatch_ignores_sibling_video_nodes_on_same_device(monkeypatch):
+    realpath = api_mod.os.path.realpath
+
+    def fake_realpath(path):
+        mapping = {
+            "/dev/video10": "/dev/video10",
+            "/dev/video11": "/dev/video11",
+            "/sys/class/video4linux/video10/device": "/devices/pci0000:00/usb1/1-1/capture-a",
+            "/sys/class/video4linux/video11/device": "/devices/pci0000:00/usb1/1-1/capture-a",
+        }
+        return mapping.get(path, realpath(path))
+
+    monkeypatch.setattr(api_mod.os.path, "realpath", fake_realpath)
+
+    assert api_mod._is_hdmi_capture_device_mismatch(
+        {
+            "configured_source": "hdmi-capture",
+            "selected_video_device": "/dev/video10",
+            "hdmi_device": "/dev/video11",
+        }
+    ) is False
+
+
 def test_collect_yts_revalidation_conditions_falls_back_to_guided_context(monkeypatch):
     state = {
         "prompts": [],
@@ -1135,6 +1209,76 @@ async def test_yts_stream_output_does_not_answer_scaffolding_only_prompt(monkeyp
     assert len(state["prompts"]) == 1
     assert state["prompts"][0]["answered"] is False
     assert state["responses"] == []
+
+
+@pytest.mark.asyncio
+async def test_yts_stream_output_backfills_instruction_context_before_scaffolding(monkeypatch):
+    command_id = "cmd-context-backfill"
+    api_mod._yts_live_commands[command_id] = api_mod._new_yts_live_state(command_id, interactive_ai=True)
+
+    class FakeStream:
+        def __init__(self, lines):
+            self._lines = list(lines)
+
+        async def readline(self):
+            if self._lines:
+                return self._lines.pop(0)
+            return b""
+
+    class FakeStdin:
+        def __init__(self):
+            self.writes = []
+
+        def write(self, payload):
+            self.writes.append(payload.decode())
+
+        async def drain(self):
+            return None
+
+    class FakeProcess:
+        def __init__(self):
+            self.stdin = FakeStdin()
+            self.returncode = None
+
+    async def fake_suggest(command_id_arg, prompt_text, options=None):
+        assert command_id_arg == command_id
+        assert "Look closely at the text on the screen." in prompt_text
+        assert options == ["1", "2", "3"]
+        return {
+            "response": "3",
+            "source": "gemini",
+            "visual_summary": "summary",
+            "visual_source": "hdmi-capture",
+        }
+
+    api_mod._yts_live_processes[command_id] = FakeProcess()
+    monkeypatch.setattr(api_mod, "_suggest_yts_prompt_response", fake_suggest)
+
+    await api_mod._append_yts_stream_output(
+        command_id,
+        "stdout",
+        FakeStream(
+            [
+                b"Your device will display a table of various international fonts.\n",
+                b"Look closely at the text on the screen.\n",
+                b"Please select from the following options:\n",
+                b"1: Pass\n",
+                b"2: Fail\n",
+                b"3: Skip\n",
+            ]
+        ),
+    )
+
+    state = api_mod._yts_live_commands[command_id]
+    assert len(state["prompts"]) == 1
+    prompt = state["prompts"][0]
+    assert "Your device will display a table of various international fonts." in prompt["text"]
+    assert "Look closely at the text on the screen." in prompt["text"]
+    assert prompt["options"] == ["1", "2", "3"]
+    assert prompt["answered"] is True
+    assert prompt["response"] == "3"
+    assert state["responses"] == [{"source": "gemini", "message": "3"}]
+    assert api_mod._yts_live_processes[command_id].stdin.writes == ["3\n"]
 
 
 @pytest.mark.asyncio
@@ -2167,6 +2311,38 @@ async def test_manual_action_key_press(client):
     data = resp.json()
     assert data["success"] is True
     assert data["action"] == "PRESS_OK"
+
+
+@pytest.mark.asyncio
+async def test_manual_action_key_press_dedupes_rapid_repeats(client, monkeypatch):
+    monkeypatch.setenv("MANUAL_KEYPRESS_DEDUPE_WINDOW_MS", "500")
+    cfg_mod.reset_config()
+
+    class _Resp:
+        def __init__(self):
+            self.success = True
+            self.data = {"ok": True}
+
+    class FakeDAB:
+        def __init__(self):
+            self.calls = 0
+
+        async def key_press(self, _key_code):
+            self.calls += 1
+            return _Resp()
+
+    fake = FakeDAB()
+    monkeypatch.setattr(api_mod, "get_dab_client", lambda: fake)
+
+    first = await client.post("/action", json={"action": "PRESS_HOME"})
+    second = await client.post("/action", json={"action": "PRESS_HOME"})
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["success"] is True
+    assert second.json()["success"] is True
+    assert second.json()["result"].get("deduped") is True
+    assert fake.calls == 1
 
 
 @pytest.mark.asyncio

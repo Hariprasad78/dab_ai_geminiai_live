@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import glob
 import logging
 import os
 import re
 import threading
+import time
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -78,6 +80,11 @@ class HdmiCaptureSession:
         self._cap: Optional[Any] = None
         self._lock = threading.Lock()
         self._last_error: Optional[str] = None
+        self._last_frame: Optional[Any] = None
+        self._last_frame_ts: float = 0.0
+        self._reader_stop = threading.Event()
+        self._frame_ready = threading.Event()
+        self._reader_thread: Optional[threading.Thread] = None
 
     @staticmethod
     def normalize_rotation_degrees(rotation_degrees: int) -> int:
@@ -118,11 +125,22 @@ class HdmiCaptureSession:
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
                 cap.set(cv2.CAP_PROP_FPS, self.fps)
+                with contextlib.suppress(Exception):
+                    # Keep capture buffers shallow so camera switches reflect quickly.
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                 if len(self.fourcc) == 4:
                     cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*self.fourcc))
 
                 self._cap = cap
                 self._last_error = None
+                self._reader_stop.clear()
+                self._frame_ready.clear()
+                self._reader_thread = threading.Thread(
+                    target=self._reader_loop,
+                    name=f"hdmi-capture-{os.path.basename(str(self.device))}",
+                    daemon=True,
+                )
+                self._reader_thread.start()
                 return True
             except Exception as exc:
                 self._last_error = str(exc)
@@ -171,26 +189,71 @@ class HdmiCaptureSession:
 
     def close(self) -> None:
         """Release the capture device."""
+        self._reader_stop.set()
+        cap: Optional[Any] = None
         with self._lock:
+            reader = self._reader_thread
+            self._reader_thread = None
+            self._frame_ready.clear()
             if self._cap is not None:
-                try:
-                    self._cap.release()
-                except Exception:
-                    pass
+                cap = self._cap
                 self._cap = None
+        if cap is not None:
+            with contextlib.suppress(Exception):
+                cap.release()
+        if reader is not None and reader.is_alive() and reader is not threading.current_thread():
+            reader.join(timeout=0.5)
+
+    def _copy_frame(self, frame: Any) -> Any:
+        try:
+            return frame.copy()
+        except Exception:
+            return frame
+
+    def _reader_loop(self) -> None:
+        consecutive_failures = 0
+        while not self._reader_stop.is_set():
+            with self._lock:
+                cap = self._cap
+                if cap is None:
+                    break
+                cv2 = self._cv2
+            # Never hold the shared lock during a potentially blocking read.
+            ok, frame = cap.read()
+            if ok and frame is not None:
+                try:
+                    rotated = self._rotate_frame(frame)
+                except Exception as exc:
+                    self._last_error = str(exc)
+                    time.sleep(0.05)
+                    continue
+                with self._lock:
+                    self._last_frame = rotated
+                    self._last_frame_ts = time.monotonic()
+                    self._last_error = None
+                    self._frame_ready.set()
+                consecutive_failures = 0
+                continue
+
+            consecutive_failures += 1
+            if consecutive_failures >= 12:
+                self._last_error = "Failed to read frame"
+            time.sleep(0.04 if cv2 is not None else 0.08)
 
     def read_frame(self) -> Optional[Any]:
         """Read one frame from the HDMI input."""
-        with self._lock:
-            if self._cap is None and not self.open():
-                return None
+        if self._cap is None and not self.open():
+            return None
 
-            assert self._cap is not None
-            ok, frame = self._cap.read()
-            if not ok or frame is None:
-                self._last_error = "Failed to read frame"
-                return None
-            return self._rotate_frame(frame)
+        if self._last_frame is None:
+            self._frame_ready.wait(timeout=0.45)
+        frame: Optional[Any] = None
+        with self._lock:
+            if self._last_frame is not None:
+                frame = self._copy_frame(self._last_frame)
+            else:
+                self._last_error = self._last_error or "Failed to read frame"
+        return frame
 
     def capture_png_base64(self) -> Optional[str]:
         """Capture one frame and return as base64 PNG."""
