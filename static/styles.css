@@ -251,7 +251,10 @@ label span, .label-like {
 }
 .live-stage { padding: 0; overflow: hidden; }
 .live-frame {
-  min-height: 420px;
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  min-height: 0;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -259,7 +262,56 @@ label span, .label-like {
   border-radius: 18px;
   overflow: hidden;
 }
-.live-frame img { display: block; width: 100%; height: auto; }
+.live-frame img, .live-frame video, .floating-live-stage img, .floating-live-stage video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #050505;
+}
+.live-frame .empty-state {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.floating-live-window {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 60;
+  width: min(560px, calc(100vw - 2rem));
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--panel);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.45);
+}
+.floating-live-window.hidden { display: none; }
+.floating-live-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+.floating-live-actions { display: flex; gap: 0.5rem; }
+.floating-live-stage {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #050505;
+}
+.floating-live-reopen {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 59;
+  display: none;
+}
+.floating-live-reopen.visible { display: inline-flex; }
 .live-sidebar {
   display: grid;
   gap: 1rem;

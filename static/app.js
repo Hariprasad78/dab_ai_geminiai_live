@@ -8,6 +8,9 @@
     apiBase: '',
     workspace: 'yts',
     streamRunning: false,
+    floatingStreamOpen: false,
+    floatingStreamHidden: false,
+    floatingStreamUrl: '',
     audioRunning: false,
     currentCommandId: null,
     commandPollTimer: null,
@@ -329,6 +332,8 @@
       stopCombinedStreamPlayer();
       state.streamRunning = false;
       state.audioRunning = false;
+      state.floatingStreamUrl = '';
+      resetFloatingStream();
       button.textContent = 'Start Stream';
       button.classList.add('secondary');
       frame.innerHTML = '<div class="empty-state">HDMI stream is stopped.</div>';
@@ -338,9 +343,67 @@
       return;
     }
     state.streamRunning = true;
+    state.floatingStreamUrl = `${apiOrigin()}/stream/hdmi?ts=${Date.now()}`;
     button.textContent = 'Stop Stream';
     button.classList.remove('secondary');
-    frame.innerHTML = `<img src="${apiOrigin()}/stream/hdmi?ts=${Date.now()}" alt="Live stream" />`;
+    frame.innerHTML = `<img src="${state.floatingStreamUrl}" alt="Live stream" />`;
+    setFloatingStreamControls();
+    syncFloatingStream();
+  }
+
+  function setFloatingStreamControls() {
+    const toggle = $('toggle-floating-stream-btn');
+    if (toggle) {
+      toggle.disabled = !state.streamRunning;
+      toggle.textContent = state.floatingStreamOpen && !state.floatingStreamHidden ? 'Hide Float' : 'Float Window';
+    }
+    const reopen = $('reopen-floating-stream-btn');
+    if (reopen) reopen.classList.toggle('visible', state.streamRunning && state.floatingStreamOpen && state.floatingStreamHidden);
+  }
+
+  function syncFloatingStream() {
+    if (!state.streamRunning || !state.floatingStreamOpen || state.floatingStreamHidden) return;
+    const stage = $('floating-live-stage');
+    if (!stage || !state.floatingStreamUrl) return;
+    stage.innerHTML = `<img src="${state.floatingStreamUrl}" alt="Floating live stream" />`;
+  }
+
+  function showFloatingStream() {
+    if (!state.streamRunning) return;
+    state.floatingStreamOpen = true;
+    state.floatingStreamHidden = false;
+    $('floating-live-window')?.classList.remove('hidden');
+    syncFloatingStream();
+    setFloatingStreamControls();
+  }
+
+  function hideFloatingStream() {
+    if (!state.floatingStreamOpen) return;
+    state.floatingStreamHidden = true;
+    $('floating-live-window')?.classList.add('hidden');
+    setFloatingStreamControls();
+  }
+
+  function closeFloatingStream() {
+    state.floatingStreamOpen = false;
+    state.floatingStreamHidden = false;
+    $('floating-live-window')?.classList.add('hidden');
+    const stage = $('floating-live-stage');
+    if (stage) stage.innerHTML = '<div class="empty-state">Start the stream to open the floating preview.</div>';
+    setFloatingStreamControls();
+  }
+
+  function resetFloatingStream() {
+    state.floatingStreamOpen = false;
+    state.floatingStreamHidden = false;
+    closeFloatingStream();
+    setFloatingStreamControls();
+  }
+
+  function toggleFloatingStream() {
+    if (!state.streamRunning) return;
+    if (state.floatingStreamOpen && !state.floatingStreamHidden) hideFloatingStream();
+    else showFloatingStream();
   }
 
   async function toggleAudio() {
@@ -870,6 +933,10 @@
     $('apply-target-device-btn').addEventListener('click', applyTargetDeviceSelection);
 
     $('toggle-stream-btn').addEventListener('click', toggleStream);
+    $('toggle-floating-stream-btn')?.addEventListener('click', toggleFloatingStream);
+    $('hide-floating-stream-btn')?.addEventListener('click', hideFloatingStream);
+    $('close-floating-stream-btn')?.addEventListener('click', closeFloatingStream);
+    $('reopen-floating-stream-btn')?.addEventListener('click', showFloatingStream);
     $('toggle-audio-btn').addEventListener('click', toggleAudio);
     $('capture-screenshot-btn').addEventListener('click', captureScreenshot);
     $('refresh-capture-devices-btn').addEventListener('click', loadCaptureDevices);
