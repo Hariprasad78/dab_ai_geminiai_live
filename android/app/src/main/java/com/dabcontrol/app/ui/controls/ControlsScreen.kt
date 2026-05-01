@@ -5,6 +5,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
@@ -32,8 +34,10 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
@@ -53,6 +57,8 @@ fun ControlsScreen(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val scrollState = rememberScrollState()
+    var floatingStreamHidden by rememberSaveable { mutableStateOf(false) }
+    val shouldOfferFloatingStream = state.isStreaming && scrollState.value > 420
 
     Box(modifier = modifier.fillMaxSize()) {
         Column(
@@ -139,10 +145,24 @@ fun ControlsScreen(
             )
         }
 
-        if (state.isStreaming && scrollState.value > 420) {
+        if (!state.isStreaming) {
+            floatingStreamHidden = false
+        }
+
+        if (shouldOfferFloatingStream && floatingStreamHidden) {
+            OutlinedButton(
+                onClick = { floatingStreamHidden = false },
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(12.dp)
+            ) {
+                Text("Reopen Stream")
+            }
+        } else if (shouldOfferFloatingStream) {
             FloatingStreamOverlay(
                 streamFrameBytes = state.streamFrameBytes,
                 streamStatus = state.streamStatus,
+                onHide = { floatingStreamHidden = true },
                 modifier = Modifier.align(Alignment.BottomEnd)
             )
         }
@@ -248,14 +268,14 @@ private fun LiveControlCard(
                     contentDescription = "Live HDMI stream",
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(240.dp),
+                        .aspectRatio(16f / 9f),
                     contentScale = ContentScale.Fit
                 )
             } else {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(240.dp),
+                        .aspectRatio(16f / 9f),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
@@ -277,6 +297,7 @@ private fun LiveControlCard(
 private fun FloatingStreamOverlay(
     streamFrameBytes: ByteArray?,
     streamStatus: String,
+    onHide: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val frameBitmap = streamFrameBytes?.let { bytes ->
@@ -301,22 +322,31 @@ private fun FloatingStreamOverlay(
             modifier = Modifier.padding(8.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            Text("Live", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-            Card(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier.width(300.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Live", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                OutlinedButton(onClick = onHide) {
+                    Text("Hide")
+                }
+            }
+            Card(modifier = Modifier.width(300.dp)) {
                 if (frameBitmap != null) {
                     Image(
                         bitmap = frameBitmap,
                         contentDescription = "Floating live stream",
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(120.dp),
-                        contentScale = ContentScale.Crop
+                            .aspectRatio(16f / 9f),
+                        contentScale = ContentScale.Fit
                     )
                 } else {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(120.dp),
+                            .aspectRatio(16f / 9f),
                         contentAlignment = Alignment.Center
                     ) {
                         Text("Waiting...", color = MaterialTheme.colorScheme.onSurfaceVariant)
