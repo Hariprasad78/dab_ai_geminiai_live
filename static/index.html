@@ -298,15 +298,34 @@
     .log-line .PASS { color: #4ade80; }
     .log-line .FAIL { color: #f87171; }
     #screenshot-img { max-width: 100%; border-radius: 0.5rem; border: 1px solid #3f3f46; }
-    #hdmi-stream-img { max-width: 100%; border-radius: 0.5rem; border: 1px solid #3f3f46; display: block; width: 100%; transition: opacity 220ms ease, filter 220ms ease; }
+    #hdmi-stream-img, #hdmi-stream-player, #floating-stream-img, #floating-stream-player {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      background: #050505;
+      transition: opacity 220ms ease, filter 220ms ease;
+    }
     #hdmi-stream-container {
       position: relative;
-      min-height: 210px;
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      min-height: 0;
       border-radius: 0.6rem;
       overflow: hidden;
       background: #09090b;
       border: 1px solid #3f3f46;
       transition: box-shadow 220ms ease, border-color 220ms ease;
+    }
+    #hdmi-stream-container .empty-state {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0;
+      min-height: 0;
+      text-align: center;
     }
     #hdmi-stream-container.switching {
       border-color: #71717a;
@@ -343,6 +362,67 @@
       transition: opacity 180ms ease;
     }
     #audio-stream-player { width: 100%; margin-top: 0.6rem; }
+    .floating-stream-window {
+      position: fixed;
+      right: 1rem;
+      bottom: 1rem;
+      z-index: 60;
+      width: min(560px, calc(100vw - 2rem));
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 0.75rem;
+      overflow: hidden;
+      background: #09090b;
+      box-shadow: 0 24px 70px rgba(0, 0, 0, 0.5);
+    }
+    .floating-stream-window.hidden { display: none; }
+    .floating-stream-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      padding: 0.55rem 0.65rem;
+      background: rgba(18, 18, 20, 0.96);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    .floating-stream-title { font-size: 0.78rem; font-weight: 700; color: var(--text); }
+    .floating-stream-actions { display: flex; gap: 0.4rem; align-items: center; }
+    .floating-stream-stage {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      background: #050505;
+    }
+    .floating-stream-stage .empty-state {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0;
+      min-height: 0;
+      text-align: center;
+      padding: 0.75rem;
+    }
+    .floating-stream-reopen {
+      position: fixed;
+      right: 1rem;
+      bottom: 1rem;
+      z-index: 59;
+      display: none;
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.38);
+    }
+    .floating-stream-reopen.visible { display: inline-flex; }
+    @media (max-width: 760px) {
+      .floating-stream-window {
+        right: 0.75rem;
+        bottom: 0.75rem;
+        width: calc(100vw - 1.5rem);
+      }
+      .floating-stream-reopen {
+        right: 0.75rem;
+        bottom: 0.75rem;
+      }
+    }
     .remote-layout { display: grid; grid-template-columns: 1.1fr 1fr; gap: 1rem; align-items: start; }
     .remote-panel { background: linear-gradient(180deg, rgba(24, 24, 27, 0.92), rgba(14, 14, 16, 0.94)); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 1rem; padding: 0.9rem; box-shadow: inset 0 1px 0 rgba(255,255,255,0.04); }
     .remote-mode-toolbar { display:flex; gap:0.5rem; align-items:end; flex-wrap:wrap; margin-bottom:0.75rem; }
@@ -863,6 +943,7 @@
         <div id="capture-switch-status" class="capture-switch-status"></div>
         <div class="btn-row" style="margin-top:0; margin-bottom:0.75rem;">
           <button class="secondary" id="stream-toggle-btn" onclick="toggleHdmiStream()">▶ Start Stream</button>
+          <button class="secondary" id="floating-stream-toggle-btn" onclick="toggleFloatingStreamWindow()" disabled>Float Window</button>
           <button class="secondary" id="audio-toggle-btn" onclick="toggleAudioStream()">🔊 Start Audio</button>
           <button class="secondary" onclick="captureScreenshot()">📷 Screenshot</button>
         </div>
@@ -1177,6 +1258,20 @@
   <span id="api-url"></span>
 </div>
 
+<div id="floating-stream-window" class="floating-stream-window hidden" aria-label="Floating HDMI stream">
+  <div class="floating-stream-head">
+    <div class="floating-stream-title">HDMI Stream</div>
+    <div class="floating-stream-actions">
+      <button class="secondary mini-btn" onclick="hideFloatingStreamWindow()">Hide</button>
+      <button class="secondary mini-btn" onclick="closeFloatingStreamWindow()">Close</button>
+    </div>
+  </div>
+  <div id="floating-stream-stage" class="floating-stream-stage">
+    <div class="empty-state">Start the stream to open the floating preview.</div>
+  </div>
+</div>
+<button id="floating-stream-reopen-btn" class="secondary floating-stream-reopen" onclick="showFloatingStreamWindow()">Reopen Stream</button>
+
 <script src="./config.js"></script>
 <script>
   const API_STORAGE_KEY = 'dab_api_base';
@@ -1194,6 +1289,10 @@
   let hdmiStreamTransitionToken = 0;
   let hdmiStreamStartupTimer = null;
   let hdmiStreamStopTimer = null;
+  let floatingStreamOpen = false;
+  let floatingStreamHidden = false;
+  let floatingStreamMode = '';
+  let floatingStreamUrl = '';
   let hdmiAvWebSocket = null;
   let hdmiAvMediaSource = null;
   let hdmiAvSourceBuffer = null;
@@ -2989,6 +3088,111 @@
     else void startHdmiStream();
   }
 
+  function setFloatingStreamButtonState() {
+    const btn = document.getElementById('floating-stream-toggle-btn');
+    if (!btn) return;
+    btn.disabled = !hdmiStreamRunning;
+    btn.textContent = floatingStreamOpen && !floatingStreamHidden ? 'Hide Float' : 'Float Window';
+    btn.className = floatingStreamOpen && !floatingStreamHidden ? 'secondary' : 'secondary';
+  }
+
+  function setFloatingStreamReopenState() {
+    const reopen = document.getElementById('floating-stream-reopen-btn');
+    if (!reopen) return;
+    reopen.classList.toggle('visible', hdmiStreamRunning && floatingStreamOpen && floatingStreamHidden);
+  }
+
+  function renderFloatingStreamPlaceholder(message = 'Start the stream to open the floating preview.') {
+    const stage = document.getElementById('floating-stream-stage');
+    if (!stage) return;
+    stage.innerHTML = `<div class="empty-state">${escHtml(message)}</div>`;
+  }
+
+  function syncFloatingStreamContent() {
+    if (!floatingStreamOpen || floatingStreamHidden || !hdmiStreamRunning) return;
+    const stage = document.getElementById('floating-stream-stage');
+    if (!stage) return;
+    if (floatingStreamMode === 'webrtc') {
+      const mainPlayer = document.getElementById('hdmi-stream-player');
+      const stream = mainPlayer && mainPlayer.srcObject ? mainPlayer.srcObject : hdmiWebRtcRemoteStream;
+      if (!stream) {
+        renderFloatingStreamPlaceholder('Waiting for video...');
+        return;
+      }
+      let player = document.getElementById('floating-stream-player');
+      if (!player) {
+        stage.innerHTML = '<video id="floating-stream-player" playsinline autoplay muted></video>';
+        player = document.getElementById('floating-stream-player');
+      }
+      if (player.srcObject !== stream) player.srcObject = stream;
+      player.autoplay = true;
+      player.playsInline = true;
+      player.muted = true;
+      player.play().catch(() => {});
+      return;
+    }
+    if (floatingStreamMode === 'mjpeg' && floatingStreamUrl) {
+      let img = document.getElementById('floating-stream-img');
+      if (!img) {
+        stage.innerHTML = '<img id="floating-stream-img" alt="Floating HDMI stream" />';
+        img = document.getElementById('floating-stream-img');
+      }
+      if (img.src !== floatingStreamUrl) img.src = floatingStreamUrl;
+      return;
+    }
+    renderFloatingStreamPlaceholder('Waiting for stream...');
+  }
+
+  function showFloatingStreamWindow() {
+    if (!hdmiStreamRunning) return;
+    floatingStreamOpen = true;
+    floatingStreamHidden = false;
+    const win = document.getElementById('floating-stream-window');
+    if (win) win.classList.remove('hidden');
+    syncFloatingStreamContent();
+    setFloatingStreamButtonState();
+    setFloatingStreamReopenState();
+  }
+
+  function hideFloatingStreamWindow() {
+    if (!floatingStreamOpen) return;
+    floatingStreamHidden = true;
+    const win = document.getElementById('floating-stream-window');
+    if (win) win.classList.add('hidden');
+    setFloatingStreamButtonState();
+    setFloatingStreamReopenState();
+  }
+
+  function closeFloatingStreamWindow() {
+    floatingStreamOpen = false;
+    floatingStreamHidden = false;
+    floatingStreamMode = '';
+    floatingStreamUrl = '';
+    const win = document.getElementById('floating-stream-window');
+    if (win) win.classList.add('hidden');
+    renderFloatingStreamPlaceholder();
+    setFloatingStreamButtonState();
+    setFloatingStreamReopenState();
+  }
+
+  function toggleFloatingStreamWindow() {
+    if (!hdmiStreamRunning) return;
+    if (floatingStreamOpen && !floatingStreamHidden) hideFloatingStreamWindow();
+    else showFloatingStreamWindow();
+  }
+
+  function resetFloatingStreamForStop() {
+    floatingStreamOpen = false;
+    floatingStreamHidden = false;
+    floatingStreamMode = '';
+    floatingStreamUrl = '';
+    const win = document.getElementById('floating-stream-window');
+    if (win) win.classList.add('hidden');
+    renderFloatingStreamPlaceholder();
+    setFloatingStreamButtonState();
+    setFloatingStreamReopenState();
+  }
+
   function resetHdmiAvPipeline() {
     if (hdmiAvWebSocket) {
       try { hdmiAvWebSocket.onopen = null; } catch (_) {}
@@ -3055,7 +3259,7 @@
       clearHdmiStreamOverlay();
     }
 
-    container.innerHTML = '<video id="hdmi-stream-player" playsinline autoplay controls style="width:100%;display:block;border-radius:0.5rem;"></video><div id="hdmi-stream-overlay" class="stream-overlay"></div>';
+    container.innerHTML = '<video id="hdmi-stream-player" playsinline autoplay controls></video><div id="hdmi-stream-overlay" class="stream-overlay"></div>';
     const player = document.getElementById('hdmi-stream-player');
     if (!player) return false;
     if (forceRestart) player.src = '';
@@ -3099,6 +3303,9 @@
       }
       container.classList.remove('switching');
       clearHdmiStreamOverlay();
+      floatingStreamMode = 'webrtc';
+      floatingStreamUrl = '';
+      syncFloatingStreamContent();
       player.play().catch(() => {});
     };
 
@@ -3131,6 +3338,9 @@
     document.getElementById('stream-toggle-btn').textContent = '■ Stop Stream';
     document.getElementById('stream-toggle-btn').className = 'danger';
     hdmiStreamRunning = true;
+    floatingStreamMode = 'webrtc';
+    floatingStreamUrl = '';
+    setFloatingStreamButtonState();
     if (hdmiWebRtcHasAudio) {
       const audioContainer = document.getElementById('audio-stream-container');
       if (audioContainer) {
@@ -3220,6 +3430,9 @@
     };
     if (forceRestart) img.src = '';
     img.src = url;
+    floatingStreamMode = 'mjpeg';
+    floatingStreamUrl = url;
+    syncFloatingStreamContent();
     hdmiStreamStartupTimer = window.setTimeout(() => {
       if (token !== hdmiStreamTransitionToken) return;
       setHdmiStreamOverlay('Waiting for first frame from selected camera…');
@@ -3227,6 +3440,7 @@
     document.getElementById('stream-toggle-btn').textContent = '■ Stop Stream';
     document.getElementById('stream-toggle-btn').className = 'danger';
     hdmiStreamRunning = true;
+    setFloatingStreamButtonState();
   }
 
   async function startHdmiStream(options = {}) {
@@ -3290,6 +3504,7 @@
     document.getElementById('audio-toggle-btn').textContent = '🔊 Start Audio';
     document.getElementById('audio-toggle-btn').className = 'secondary';
     hdmiAudioRunning = false;
+    resetFloatingStreamForStop();
   }
 
   function setCaptureSwitchStatus(message, isError = false) {

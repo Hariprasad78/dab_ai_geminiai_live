@@ -84,6 +84,7 @@
             </div>
             <div class="inline-actions">
               <button id="toggle-stream-btn" type="button" class="secondary">Start Stream</button>
+              <button id="toggle-floating-stream-btn" type="button" class="secondary" disabled>Float Window</button>
               <button id="toggle-audio-btn" type="button" class="secondary">Start Audio</button>
               <button id="capture-screenshot-btn" type="button" class="secondary">Screenshot</button>
             </div>
@@ -397,6 +398,20 @@
       </div>
     </section>
   </main>
+
+  <div id="floating-live-window" class="floating-live-window hidden" aria-label="Floating HDMI stream">
+    <div class="floating-live-head">
+      <strong>HDMI Stream</strong>
+      <div class="floating-live-actions">
+        <button id="hide-floating-stream-btn" type="button" class="secondary">Hide</button>
+        <button id="close-floating-stream-btn" type="button" class="secondary">Close</button>
+      </div>
+    </div>
+    <div id="floating-live-stage" class="floating-live-stage">
+      <div class="empty-state">Start the stream to open the floating preview.</div>
+    </div>
+  </div>
+  <button id="reopen-floating-stream-btn" type="button" class="secondary floating-live-reopen">Reopen Stream</button>
 
   <script src="/config.js"></script>
   <script src="/app.js"></script>
