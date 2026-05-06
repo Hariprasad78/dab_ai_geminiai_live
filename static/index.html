@@ -1246,11 +1246,49 @@
     <textarea id="goal-input" placeholder="e.g. Launch Netflix and verify home screen loads"></textarea>
     <label style="margin-top:0.75rem;">App ID (optional, YouTube only)</label>
     <input id="app-id-input" placeholder="youtube" />
+    <label style="margin-top:0.75rem;">Runner Type</label>
+    <select id="run-engine-select" onchange="updateNewRunModeUi()">
+      <option value="orchestrator">AI Orchestrator Run (/run/start)</option>
+      <option value="task_runner">AI Task Runner (/task/macro)</option>
+    </select>
+    <label style="margin-top:0.75rem;">Control Mode</label>
+    <select id="run-control-mode-select" onchange="updateNewRunModeUi()">
+      <option value="DAB">DAB</option>
+      <option value="IR">IR</option>
+    </select>
+    <div id="run-ir-device-wrap" style="display:none;">
+      <label style="margin-top:0.75rem;">IR Device ID</label>
+      <input id="run-ir-device-input" placeholder="samsung_tv_default" />
+    </div>
     <label style="margin-top:0.75rem;"><input type="checkbox" id="run-ui-nav-toggle" style="width:auto; margin-right:0.45rem;" /> Allow UI navigation fallback</label>
     <div class="btn-row">
       <button onclick="startRun()">▶ Start Run</button>
     </div>
     <div class="error-msg" id="start-error"></div>
+  </div>
+
+  <div class="card full-width" id="new-run-live-card">
+    <h2>Live Stream & Gemini Logs</h2>
+    <div style="display:grid; grid-template-columns:1.15fr 0.85fr; gap:1rem;">
+      <div>
+        <label>Live Streaming Window</label>
+        <div class="yts-live-preview-wrap">
+          <div class="yts-live-preview-head">
+            <div class="yts-live-preview-title">Runtime Live Feed</div>
+            <div id="new-run-live-status" class="yts-subtle">Starts after run/task begins.</div>
+          </div>
+          <div class="yts-live-preview-stage" id="new-run-live-stage">
+            <div class="yts-live-preview-empty">Start a run or task runner job to watch live stream here.</div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <label>Gemini / AI Runtime Logs</label>
+        <div id="new-run-gemini-log" class="yts-result-box" style="min-height:320px; max-height:420px;">
+          No Gemini logs yet.
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Task Trace (Full Bottom) -->
@@ -3148,6 +3186,16 @@
         }
         if (streamBox) streamBox.classList.remove('switching');
         clearHdmiStreamOverlay();
+        // Force a fresh stream connection so browser/tests do not remain on a
+        // stale MJPEG/WebRTC pipeline after camera source changes.
+        await startHdmiStream({
+          smooth: true,
+          overlayText: 'Reconnecting live stream…',
+          forceRestart: true,
+        });
+        // If Gemini preview is currently tied to an active YTS command, force
+        // its preview img to reload against the new camera source.
+        ytsGeminiPreviewCommandId = null;
       }
       void Promise.allSettled([loadCaptureSource(), refreshCaptureDevices(), refreshStreamDiagnostics()]);
       if (resultEl) {
@@ -4232,6 +4280,7 @@
   }
 
   async function selectRun(runId) {
+    lastTaskRunnerExecution = null;
     selectedRunId = runId;
     document.getElementById('kpi-run').textContent = runId ? runId.slice(0, 8) : 'None';
     lastNarrationIdx = -1;
@@ -5452,6 +5501,7 @@
   
   let ytsTestCatalogCache = [];
   let ytsSelectedTestIds = new Set();
+  let lastTaskRunnerExecution = null;
 
   function getSelectedSelectValues(selectEl) {
     if (!selectEl) return [];
@@ -5820,6 +5870,7 @@
         refreshDabTranscript(selectedRunId),
         refreshTaskTraceLog(selectedRunId, data),
       ]);
+      refreshNewRunLivePanel({ runStatus: data });
 
       if (data.has_screenshot) {
         try {
@@ -6022,20 +6073,125 @@
     const goal = document.getElementById('goal-input').value.trim();
     const appId = document.getElementById('app-id-input').value.trim();
     const uiNavToggle = document.getElementById('run-ui-nav-toggle');
+    const engine = String(document.getElementById('run-engine-select')?.value || 'orchestrator');
+    const controlMode = String(document.getElementById('run-control-mode-select')?.value || 'DAB').toUpperCase();
+    const irDeviceInput = document.getElementById('run-ir-device-input');
+    const irDeviceId = String(irDeviceInput?.value || selectedIrDeviceId || 'samsung_tv_default').trim() || 'samsung_tv_default';
     const errEl = document.getElementById('start-error');
     if (!goal) { errEl.textContent = 'Goal is required.'; return; }
-    const deviceId = requireSelectedDabDevice('start-error', 'Select a DAB device before starting a run.');
-    if (!deviceId) return;
     errEl.textContent = '';
     try {
+      if (engine === 'task_runner') {
+        const taskBody = {
+          instruction: goal,
+          execute: true,
+          continue_on_error: true,
+          control_mode: controlMode,
+          max_steps: 12,
+        };
+        if (controlMode === 'IR') {
+          taskBody.ir_device_id = irDeviceId;
+          if (irDeviceInput) irDeviceInput.value = irDeviceId;
+        } else {
+          const dabDeviceId = requireSelectedDabDevice('start-error', 'Select a DAB device before running DAB task runner.');
+          if (!dabDeviceId) return;
+          taskBody.device_id = dabDeviceId;
+        }
+        const taskData = await api('/task/macro', 'POST', taskBody);
+        lastTaskRunnerExecution = taskData;
+        refreshNewRunLivePanel({ taskRunner: taskData, controlMode });
+        if (!taskData.success) {
+          const firstErr = Array.isArray(taskData.execution?.results)
+            ? taskData.execution.results.find(item => item && item.success === false)
+            : null;
+          errEl.textContent = (firstErr && firstErr.error) || 'Task runner failed.';
+        }
+        return;
+      }
+
+      if (controlMode === 'IR') {
+        errEl.textContent = 'IR mode requires "AI Task Runner (/task/macro)". Select runner type as Task Runner.';
+        return;
+      }
+
+      const deviceId = requireSelectedDabDevice('start-error', 'Select a DAB device before starting a run.');
+      if (!deviceId) return;
       const body = { goal };
       if (appId) body.app_id = appId;
       body.ui_navigation_allowed = !!(uiNavToggle && uiNavToggle.checked);
       body.device_id = deviceId;
+      body.control_mode = controlMode;
+      if (controlMode === 'IR') {
+        body.ir_device_id = irDeviceId;
+        if (irDeviceInput) irDeviceInput.value = irDeviceId;
+      }
       const data = await api('/run/start', 'POST', body);
+      lastTaskRunnerExecution = null;
       await loadRuns();
       selectRun(data.run_id);
     } catch (e) { errEl.textContent = e.message; }
+  }
+
+  function updateNewRunModeUi() {
+    const engine = String(document.getElementById('run-engine-select')?.value || 'orchestrator');
+    const controlMode = String(document.getElementById('run-control-mode-select')?.value || 'DAB').toUpperCase();
+    const irWrap = document.getElementById('run-ir-device-wrap');
+    const uiNav = document.getElementById('run-ui-nav-toggle');
+    if (irWrap) irWrap.style.display = controlMode === 'IR' ? '' : 'none';
+    if (uiNav) uiNav.disabled = engine === 'task_runner';
+  }
+
+  function refreshNewRunLivePanel(context = {}) {
+    const stage = document.getElementById('new-run-live-stage');
+    const statusEl = document.getElementById('new-run-live-status');
+    const logEl = document.getElementById('new-run-gemini-log');
+    if (!stage || !statusEl || !logEl) return;
+
+    const runStatus = context.runStatus || null;
+    const taskRunner = context.taskRunner || null;
+    const activeRun = !!(runStatus && ['PENDING', 'RUNNING'].includes(String(runStatus.status || '').toUpperCase()));
+    const hasTaskRunner = !!taskRunner;
+
+    if (activeRun || hasTaskRunner) {
+      stage.innerHTML = `<img src="${apiBase}/stream/hdmi?ts=${Date.now()}" alt="Runtime live stream" />`;
+      statusEl.textContent = activeRun
+        ? `Run ${selectedRunId ? selectedRunId.slice(0, 8) : ''} is active.`
+        : `Task runner executed in ${escHtml(String(context.controlMode || 'DAB'))} mode.`;
+    } else {
+      stage.innerHTML = '<div class="yts-live-preview-empty">Start a run or task runner job to watch live stream here.</div>';
+      statusEl.textContent = 'Starts after run/task begins.';
+    }
+
+    if (hasTaskRunner) {
+      const steps = Array.isArray(taskRunner.planned_actions) ? taskRunner.planned_actions : [];
+      const results = Array.isArray(taskRunner.execution?.results) ? taskRunner.execution.results : [];
+      const lines = [];
+      lines.push(`Instruction: ${taskRunner.instruction || '-'}`);
+      lines.push(`Success: ${taskRunner.success ? 'YES' : 'NO'}`);
+      lines.push(`Planned Steps: ${steps.length}`);
+      if (steps.length) {
+        lines.push('', 'Planned Actions:');
+        steps.forEach((step, idx) => lines.push(`${idx + 1}. ${String(step?.action || '-')}`));
+      }
+      if (results.length) {
+        lines.push('', 'Execution:');
+        results.forEach((r, idx) => {
+          const tag = r?.success ? 'PASS' : 'FAIL';
+          const err = r?.error ? ` - ${r.error}` : '';
+          lines.push(`${idx + 1}. ${String(r?.action || '-')} => ${tag}${err}`);
+        });
+      }
+      logEl.textContent = lines.join('\n');
+      return;
+    }
+
+    const req = document.getElementById('ai-request-log')?.textContent?.trim() || '';
+    const res = document.getElementById('ai-response-log')?.textContent?.trim() || '';
+    if (!req && !res) {
+      logEl.textContent = 'No Gemini logs yet.';
+      return;
+    }
+    logEl.textContent = `Gemini Request:\n${req || '-'}\n\nGemini Response:\n${res || '-'}`;
   }
 
   async function stopRun() {
@@ -6134,6 +6290,8 @@
     initYtsControlCenter();
     populateIrKeyOptions(defaultIrKeys);
     setRemoteMode(selectedRemoteMode || 'DAB', false);
+    updateNewRunModeUi();
+    refreshNewRunLivePanel();
     await Promise.allSettled([
       checkHealth(),
       loadAiModels(),
