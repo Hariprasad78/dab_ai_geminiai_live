@@ -7,6 +7,8 @@ data class MetricPoint(
 
 data class DashboardUiState(
     val isLoading: Boolean = false,
+    val autoRefreshEnabled: Boolean = true,
+    val refreshIntervalSeconds: Int = 1,
     val healthStatus: String = "--",
     val mode: String = "--",
     val apiBaseUrl: String = "",
@@ -27,5 +29,7 @@ data class DashboardUiState(
     val loadHistory: List<MetricPoint> = emptyList(),
     val tempHistory: List<MetricPoint> = emptyList(),
     val metricsPreview: String = "--",
+    val backendStatusSummary: String = "--",
+    val refreshStateLabel: String = "Live sync every 1s",
     val error: String? = null,
 )

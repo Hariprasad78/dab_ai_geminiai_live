@@ -34,6 +34,10 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
@@ -268,10 +272,10 @@ class ControlsViewModel @Inject constructor(
 
             _uiState.value = _uiState.value.copy(
                 isLoading = false,
-                deviceInfoPreview = preview(infoRes),
-                capabilityPreview = preview(capsRes),
-                operationsPreview = preview(opsRes),
-                currentSettingsPreview = preview(curRes),
+                deviceInfoRows = buildDeviceInfoRows(infoRes),
+                capabilityRows = buildCapabilityRows(capsRes),
+                operationRows = buildOperationRows(opsRes),
+                settingRows = buildSettingRows(curRes),
                 irStatusPreview = preview(irStatusRes),
                 irDevicesPreview = preview(irDevicesRes),
                 refreshStatus = "Last refreshed at ${java.time.LocalTime.now().withNano(0)}",
@@ -447,6 +451,89 @@ class ControlsViewModel @Inject constructor(
             is ApiResult.UnknownError -> "Unknown error: ${result.throwable.message}"
         }
     }
+
+    private fun buildDeviceInfoRows(result: ApiResult<*>): List<ControlsInfoRow> {
+        val payload = (result as? ApiResult.Success<*>)?.data as? JsonObject ?: return emptyList()
+        val body = payload["result"] as? JsonObject ?: payload
+        val network = body["networkInterfaces"]?.let { element ->
+            (element as? JsonArray)?.firstOrNull()?.jsonObject
+        }
+        return listOf(
+            ControlsInfoRow("Device", body.stringValue("deviceId") ?: payload.stringValue("device_id") ?: "--"),
+            ControlsInfoRow("Manufacturer", body.stringValue("manufacturer") ?: "--"),
+            ControlsInfoRow("Model", body.stringValue("model") ?: "--"),
+            ControlsInfoRow("Firmware", body.stringValue("firmwareVersion") ?: "--"),
+            ControlsInfoRow("Build", body.stringValue("firmwareBuild") ?: "--"),
+            ControlsInfoRow("Display", "${body.intValue("screenWidthPixels") ?: 0} x ${body.intValue("screenHeightPixels") ?: 0}"),
+            ControlsInfoRow("Network", network?.stringValue("type") ?: "--"),
+            ControlsInfoRow("IP Address", network?.stringValue("ipAddress") ?: "--")
+        )
+    }
+
+    private fun buildCapabilityRows(result: ApiResult<*>): List<ControlsInfoRow> {
+        val payload = (result as? ApiResult.Success<*>)?.data as? JsonObject ?: return emptyList()
+        return listOf(
+            ControlsInfoRow("Supported operations", payload.arraySize("supported_operations").toString()),
+            ControlsInfoRow("Remote keys", payload.arraySize("supported_keys").toString()),
+            ControlsInfoRow("Installed apps", payload.arraySize("installed_applications").toString()),
+            ControlsInfoRow("Voice systems", payload.arraySize("supported_voice_systems").toString()),
+            ControlsInfoRow("Settings exposed", payload.arraySize("supported_settings").toString()),
+            ControlsInfoRow("Last updated", payload.stringValue("last_updated") ?: "--")
+        )
+    }
+
+    private fun buildOperationRows(result: ApiResult<*>): List<ControlsOperationRow> {
+        val payload = (result as? ApiResult.Success<*>)?.data as? JsonObject ?: return emptyList()
+        val rows = payload["rows"] as? JsonArray ?: return emptyList()
+        return rows.mapNotNull { element ->
+            val obj = element as? JsonObject ?: return@mapNotNull null
+            ControlsOperationRow(
+                operation = obj.stringValue("operation") ?: return@mapNotNull null,
+                supported = obj.booleanValue("supported") ?: false,
+                defaultAction = obj.stringValue("default_action") ?: "--",
+                relatedCount = obj.intValue("related_count") ?: 0
+            )
+        }
+    }
+
+    private fun buildSettingRows(result: ApiResult<*>): List<ControlsSettingRow> {
+        val payload = (result as? ApiResult.Success<*>)?.data as? JsonObject ?: return emptyList()
+        val rows = payload["current_setting_values"] as? JsonArray ?: return emptyList()
+        return rows.mapNotNull { element ->
+            val obj = element as? JsonObject ?: return@mapNotNull null
+            ControlsSettingRow(
+                name = obj.stringValue("friendlyName") ?: obj.stringValue("key") ?: return@mapNotNull null,
+                value = formatSettingValue(obj["current_value"]),
+                writable = obj.booleanValue("writable") ?: false,
+                status = when {
+                    obj.booleanValue("read_success") == true -> "Ready"
+                    !obj.stringValue("read_error").isNullOrBlank() -> "Missing"
+                    else -> "--"
+                }
+            )
+        }
+    }
+
+    private fun formatSettingValue(element: kotlinx.serialization.json.JsonElement?): String {
+        return when (element) {
+            null -> "--"
+            is JsonObject -> "${element.size} fields"
+            is JsonArray -> "${element.size} items"
+            else -> element.jsonPrimitive.contentOrNull
+                ?: element.jsonPrimitive.booleanOrNull?.toString()
+                ?: element.jsonPrimitive.intOrNull?.toString()
+                ?: element.jsonPrimitive.doubleOrNull?.toString()
+                ?: element.toString()
+        }
+    }
+
+    private fun JsonObject.stringValue(key: String): String? = this[key]?.jsonPrimitive?.contentOrNull
+
+    private fun JsonObject.intValue(key: String): Int? = this[key]?.jsonPrimitive?.intOrNull
+
+    private fun JsonObject.booleanValue(key: String): Boolean? = this[key]?.jsonPrimitive?.booleanOrNull
+
+    private fun JsonObject.arraySize(key: String): Int = (this[key] as? JsonArray)?.size ?: 0
 
     private fun firstError(vararg results: ApiResult<*>): String? {
         for (r in results) {

@@ -413,9 +413,12 @@ private fun JobBlueprintCard(
         OutlinedTextField(
             value = state.jsonOutputFile,
             onValueChange = onJsonOutputChanged,
-            label = { Text("JSON Output File") },
+            label = { Text("Result Bundle Output Path") },
             modifier = Modifier.fillMaxWidth(),
-            singleLine = true
+            singleLine = true,
+            supportingText = {
+                Text("Used for structured result export while reports and artifacts stay accessible from the Results workspace.")
+            }
         )
         ToggleRow("Guided mode", state.guidedMode, onGuidedModeToggle)
         ToggleRow("Use Gemini for interactive responses", state.interactiveAi, onInteractiveAiToggle)

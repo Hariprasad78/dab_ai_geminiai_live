@@ -3,9 +3,11 @@ package com.dabcontrol.app
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.material3.MaterialTheme
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.Modifier
 import androidx.compose.material3.Surface
 import com.dabcontrol.app.ui.DabControlRoot
+import com.dabcontrol.app.ui.theme.DabControlTheme
 import dagger.hilt.android.AndroidEntryPoint
 
 @AndroidEntryPoint
@@ -13,8 +15,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme {
-                Surface {
+            DabControlTheme {
+                Surface(modifier = Modifier.fillMaxSize()) {
                     DabControlRoot()
                 }
             }
