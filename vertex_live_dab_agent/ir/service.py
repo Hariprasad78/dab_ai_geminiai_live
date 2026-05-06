@@ -17,6 +17,7 @@ _DAB_TO_SAMSUNG_KEY_MAP: Dict[str, str] = {
     "PRESS_BACK": "RETURN",
     "PRESS_HOME": "HOME",
     "PRESS_MENU": "MENU",
+    "PRESS_INPUT": "SOURCE",
     "PRESS_EXIT": "EXIT",
     "PRESS_INFO": "INFO",
     "PRESS_GUIDE": "GUIDE",
@@ -212,12 +213,30 @@ class SamsungIrService:
             return {"success": False, "error": "key_name is required"}
 
         payload = self._dataset.get_key_payload(device_id, normalized_key)
-        if not isinstance(payload, dict):
+        has_payload = isinstance(payload, dict)
+        if not has_payload:
+            payload = {}
+
+        # When the key has not been trained, still attempt key-name sends first.
+        # Many NodeMCU firmwares support SENDK for built-in Samsung key names.
+        if not has_payload:
+            sendk_result = self._try_legacy_sendk(device_id, normalized_key)
+            if bool(sendk_result.get("success")):
+                self._set_preferred_send_strategy("legacy_sendk")
+                return sendk_result
+            json_key_result = self._try_json_send_key_only(device_id, normalized_key)
+            if bool(json_key_result.get("success")):
+                self._set_preferred_send_strategy("json")
+                return json_key_result
             return {
                 "success": False,
                 "device_id": device_id,
                 "key_name": normalized_key,
-                "error": "Key is not trained in dataset",
+                "error": "Key is not trained and direct key send failed",
+                "raw": {
+                    "legacy_sendk": sendk_result,
+                    "json_key_only": json_key_result,
+                },
             }
 
         # Prefer legacy SENDP/SENDK first: this is the native protocol for
@@ -258,6 +277,43 @@ class SamsungIrService:
             "key_name": normalized_key,
             "error": str(json_result.get("error") or "IR send failed"),
             "raw": json_result,
+        }
+
+    def _try_json_send_key_only(self, device_id: str, normalized_key: str) -> Dict[str, Any]:
+        response = self._request_with_unknown_cmd_fallback(
+            {
+                "cmd": "ir_send",
+                "brand": "samsung",
+                "sender": self._sender_channel,
+                "key": normalized_key,
+                "timeout_seconds": 0.5,
+            },
+            cmd_aliases=["send_ir", "irsend", "send"],
+            extra_attempts=[
+                {
+                    "cmd": "send",
+                    "brand": "samsung",
+                    "sender": self._sender_channel,
+                    "key": normalized_key,
+                    "timeout_seconds": 0.5,
+                },
+                {
+                    "command": "send",
+                    "brand": "samsung",
+                    "sender": self._sender_channel,
+                    "key": normalized_key,
+                    "timeout_seconds": 0.5,
+                },
+            ],
+        )
+        if not bool(response.get("success")):
+            return response
+        return {
+            "success": True,
+            "device_id": device_id,
+            "key_name": normalized_key,
+            "sender_channel": self._sender_channel,
+            "raw": response,
         }
 
     def _try_legacy_train(self, device_id: str, normalized_key: str) -> Dict[str, Any]:

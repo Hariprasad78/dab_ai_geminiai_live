@@ -249,12 +249,18 @@
 
   async function applyCaptureSelection() {
     try {
+      const wasStreaming = state.streamRunning;
       await api('/capture/select', 'POST', {
         source: $('capture-mode-select').value,
         preferred_kind: $('capture-kind-select').value,
         device: $('capture-device-select').value,
         persist: true,
       });
+      if (wasStreaming) {
+        // Rebind MJPEG element to force a fresh stream request after source switch.
+        const frame = $('stream-frame');
+        if (frame) frame.innerHTML = `<img src="${apiOrigin()}/stream/hdmi?ts=${Date.now()}" alt="Live stream" />`;
+      }
       setManualResult('Capture selection updated.');
       await Promise.allSettled([loadCaptureSource(), loadCaptureDevices(), refreshStreamStatus()]);
     } catch (error) {

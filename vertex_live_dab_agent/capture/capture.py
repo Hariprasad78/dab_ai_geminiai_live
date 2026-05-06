@@ -242,6 +242,13 @@ class ScreenCapture:
                 kind_pref = "camera"
         return kind_pref
 
+    def set_dab_client(self, dab_client: DABClientBase) -> None:
+        """Update DAB client used for screenshot fallback without resetting video session."""
+        if dab_client is None:
+            return
+        with self._session_lock:
+            self._dab = dab_client
+
     def _is_kind_enabled(self, kind: str) -> bool:
         k = str(kind or "").lower()
         if k == "hdmi":
@@ -297,10 +304,19 @@ class ScreenCapture:
 
             if device is not None:
                 dev = str(device or "").strip()
-                if dev and (not dev.startswith("/dev/") or not os.path.exists(dev)):
-                    raise ValueError("device must be an existing /dev/* path")
+                if dev and not dev.startswith("/dev/"):
+                    raise ValueError("device must be a /dev/* path")
+                # Be tolerant to stale selections from UI while camera nodes are
+                # re-enumerating; fall back to auto device instead of hard 400.
+                if dev and not os.path.exists(dev):
+                    logger.warning("Requested capture device missing; falling back to auto: %s", dev)
+                    dev = ""
                 if dev and not self._is_capture_capable_device(dev):
-                    raise ValueError("device is not capture-capable (requires /dev/video* index0)")
+                    logger.warning(
+                        "Requested device is not capture-capable (index != 0); falling back to auto: %s",
+                        dev,
+                    )
+                    dev = ""
                 self._selected_video_device = dev or None
             elif source is not None and previous_source != self._image_source and self._selected_video_device:
                 # If caller switches capture source without specifying a device,
