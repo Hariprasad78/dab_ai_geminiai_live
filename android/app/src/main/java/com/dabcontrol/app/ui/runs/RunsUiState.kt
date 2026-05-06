@@ -9,7 +9,15 @@ import kotlinx.serialization.json.JsonObject
 
 data class RunsListUiState(
     val isLoading: Boolean = false,
+    val isSubmittingAiJob: Boolean = false,
     val items: List<RunSummaryItemDto> = emptyList(),
+    val deviceIds: List<String> = emptyList(),
+    val selectedDeviceId: String = "",
+    val aiInstruction: String = "Set time zone to India Kolkata",
+    val aiJobId: String? = null,
+    val aiJobStatus: String = "PENDING",
+    val aiJobResult: String = "--",
+    val aiJobLogs: String = "--",
     val error: String? = null
 )
 

@@ -3,16 +3,19 @@ package com.dabcontrol.app.data.repo
 import com.dabcontrol.app.data.api.ActionHistoryResponseDto
 import com.dabcontrol.app.data.api.ApiClientFactory
 import com.dabcontrol.app.data.api.ApiResult
+import com.dabcontrol.app.data.api.DabDevicesResponseDto
 import com.dabcontrol.app.data.api.FriendlyRunExplanationResponseDto
 import com.dabcontrol.app.data.api.NarrationResponseDto
 import com.dabcontrol.app.data.api.RunStatusResponseDto
 import com.dabcontrol.app.data.api.RunSummaryItemDto
+import com.dabcontrol.app.data.api.TaskMacroRequestDto
 import com.dabcontrol.app.data.api.TranscriptResponseDto
 import com.dabcontrol.app.data.api.safeApiCall
 import com.dabcontrol.app.data.preferences.ApiSettingsStore
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.flow.first
+import kotlinx.serialization.json.JsonObject
 
 @Singleton
 class RunsRepository @Inject constructor(
@@ -22,6 +25,16 @@ class RunsRepository @Inject constructor(
     suspend fun fetchRuns(): ApiResult<List<RunSummaryItemDto>> {
         val service = apiClientFactory.create(apiSettingsStore.apiBaseUrl.first())
         return safeApiCall { service.runs() }
+    }
+
+    suspend fun fetchDevices(): ApiResult<DabDevicesResponseDto> {
+        val service = apiClientFactory.create(apiSettingsStore.apiBaseUrl.first())
+        return safeApiCall { service.dabDevices() }
+    }
+
+    suspend fun createTaskMacro(request: TaskMacroRequestDto): ApiResult<JsonObject> {
+        val service = apiClientFactory.create(apiSettingsStore.apiBaseUrl.first())
+        return safeApiCall { service.taskMacro(request) }
     }
 
     suspend fun fetchRunStatus(runId: String): ApiResult<RunStatusResponseDto> {
