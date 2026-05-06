@@ -32,12 +32,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.FileProvider
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import java.io.File
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 @Composable
 fun YtsArtifactScreen(
@@ -96,10 +102,7 @@ fun YtsArtifactScreen(
                         if (state.isLoading) {
                             CircularProgressIndicator()
                         } else {
-                            Text(
-                                text = state.textContent.ifBlank { "(empty result file)" },
-                                fontFamily = FontFamily.Monospace
-                            )
+                            ResultArtifactContent(state.textContent)
                         }
                     }
                 }
@@ -135,6 +138,112 @@ fun YtsArtifactScreen(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ResultArtifactContent(textContent: String) {
+    val parsed = remember(textContent) {
+        runCatching { Json.parseToJsonElement(textContent) }.getOrNull()
+    }
+    when {
+        textContent.isBlank() -> {
+            Text("(empty result file)", fontFamily = FontFamily.Monospace)
+        }
+        parsed == null -> {
+            Text(textContent, fontFamily = FontFamily.Monospace)
+        }
+        else -> {
+            JsonElementTable(parsed)
+        }
+    }
+}
+
+@Composable
+private fun JsonElementTable(element: JsonElement) {
+    when (element) {
+        is JsonObject -> {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                element.entries.forEach { (key, value) ->
+                    JsonTableRow(key = key, value = summarizeJsonValue(value))
+                    when (value) {
+                        is JsonObject -> NestedJsonRows(prefix = key, obj = value)
+                        is JsonArray -> NestedJsonArrayRows(prefix = key, array = value)
+                        else -> Unit
+                    }
+                }
+            }
+        }
+        is JsonArray -> {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                element.forEachIndexed { index, value ->
+                    JsonTableRow(key = "Row ${index + 1}", value = summarizeJsonValue(value))
+                    if (value is JsonObject) {
+                        NestedJsonRows(prefix = "Row ${index + 1}", obj = value)
+                    }
+                }
+            }
+        }
+        else -> Text(element.toString(), fontFamily = FontFamily.Monospace)
+    }
+}
+
+@Composable
+private fun NestedJsonRows(prefix: String, obj: JsonObject) {
+    obj.entries.forEach { (childKey, childValue) ->
+        JsonTableRow(
+            key = "$prefix.$childKey",
+            value = summarizeJsonValue(childValue),
+            nested = true
+        )
+    }
+}
+
+@Composable
+private fun NestedJsonArrayRows(prefix: String, array: JsonArray) {
+    array.take(8).forEachIndexed { index, child ->
+        JsonTableRow(
+            key = "$prefix[${index}]",
+            value = summarizeJsonValue(child),
+            nested = true
+        )
+    }
+}
+
+@Composable
+private fun JsonTableRow(key: String, value: String, nested: Boolean = false) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        tonalElevation = if (nested) 0.dp else 1.dp,
+        shape = MaterialTheme.shapes.small
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = if (nested) 20.dp else 12.dp, end = 12.dp, top = 10.dp, bottom = 10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = key,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = if (nested) FontWeight.Normal else FontWeight.SemiBold
+            )
+            Text(
+                text = value,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+private fun summarizeJsonValue(value: JsonElement): String {
+    return when (value) {
+        is JsonPrimitive -> value.content
+        is JsonObject -> "${value.size} fields"
+        is JsonArray -> "${value.size} items"
     }
 }
 

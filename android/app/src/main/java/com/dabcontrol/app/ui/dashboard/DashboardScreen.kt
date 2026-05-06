@@ -1,20 +1,25 @@
 package com.dabcontrol.app.ui.dashboard
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
@@ -23,24 +28,36 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.dabcontrol.app.ui.common.PremiumBackdrop
+import com.dabcontrol.app.ui.common.PremiumPanel
+import com.dabcontrol.app.ui.common.SectionLabel
+import kotlin.math.roundToInt
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun DashboardScreen(
     modifier: Modifier = Modifier,
@@ -48,146 +65,352 @@ fun DashboardScreen(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
 
-    Column(
-        modifier = modifier
-            .verticalScroll(rememberScrollState())
-            .padding(start = 16.dp, end = 16.dp, bottom = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+    PremiumBackdrop(modifier = modifier) {
+        Column(
+            modifier = Modifier
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            SectionLabel(
+                eyebrow = "Operations Center",
+                title = "Advanced Device and Backend Dashboard",
+                subtitle = "Auto-refreshing health, performance, model, and device telemetry in one operator view."
+            )
+
+            DashboardCommandDeck(
+                state = state,
+                onUrlChanged = viewModel::onApiBaseUrlChanged,
+                onSaveUrl = viewModel::saveApiBaseUrl,
+                onRefresh = viewModel::refresh,
+                onToggleAutoRefresh = viewModel::toggleAutoRefresh,
+                onPlannerModelChanged = viewModel::onPlannerModelChanged,
+                onLiveModelChanged = viewModel::onLiveModelChanged,
+                onApplyModels = viewModel::applyRuntimeModels,
+                onSelectDevice = viewModel::onDeviceSelected
+            )
+
+            KpiRow(state = state)
+
+            CombinedStatusCard(state = state)
+
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                maxItemsInEachRow = 2
+            ) {
+                MetricCard(
+                    title = "CPU",
+                    value = state.cpuPercent?.let { "${format1(it)}%" } ?: "--",
+                    subtitle = "Processor utilization",
+                    accent = Color(0xFF0F766E),
+                    history = state.cpuHistory,
+                    maxValue = 100f,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                MetricCard(
+                    title = "Memory",
+                    value = state.ramPercent?.let { "${format1(it)}%" } ?: "--",
+                    subtitle = "RAM pressure",
+                    accent = Color(0xFF2563EB),
+                    history = state.ramHistory,
+                    maxValue = 100f,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                MetricCard(
+                    title = "Load",
+                    value = state.load1m?.let { format2(it) } ?: "--",
+                    subtitle = "1 minute system load",
+                    accent = Color(0xFFD97706),
+                    history = state.loadHistory,
+                    maxValue = (state.loadHistory.maxOfOrNull { it.value } ?: 1f).coerceAtLeast(1f),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                MetricCard(
+                    title = "Temperature",
+                    value = state.cpuTempC?.let { "${format1(it)}C" } ?: "--",
+                    subtitle = "Thermal signal",
+                    accent = Color(0xFFDC2626),
+                    history = state.tempHistory,
+                    maxValue = (state.tempHistory.maxOfOrNull { it.value } ?: 100f).coerceAtLeast(50f),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            BackendEvidenceCard(state = state)
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun DashboardCommandDeck(
+    state: DashboardUiState,
+    onUrlChanged: (String) -> Unit,
+    onSaveUrl: () -> Unit,
+    onRefresh: () -> Unit,
+    onToggleAutoRefresh: () -> Unit,
+    onPlannerModelChanged: (String) -> Unit,
+    onLiveModelChanged: (String) -> Unit,
+    onApplyModels: () -> Unit,
+    onSelectDevice: (String) -> Unit
+) {
+    PremiumPanel(
+        modifier = Modifier.fillMaxWidth(),
+        accentColor = MaterialTheme.colorScheme.primary
     ) {
-        ElevatedCard(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Operations Dashboard", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Control Deck", style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        "Keep the backend endpoint, shared device, and Gemini runtime aligned from one place.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (state.isLoading && state.cpuHistory.isEmpty()) {
+                    CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.5.dp)
+                }
+            }
+
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                maxItemsInEachRow = 3
+            ) {
+                StatusPill("Health", state.healthStatus, state.healthStatus.equals("ok", ignoreCase = true))
+                StatusPill("Mode", state.mode, true)
+                StatusPill("Refresh", state.refreshStateLabel, state.autoRefreshEnabled)
+            }
+
+            UrlPresetPicker(currentUrl = state.apiBaseUrl, onSelected = onUrlChanged)
+            OutlinedTextField(
+                value = state.apiBaseUrl,
+                onValueChange = onUrlChanged,
+                label = { Text("Backend API Base URL") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                FilledTonalButton(onClick = onSaveUrl) {
+                    Text("Save Endpoint")
+                }
+                OutlinedButton(onClick = onRefresh) {
+                    Text("Refresh Now")
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(
+                        checked = state.autoRefreshEnabled,
+                        onCheckedChange = { onToggleAutoRefresh() }
+                    )
+                    Text("Auto refresh", style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+
+            DevicePickerCard(
+                deviceIds = state.deviceIds,
+                selectedDeviceId = state.selectedDeviceId,
+                onSelect = onSelectDevice
+            )
+
+            HorizontalDivider()
+
+            Text("Gemini Runtime Models", style = MaterialTheme.typography.titleMedium)
+            Text(state.modelStatus, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            ModelDropdownField(
+                title = "Planner model",
+                currentValue = state.plannerModel,
+                availableModels = state.availableModels,
+                onValueChanged = onPlannerModelChanged
+            )
+            ModelDropdownField(
+                title = "Live/visual model",
+                currentValue = state.liveModel,
+                availableModels = state.availableModels,
+                onValueChanged = onLiveModelChanged
+            )
+            FilledTonalButton(onClick = onApplyModels) {
+                Text("Apply Runtime Models")
+            }
+
+            state.error?.let { ErrorStrip(it) }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun KpiRow(state: DashboardUiState) {
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        maxItemsInEachRow = 4
+    ) {
+        KpiCard("Backend", state.healthStatus, "Health signal", Modifier.fillMaxWidth())
+        KpiCard("Device", state.selectedDeviceId.ifBlank { "--" }, "Selected target", Modifier.fillMaxWidth())
+        KpiCard("Cores", state.cpuCount?.toString() ?: "--", "CPU count", Modifier.fillMaxWidth())
+        KpiCard("Sample", state.timestamp.substringAfter('T', state.timestamp).substringBefore('.'), "Last refresh", Modifier.fillMaxWidth())
+    }
+}
+
+@Composable
+private fun KpiCard(title: String, value: String, subtitle: String, modifier: Modifier = Modifier) {
+    PremiumPanel(
+        modifier = modifier,
+        accentColor = MaterialTheme.colorScheme.tertiary
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(value, style = MaterialTheme.typography.headlineSmall)
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun CombinedStatusCard(state: DashboardUiState) {
+    PremiumPanel(
+        modifier = Modifier.fillMaxWidth(),
+        accentColor = MaterialTheme.colorScheme.tertiary
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("Unified Status Graph", style = MaterialTheme.typography.titleLarge)
+            Text(
+                "One operator graph for CPU, memory, load, and thermal behavior. This is the fastest way to see whether the backend is stable or drifting.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            CombinedStatusGraph(
+                cpuHistory = state.cpuHistory,
+                ramHistory = state.ramHistory,
+                loadHistory = state.loadHistory,
+                tempHistory = state.tempHistory
+            )
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                LegendPill("CPU", Color(0xFF0F766E))
+                LegendPill("Memory", Color(0xFF2563EB))
+                LegendPill("Load", Color(0xFFD97706))
+                LegendPill("Temp", Color(0xFFDC2626))
+            }
+            Text(
+                state.backendStatusSummary,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun CombinedStatusGraph(
+    cpuHistory: List<MetricPoint>,
+    ramHistory: List<MetricPoint>,
+    loadHistory: List<MetricPoint>,
+    tempHistory: List<MetricPoint>
+) {
+    val outlineColor = MaterialTheme.colorScheme.outlineVariant
+    val graphSurface = Brush.verticalGradient(
+        listOf(
+            MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.22f),
+            MaterialTheme.colorScheme.surface
+        )
+    )
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = Color.Transparent,
+        tonalElevation = 2.dp
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(graphSurface, MaterialTheme.shapes.medium)
+                .padding(12.dp)
+        ) {
+            if (cpuHistory.size < 2 && ramHistory.size < 2 && loadHistory.size < 2 && tempHistory.size < 2) {
                 Text(
-                    "Configure the backend URL, confirm device health, and watch CPU, memory, load, and temperature trends.",
+                    "Collecting live telemetry samples...",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                UrlPresetPicker(
-                    currentUrl = state.apiBaseUrl,
-                    onSelected = viewModel::onApiBaseUrlChanged
-                )
-                OutlinedTextField(
-                    value = state.apiBaseUrl,
-                    onValueChange = viewModel::onApiBaseUrlChanged,
-                    label = { Text("API Base URL") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
-                )
-                DevicePickerCard(
-                    deviceIds = state.deviceIds,
-                    selectedDeviceId = state.selectedDeviceId,
-                    onSelect = viewModel::onDeviceSelected
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    FilledTonalButton(onClick = viewModel::saveApiBaseUrl) {
-                        Text("Save URL")
-                    }
-                    OutlinedButton(onClick = viewModel::refresh) {
-                        Text("Refresh")
-                    }
-                    if (state.isLoading) {
-                        CircularProgressIndicator(modifier = Modifier.height(20.dp))
-                    }
-                }
-                state.error?.let { ErrorStrip(it) }
-            }
-        }
-
-        ElevatedCard(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Text("Gemini Runtime Models", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-                Text(state.modelStatus, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                ModelPicker(
-                    title = "Planner model",
-                    currentValue = state.plannerModel,
-                    availableModels = state.availableModels,
-                    onValueChanged = viewModel::onPlannerModelChanged
-                )
-                ModelPicker(
-                    title = "Live/visual model",
-                    currentValue = state.liveModel,
-                    availableModels = state.availableModels,
-                    onValueChanged = viewModel::onLiveModelChanged
-                )
-                FilledTonalButton(onClick = viewModel::applyRuntimeModels) {
-                    Text("Apply Gemini Models")
-                }
-            }
-        }
-
-        SummaryCard(
-            healthStatus = state.healthStatus,
-            mode = state.mode,
-            cpuCount = state.cpuCount,
-            timestamp = state.timestamp,
-            selectedDeviceId = state.selectedDeviceId
-        )
-
-        MetricCardRow(
-            title = "CPU",
-            value = state.cpuPercent?.let { "${format1(it)}%" } ?: "--",
-            subtitle = "Processor usage",
-            accent = Color(0xFF0F766E),
-            history = state.cpuHistory,
-            maxValue = 100f
-        )
-        MetricCardRow(
-            title = "Memory",
-            value = state.ramPercent?.let { "${format1(it)}%" } ?: "--",
-            subtitle = "RAM consumption",
-            accent = Color(0xFF2563EB),
-            history = state.ramHistory,
-            maxValue = 100f
-        )
-        MetricCardRow(
-            title = "System Load",
-            value = state.load1m?.let { format2(it) } ?: "--",
-            subtitle = "1 minute average",
-            accent = Color(0xFFD97706),
-            history = state.loadHistory,
-            maxValue = (state.loadHistory.maxOfOrNull { it.value } ?: 1f).coerceAtLeast(1f)
-        )
-        MetricCardRow(
-            title = "CPU Temperature",
-            value = state.cpuTempC?.let { "${format1(it)}C" } ?: "--",
-            subtitle = "Thermal signal",
-            accent = Color(0xFFDC2626),
-            history = state.tempHistory,
-            maxValue = (state.tempHistory.maxOfOrNull { it.value } ?: 100f).coerceAtLeast(50f)
-        )
-
-        ElevatedCard(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Text("Metrics Snapshot", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                Text(
-                    state.metricsPreview,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                HorizontalDivider()
-                Surface(
-                    tonalElevation = 2.dp,
-                    shape = MaterialTheme.shapes.medium
+            } else {
+                Canvas(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(240.dp)
                 ) {
-                    SelectionContainer {
-                        Text(
-                            text = buildRawSummary(state),
-                            modifier = Modifier.padding(12.dp),
-                            style = MaterialTheme.typography.bodySmall,
-                            fontFamily = FontFamily.Monospace
+                    val baseline = size.height
+                    val maxPoints = listOf(cpuHistory.size, ramHistory.size, loadHistory.size, tempHistory.size).maxOrNull() ?: 0
+                    val stepX = if (maxPoints <= 1) size.width else size.width / (maxPoints - 1)
+                    repeat(4) { index ->
+                        val y = baseline - (baseline * (index / 3f))
+                        drawLine(
+                            color = outlineColor,
+                            start = Offset(0f, y),
+                            end = Offset(size.width, y),
+                            strokeWidth = 1.2f
                         )
                     }
+                    drawRoundRect(
+                        color = outlineColor.copy(alpha = 0.28f),
+                        style = Stroke(width = 2f),
+                        cornerRadius = CornerRadius(18f, 18f)
+                    )
+                    drawSeries(cpuHistory, stepX, baseline, 100f, Color(0xFF0F766E))
+                    drawSeries(ramHistory, stepX, baseline, 100f, Color(0xFF2563EB))
+                    drawSeries(loadHistory, stepX, baseline, (loadHistory.maxOfOrNull { it.value } ?: 1f).coerceAtLeast(1f), Color(0xFFD97706))
+                    drawSeries(tempHistory, stepX, baseline, (tempHistory.maxOfOrNull { it.value } ?: 100f).coerceAtLeast(50f), Color(0xFFDC2626))
                 }
             }
+        }
+    }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSeries(
+    points: List<MetricPoint>,
+    stepX: Float,
+    baseline: Float,
+    maxValue: Float,
+    color: Color
+) {
+    if (points.size < 2) return
+    val path = Path()
+    points.forEachIndexed { index, point ->
+        val x = stepX * index
+        val y = baseline - ((point.value / maxValue).coerceIn(0f, 1f) * baseline)
+        if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
+    }
+    drawPath(path = path, color = color, style = Stroke(width = 6f, cap = StrokeCap.Round))
+    points.forEachIndexed { index, point ->
+        val x = stepX * index
+        val y = baseline - ((point.value / maxValue).coerceIn(0f, 1f) * baseline)
+        drawCircle(color = color, radius = 5f, center = Offset(x, y))
+    }
+}
+
+@Composable
+private fun LegendPill(label: String, color: Color) {
+    Surface(color = color.copy(alpha = 0.12f), shape = MaterialTheme.shapes.small) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(modifier = Modifier.size(10.dp).background(color, CircleShape))
+            Text(label, style = MaterialTheme.typography.bodySmall)
         }
     }
 }
@@ -199,30 +422,22 @@ private fun UrlPresetPicker(
     onSelected: (String) -> Unit
 ) {
     val presets = listOf(
-        "Local" to "http://10.99.57.66:8081",
-        "Public" to "https://creative-airline-maintaining-manufacturers.trycloudflare.com"
+        "Local Lab" to "http://10.99.57.66:8081",
+        "Cloud Tunnel" to "https://creative-airline-maintaining-manufacturers.trycloudflare.com"
     )
     var expanded by remember(currentUrl) { mutableStateOf(false) }
-    val selectedLabel = presets.firstOrNull { it.second == currentUrl }?.first ?: "Custom"
+    val selectedLabel = presets.firstOrNull { it.second == currentUrl }?.first ?: "Custom Endpoint"
 
-    ExposedDropdownMenuBox(
-        expanded = expanded,
-        onExpandedChange = { expanded = !expanded }
-    ) {
+    ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = !expanded }) {
         OutlinedTextField(
             value = selectedLabel,
             onValueChange = {},
             readOnly = true,
-            label = { Text("URL Preset") },
+            label = { Text("Endpoint Preset") },
             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-            modifier = Modifier
-                .menuAnchor()
-                .fillMaxWidth()
+            modifier = Modifier.menuAnchor().fillMaxWidth()
         )
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false }
-        ) {
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             presets.forEach { (label, url) ->
                 DropdownMenuItem(
                     text = { Text("$label: $url") },
@@ -236,125 +451,135 @@ private fun UrlPresetPicker(
     }
 }
 
-@Composable
-private fun SummaryCard(
-    healthStatus: String,
-    mode: String,
-    cpuCount: Int?,
-    timestamp: String,
-    selectedDeviceId: String
-) {
-    ElevatedCard(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text("Backend Health", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-            Text("Status: $healthStatus")
-            Text("Mode: $mode")
-            Text("Selected device: ${selectedDeviceId.ifBlank { "--" }}")
-            Text("CPU cores: ${cpuCount ?: "--"}")
-            Text("Last sample: $timestamp")
-        }
-    }
-}
-
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun DevicePickerCard(
     deviceIds: List<String>,
     selectedDeviceId: String,
     onSelect: (String) -> Unit
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text("Shared Device", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Shared Device", style = MaterialTheme.typography.titleMedium)
         Text(
-            "The selected device here is reused by YTS, live control, and DAB operations.",
+            "The selected device is reused across dashboard, live control, and YTS actions.",
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         if (deviceIds.isEmpty()) {
             Text("No devices loaded yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else {
-            deviceIds.forEach { deviceId ->
-                Surface(
-                    tonalElevation = if (deviceId == selectedDeviceId) 4.dp else 1.dp,
-                    shape = MaterialTheme.shapes.small,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onSelect(deviceId) }
-                ) {
-                    Text(
-                        text = deviceId,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(10.dp),
-                        color = if (deviceId == selectedDeviceId) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                    )
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                deviceIds.forEach { deviceId ->
+                    val selected = deviceId == selectedDeviceId
+                    Surface(
+                        color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                        shape = MaterialTheme.shapes.small,
+                        modifier = Modifier.clickable { onSelect(deviceId) }
+                    ) {
+                        Text(
+                            text = deviceId,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                            color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
+                        )
+                    }
                 }
             }
         }
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
-private fun ModelPicker(
+private fun ModelDropdownField(
     title: String,
     currentValue: String,
     availableModels: List<String>,
     onValueChanged: (String) -> Unit
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        OutlinedTextField(
-            value = currentValue,
-            onValueChange = onValueChanged,
-            label = { Text(title) },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true
-        )
-        availableModels.take(8).forEach { model ->
-            Surface(
-                tonalElevation = if (model == currentValue) 4.dp else 1.dp,
-                shape = MaterialTheme.shapes.small,
+    var expanded by remember { mutableStateOf(false) }
+    var query by remember(currentValue) { mutableStateOf(currentValue) }
+    val filteredModels = remember(query, availableModels) {
+        availableModels.filter { model ->
+            query.isBlank() || model.contains(query.trim(), ignoreCase = true)
+        }
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        ExposedDropdownMenuBox(
+            expanded = expanded,
+            onExpandedChange = { expanded = !expanded }
+        ) {
+            OutlinedTextField(
+                value = query,
+                onValueChange = {
+                    query = it
+                    expanded = true
+                    onValueChanged(it)
+                },
+                label = { Text(title) },
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { onValueChanged(model) }
+                    .menuAnchor()
+                    .fillMaxWidth(),
+                singleLine = true,
+                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                supportingText = {
+                    Text(
+                        if (filteredModels.isEmpty()) "No matching models" else "${filteredModels.size} model options"
+                    )
+                },
+                colors = TextFieldDefaults.colors()
+            )
+            DropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false }
             ) {
-                Text(
-                    text = model,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(10.dp),
-                    color = if (model == currentValue) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                )
+                filteredModels.take(12).forEach { model ->
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                model,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        },
+                        onClick = {
+                            query = model
+                            onValueChanged(model)
+                            expanded = false
+                        }
+                    )
+                }
             }
+        }
+        if (currentValue.isNotBlank()) {
+            StatusPill("Selected", currentValue, positive = true)
         }
     }
 }
 
 @Composable
-private fun MetricCardRow(
+private fun MetricCard(
     title: String,
     value: String,
     subtitle: String,
     accent: Color,
     history: List<MetricPoint>,
-    maxValue: Float
+    maxValue: Float,
+    modifier: Modifier = Modifier
 ) {
-    ElevatedCard(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+    PremiumPanel(
+        modifier = modifier,
+        accentColor = accent
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(title, style = MaterialTheme.typography.titleLarge)
             Text(value, style = MaterialTheme.typography.headlineMedium, color = accent)
-            Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            SparklineChart(
-                points = history,
-                accent = accent,
-                maxValue = maxValue
-            )
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            SparklineChart(points = history, accent = accent, maxValue = maxValue)
             if (history.isNotEmpty()) {
                 Text(
-                    "Recent: ${history.takeLast(4).joinToString("  ") { "${it.label} ${format1(it.value)}" }}",
+                    "Trend ${history.takeLast(4).joinToString("  ") { "${it.label} ${it.value.roundToInt()}" }}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -364,15 +589,11 @@ private fun MetricCardRow(
 }
 
 @Composable
-private fun SparklineChart(
-    points: List<MetricPoint>,
-    accent: Color,
-    maxValue: Float
-) {
+private fun SparklineChart(points: List<MetricPoint>, accent: Color, maxValue: Float) {
     val outlineColor = MaterialTheme.colorScheme.outlineVariant
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        tonalElevation = 2.dp,
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
         shape = MaterialTheme.shapes.medium
     ) {
         if (points.size < 2) {
@@ -386,56 +607,117 @@ private fun SparklineChart(
             Canvas(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(140.dp)
+                    .height(130.dp)
                     .padding(12.dp)
             ) {
-                val usableMax = maxValue.coerceAtLeast(1f)
                 val stepX = size.width / (points.size - 1).coerceAtLeast(1)
                 val baseline = size.height
-
                 drawLine(
                     color = outlineColor,
                     start = Offset(0f, baseline),
                     end = Offset(size.width, baseline),
                     strokeWidth = 2f
                 )
-
-                for (index in 0 until points.lastIndex) {
-                    val first = points[index]
-                    val second = points[index + 1]
-                    val firstOffset = Offset(
-                        x = index * stepX,
-                        y = baseline - ((first.value / usableMax).coerceIn(0f, 1f) * size.height)
-                    )
-                    val secondOffset = Offset(
-                        x = (index + 1) * stepX,
-                        y = baseline - ((second.value / usableMax).coerceIn(0f, 1f) * size.height)
-                    )
-                    drawLine(
-                        color = accent,
-                        start = firstOffset,
-                        end = secondOffset,
-                        strokeWidth = 6f,
-                        cap = StrokeCap.Round
-                    )
-                }
-
-                points.forEachIndexed { index, point ->
-                    drawCircle(
-                        color = accent,
-                        radius = 6f,
-                        center = Offset(
-                            x = index * stepX,
-                            y = baseline - ((point.value / usableMax).coerceIn(0f, 1f) * size.height)
-                        )
-                    )
-                }
-
-                drawRect(
-                    color = accent.copy(alpha = 0.08f),
-                    style = Stroke(width = 0f)
-                )
+                drawSeries(points, stepX, baseline, maxValue.coerceAtLeast(1f), accent)
             }
+        }
+    }
+}
+
+@Composable
+private fun BackendEvidenceCard(state: DashboardUiState) {
+    PremiumPanel(
+        modifier = Modifier.fillMaxWidth(),
+        accentColor = MaterialTheme.colorScheme.secondary
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("Backend Evidence Panel", style = MaterialTheme.typography.titleLarge)
+            Text(
+                "This panel makes it obvious that the application is talking to the backend and receiving live values, not showing placeholder content.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            StatusTable(
+                rows = listOf(
+                    "Health status" to state.healthStatus,
+                    "Mode" to state.mode,
+                    "Selected device" to state.selectedDeviceId.ifBlank { "--" },
+                    "Timestamp" to state.timestamp,
+                    "Metrics summary" to state.metricsPreview
+                )
+            )
+            HorizontalDivider()
+            Text("Metrics Table", style = MaterialTheme.typography.titleMedium)
+            MetricsTable(state = state)
+        }
+    }
+}
+
+@Composable
+private fun StatusTable(rows: List<Pair<String, String>>) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        rows.forEach { (label, value) ->
+            Surface(
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 1.dp,
+                shape = MaterialTheme.shapes.small
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(value, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MetricsTable(state: DashboardUiState) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        MetricTableRow("CPU", state.cpuPercent?.let { "${format1(it)}%" } ?: "--", "Live processor usage")
+        MetricTableRow("RAM", state.ramPercent?.let { "${format1(it)}%" } ?: "--", "Memory pressure")
+        MetricTableRow("Load", state.load1m?.let { format2(it) } ?: "--", "1 minute average")
+        MetricTableRow("Temperature", state.cpuTempC?.let { "${format1(it)}C" } ?: "--", "Thermal reading")
+    }
+}
+
+@Composable
+private fun MetricTableRow(name: String, value: String, detail: String) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.44f),
+        shape = MaterialTheme.shapes.small
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(name, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Text(value, style = MaterialTheme.typography.bodyMedium)
+        }
+    }
+}
+
+@Composable
+private fun StatusPill(label: String, value: String, positive: Boolean) {
+    val background = if (positive) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
+    val textColor = if (positive) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
+    Surface(color = background, shape = MaterialTheme.shapes.small) {
+        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+            Text(label, style = MaterialTheme.typography.labelSmall, color = textColor.copy(alpha = 0.8f))
+            Text(value, style = MaterialTheme.typography.bodySmall, color = textColor)
         }
     }
 }
@@ -453,19 +735,6 @@ private fun ErrorStrip(message: String) {
             style = MaterialTheme.typography.bodyMedium
         )
     }
-}
-
-private fun buildRawSummary(state: DashboardUiState): String {
-    return listOf(
-        "health=${state.healthStatus}",
-        "mode=${state.mode}",
-        "timestamp=${state.timestamp}",
-        "cpu_percent=${state.cpuPercent?.let(::format1) ?: "--"}",
-        "ram_percent=${state.ramPercent?.let(::format1) ?: "--"}",
-        "load_1m=${state.load1m?.let(::format2) ?: "--"}",
-        "cpu_temp_c=${state.cpuTempC?.let(::format1) ?: "--"}",
-        "cpu_count=${state.cpuCount ?: "--"}"
-    ).joinToString("\n")
 }
 
 private fun format1(value: Float): String = String.format("%.1f", value)
