@@ -87,6 +87,8 @@ class ScreenCapture:
         self._warned_dab_cooldown = False
         self._warned_no_hdmi = False
         self._last_hdmi_error: Optional[str] = None
+        self._hdmi_stream_miss_count = 0
+        self._hdmi_stream_reset_after_misses = 20
         self._hdmi = hdmi_session
 
     def _normalize_rotation_degrees(self, rotation_degrees: Optional[int]) -> int:
@@ -636,6 +638,11 @@ class ScreenCapture:
             )
             frame = self._hdmi.capture_jpeg_bytes(quality=jpeg_quality)
             if frame is None:
+                self._hdmi_stream_miss_count += 1
+                # Do not tear down capture on single transient misses.
+                if self._hdmi_stream_miss_count < self._hdmi_stream_reset_after_misses:
+                    return None
+                self._hdmi_stream_miss_count = 0
                 failed_session = self._hdmi
                 failed_session.close()
                 self._hdmi = self._init_hdmi_session()
@@ -645,6 +652,8 @@ class ScreenCapture:
                     if self._hdmi is not None:
                         self._hdmi.close()
                     self._hdmi = None
+            else:
+                self._hdmi_stream_miss_count = 0
             return frame
 
     def get_hdmi_stream_frame_raw(self) -> Optional[Any]:
@@ -661,6 +670,10 @@ class ScreenCapture:
 
             frame = self._hdmi.read_frame()
             if frame is None:
+                self._hdmi_stream_miss_count += 1
+                if self._hdmi_stream_miss_count < self._hdmi_stream_reset_after_misses:
+                    return None
+                self._hdmi_stream_miss_count = 0
                 failed_session = self._hdmi
                 failed_session.close()
                 self._hdmi = self._init_hdmi_session()
@@ -670,6 +683,8 @@ class ScreenCapture:
                     if self._hdmi is not None:
                         self._hdmi.close()
                     self._hdmi = None
+            else:
+                self._hdmi_stream_miss_count = 0
             return frame
 
     def close(self) -> None:

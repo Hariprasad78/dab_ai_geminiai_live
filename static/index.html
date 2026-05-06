@@ -114,7 +114,7 @@
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: "Space Grotesk", "Segoe UI Variable", "Aptos", "Trebuchet MS", sans-serif;
+      font-family: "SF Pro Text", "SF Pro Display", Inter, "Segoe UI", Roboto, Arial, sans-serif;
       background:
         radial-gradient(960px 560px at -10% -10%, rgba(255, 255, 255, 0.06), transparent 54%),
         radial-gradient(840px 520px at 110% 0%, rgba(113, 113, 122, 0.14), transparent 52%),
@@ -504,28 +504,28 @@
     .model-toolbar { display:flex; gap:0.45rem; align-items:center; flex-wrap:wrap; }
     .model-toolbar label { margin:0; font-size:0.72rem; color:var(--text-muted); }
     .model-toolbar select { width:min(290px, 52vw); padding:0.35rem 0.45rem; font-size:0.78rem; }
-    .model-status { font-size:0.72rem; color:#d4d4d8; max-width:360px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-    .device-status { font-size:0.72rem; color:#d4d4d8; }
+    .model-status { font-size:0.72rem; color:var(--text-muted); max-width:360px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .device-status { font-size:0.72rem; color:var(--text-muted); }
     .device-info-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:0.75rem; margin-bottom:0.9rem; }
     .device-window { display:grid; grid-template-columns:1fr 1fr; gap:0.8rem; }
-    .device-section { background:#111113; border:1px solid #3f3f46; border-radius:0.65rem; padding:0.75rem; }
-    .device-section h3 { font-size:0.84rem; color:#d4d4d8; margin-bottom:0.5rem; }
+    .device-section { background:var(--surface-1); border:1px solid var(--border); border-radius:0.65rem; padding:0.75rem; }
+    .device-section h3 { font-size:0.84rem; color:var(--text-strong); margin-bottom:0.5rem; }
     .device-kv { display:grid; grid-template-columns: minmax(120px, 0.8fr) 1.2fr; gap:0.35rem 0.55rem; font-size:0.8rem; }
     .device-kv > div:nth-child(odd) { color:var(--text-muted); }
     .device-kv > div:nth-child(even) { color:var(--text); word-break:break-word; }
     .device-chip-list { display:flex; flex-wrap:wrap; gap:0.35rem; }
-    .device-chip { display:inline-block; border:1px solid #3f3f46; border-radius:999px; padding:0.2rem 0.5rem; font-size:0.72rem; color:#e4e4e7; }
+    .device-chip { display:inline-block; border:1px solid var(--border); border-radius:999px; padding:0.2rem 0.5rem; font-size:0.72rem; color:var(--text-strong); background:var(--surface-2); }
     .device-raw details { margin-top:0.6rem; }
-    .device-raw summary { cursor:pointer; color:#d4d4d8; font-size:0.78rem; }
-    .device-raw pre { margin-top:0.45rem; max-height:180px; overflow:auto; font-size:0.72rem; color:#d4d4d8; }
+    .device-raw summary { cursor:pointer; color:var(--text-muted); font-size:0.78rem; }
+    .device-raw pre { margin-top:0.45rem; max-height:180px; overflow:auto; font-size:0.72rem; color:var(--text); background:var(--surface-0); border:1px solid var(--border); border-radius:0.4rem; padding:0.45rem; }
     .settings-toolbar { display:grid; grid-template-columns: minmax(220px, 1fr) auto; gap:0.6rem; align-items:end; margin-bottom:0.75rem; }
     .settings-meta { display:flex; flex-wrap:wrap; gap:0.6rem; font-size:0.76rem; color:var(--text-muted); margin-bottom:0.65rem; }
-    .settings-table-wrap { border:1px solid #3f3f46; border-radius:0.65rem; background:#111113; overflow:hidden; }
+    .settings-table-wrap { border:1px solid var(--border); border-radius:0.65rem; background:var(--surface-1); overflow:hidden; }
     .settings-table-scroll { max-height:440px; overflow:auto; }
     .settings-table { width:100%; border-collapse:collapse; table-layout:fixed; font-size:0.78rem; }
-    .settings-table thead th { position:sticky; top:0; z-index:2; background:#18181b; color:#e4e4e7; text-align:left; padding:0.55rem; border-bottom:1px solid #3f3f46; }
-    .settings-table tbody td { padding:0.5rem 0.55rem; border-bottom:1px solid #27272a; vertical-align:top; color:#e5e7eb; word-break:break-word; }
-    .settings-table tbody tr:nth-child(2n) { background:rgba(39, 39, 42, 0.45); }
+    .settings-table thead th { position:sticky; top:0; z-index:2; background:var(--surface-2); color:var(--text-muted); text-align:left; padding:0.55rem; border-bottom:1px solid var(--border); }
+    .settings-table tbody td { padding:0.5rem 0.55rem; border-bottom:1px solid var(--border); vertical-align:top; color:var(--text); word-break:break-word; }
+    .settings-table tbody tr:nth-child(2n) { background:color-mix(in srgb, var(--surface-2) 70%, transparent); }
     .settings-col-key { width:22%; }
     .settings-col-value { width:26%; }
     .settings-col-name { width:22%; }
@@ -535,14 +535,14 @@
     .settings-status-fail { color:#fca5a5; }
     .sysstate-meta { display:flex; flex-wrap:wrap; gap:0.6rem; font-size:0.76rem; color:var(--text-muted); margin-bottom:0.65rem; }
     .sysstate-grid { display:grid; grid-template-columns: 1fr 1fr; gap:0.75rem; }
-    .sysstate-panel { background:#111113; border:1px solid #3f3f46; border-radius:0.65rem; overflow:hidden; }
-    .sysstate-panel h3 { font-size:0.82rem; color:#d4d4d8; padding:0.55rem 0.7rem; border-bottom:1px solid #3f3f46; background:#18181b; }
+    .sysstate-panel { background:var(--surface-1); border:1px solid var(--border); border-radius:0.65rem; overflow:hidden; }
+    .sysstate-panel h3 { font-size:0.82rem; color:var(--text-strong); padding:0.55rem 0.7rem; border-bottom:1px solid var(--border); background:var(--surface-2); }
     .sysstate-panel .body { padding:0.7rem; }
-    .sysstate-static-block { min-height:220px; max-height:260px; overflow:auto; border:1px solid #3f3f46; border-radius:0.5rem; background:#111113; padding:0.55rem; }
+    .sysstate-static-block { min-height:220px; max-height:260px; overflow:auto; border:1px solid var(--border); border-radius:0.5rem; background:var(--surface-1); padding:0.55rem; }
     .sysstate-op-actions { border:1px solid #3f3f46; border-radius:0.5rem; background:#111113; padding:0.55rem; margin-bottom:0.55rem; max-height:320px; overflow:auto; display:grid; grid-template-columns:1fr; gap:0.5rem; }
-    .sysstate-op-card { border:1px solid #3f3f46; border-radius:0.45rem; background:#18181b; padding:0.5rem; }
+    .sysstate-op-card { border:1px solid var(--border); border-radius:0.45rem; background:var(--surface-2); padding:0.5rem; }
     .sysstate-op-head { display:flex; justify-content:space-between; gap:0.45rem; align-items:center; margin-bottom:0.4rem; }
-    .sysstate-op-name { color:#d4d4d8; font-size:0.74rem; word-break:break-word; }
+    .sysstate-op-name { color:var(--text-strong); font-size:0.74rem; word-break:break-word; }
     .sysstate-op-body { display:grid; grid-template-columns:1fr auto; gap:0.45rem; align-items:end; }
     .sysstate-op-fields { display:grid; grid-template-columns:repeat(auto-fit, minmax(120px, 1fr)); gap:0.4rem; }
     .sysstate-op-fields input, .sysstate-op-fields select { padding:0.4rem 0.45rem; font-size:0.74rem; }
@@ -550,12 +550,12 @@
     .sysstate-op-note { color:var(--text-muted); font-size:0.72rem; }
     .sysstate-op-result { margin-top:0.45rem; font-size:0.74rem; min-height:1rem; color:var(--text-muted); }
     .sysstate-chip-list { display:flex; flex-wrap:wrap; gap:0.35rem; }
-    .sysstate-chip { display:inline-block; border:1px solid #3f3f46; border-radius:999px; padding:0.2rem 0.5rem; font-size:0.72rem; color:#e4e4e7; background:#18181b; }
+    .sysstate-chip { display:inline-block; border:1px solid var(--border); border-radius:999px; padding:0.2rem 0.5rem; font-size:0.72rem; color:var(--text-strong); background:var(--surface-2); }
     .sysstate-empty { color:var(--text-dim); font-size:0.78rem; }
     .sysstate-table { width:100%; border-collapse:collapse; table-layout:fixed; font-size:0.76rem; }
-    .sysstate-table th { text-align:left; color:#d4d4d8; border-bottom:1px solid #3f3f46; padding:0.38rem; position:sticky; top:0; background:#18181b; }
-    .sysstate-table td { color:#e5e7eb; border-bottom:1px solid #27272a; padding:0.36rem; vertical-align:top; word-break:break-word; }
-    .sysstate-roll { max-height:84px; overflow:auto; white-space:pre-wrap; word-break:break-word; border:1px solid #3f3f46; border-radius:0.35rem; padding:0.25rem; background:#111113; }
+    .sysstate-table th { text-align:left; color:var(--text-muted); border-bottom:1px solid var(--border); padding:0.38rem; position:sticky; top:0; background:var(--surface-2); }
+    .sysstate-table td { color:var(--text); border-bottom:1px solid var(--border); padding:0.36rem; vertical-align:top; word-break:break-word; }
+    .sysstate-roll { max-height:84px; overflow:auto; white-space:pre-wrap; word-break:break-word; border:1px solid var(--border); border-radius:0.35rem; padding:0.25rem; background:var(--surface-1); }
     .health-dot { width: 10px; height: 10px; border-radius: 50%; background: #ef4444; box-shadow: 0 0 12px rgba(239,68,68,0.6); }
     .health-dot.ok { background: #22c55e; box-shadow: 0 0 14px rgba(34,197,94,0.8); }
     .hero { grid-column: 1 / -1; display:grid; grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.95fr); gap:1rem; align-items:stretch; }
@@ -863,9 +863,21 @@
         </div>
       </div>
       <div class="sysstate-panel" style="grid-column:1 / -1;">
-        <h3>Raw Stored JSON (Debug)</h3>
+        <h3>DAB Quick View</h3>
         <div class="body">
-          <div id="dab-system-raw-json" class="sysstate-roll" style="max-height:260px;">No snapshot loaded.</div>
+          <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; margin-bottom:0.6rem;">
+            <label for="dab-quick-view-select" style="margin:0;">View</label>
+            <select id="dab-quick-view-select" onchange="renderDabQuickView()">
+              <option value="summary">Summary</option>
+              <option value="settings-values">Current Settings</option>
+              <option value="settings-meta">Settings Metadata</option>
+              <option value="applications">Applications</option>
+              <option value="voices">Voice Systems</option>
+              <option value="keys">Input Keys</option>
+              <option value="operations">Operations</option>
+            </select>
+          </div>
+          <div id="dab-system-quick-view" class="sysstate-static-block">No snapshot loaded.</div>
         </div>
       </div>
     </div>
@@ -1923,6 +1935,7 @@
     const arr = Array.isArray(rows) ? rows : [];
     if (!arr.length) {
       body.innerHTML = '<tr><td colspan="5" class="sysstate-empty">No operations data.</td></tr>';
+      renderDabQuickView();
       return;
     }
     body.innerHTML = arr.map((row, idx) => {
@@ -1941,6 +1954,7 @@
         <td>${supported ? `<button class="secondary mini-btn" onclick="useOperationInRequestPanel(${idx})">${actionLabel}</button>` : '<span class="sysstate-empty">-</span>'}</td>
       </tr>`;
     }).join('');
+    renderDabQuickView();
   }
 
   function renderSystemRequestOperationOptions(rows) {
@@ -2167,7 +2181,7 @@
     const appsEl = document.getElementById('dab-system-applications');
     const voicesEl = document.getElementById('dab-system-voices');
     const keysEl = document.getElementById('dab-system-keys');
-    const rawEl = document.getElementById('dab-system-raw-json');
+    const quickViewEl = document.getElementById('dab-system-quick-view');
 
     const data = dabDeviceSystemStateSnapshot;
     if (!data || typeof data !== 'object') {
@@ -2182,7 +2196,7 @@
       if (appsEl) appsEl.innerHTML = renderSysstateEmpty();
       if (voicesEl) voicesEl.innerHTML = renderSysstateEmpty();
       if (keysEl) keysEl.innerHTML = renderSysstateEmpty();
-      if (rawEl) rawEl.textContent = 'No snapshot loaded.';
+      if (quickViewEl) quickViewEl.innerHTML = renderSysstateEmpty('No snapshot loaded.');
       return;
     }
 
@@ -2204,9 +2218,83 @@
     if (appsEl) appsEl.innerHTML = renderApplicationsBlock(apps);
     if (voicesEl) voicesEl.innerHTML = renderSysstateChipList(voices, 'No voices available.');
     if (keysEl) keysEl.innerHTML = renderSysstateChipList(keys, 'No keys available.');
-    if (rawEl) rawEl.textContent = JSON.stringify(data, null, 2);
+    renderDabQuickView();
     refreshDabRequestMetadataControls();
     syncRequestPayloadFromControls();
+  }
+
+  function renderDabQuickView() {
+    const quickViewEl = document.getElementById('dab-system-quick-view');
+    if (!quickViewEl) return;
+    const data = dabDeviceSystemStateSnapshot;
+    if (!data || typeof data !== 'object') {
+      quickViewEl.innerHTML = renderSysstateEmpty('No snapshot loaded.');
+      return;
+    }
+
+    const selectEl = document.getElementById('dab-quick-view-select');
+    const mode = String(selectEl?.value || 'summary').trim();
+    const settingsList = Array.isArray(data?.supported_settings) ? data.supported_settings : (Array.isArray(data?.settings_list?.list) ? data.settings_list.list : []);
+    const settingsValues = Array.isArray(data?.current_setting_values) ? data.current_setting_values : (Array.isArray(data?.settings_get?.values) ? data.settings_get.values : []);
+    const apps = Array.isArray(data?.installed_applications) ? data.installed_applications : (Array.isArray(data?.applications_list?.list) ? data.applications_list.list : []);
+    const voices = Array.isArray(data?.supported_voice_systems) ? data.supported_voice_systems : (Array.isArray(data?.voice_list?.list) ? data.voice_list.list : []);
+    const keys = Array.isArray(data?.supported_keys) ? data.supported_keys : (Array.isArray(data?.keys?.list) ? data.keys.list : []);
+    const ops = Array.isArray(dabOperationsGridRows) ? dabOperationsGridRows : [];
+
+    if (mode === 'settings-values') {
+      quickViewEl.innerHTML = renderSettingsValuesBlock(settingsValues);
+      return;
+    }
+    if (mode === 'settings-meta') {
+      quickViewEl.innerHTML = renderSettingsListBlock(settingsList);
+      return;
+    }
+    if (mode === 'applications') {
+      quickViewEl.innerHTML = renderApplicationsBlock(apps);
+      return;
+    }
+    if (mode === 'voices') {
+      quickViewEl.innerHTML = renderSysstateChipList(voices, 'No voices available.');
+      return;
+    }
+    if (mode === 'keys') {
+      quickViewEl.innerHTML = renderSysstateChipList(keys, 'No keys available.');
+      return;
+    }
+    if (mode === 'operations') {
+      quickViewEl.innerHTML = renderDabQuickOperationsTable(ops);
+      return;
+    }
+
+    quickViewEl.innerHTML = `
+      <table class="sysstate-table">
+        <thead><tr><th>Item</th><th>Count / Value</th></tr></thead>
+        <tbody>
+          <tr><td>Device</td><td>${escHtml(String(data.device_id || '-'))}</td></tr>
+          <tr><td>Last Updated</td><td>${escHtml(String(data.last_updated || data.captured_at || '--'))}</td></tr>
+          <tr><td>Current Settings</td><td>${settingsValues.length}</td></tr>
+          <tr><td>Settings Metadata</td><td>${settingsList.length}</td></tr>
+          <tr><td>Applications</td><td>${apps.length}</td></tr>
+          <tr><td>Voice Systems</td><td>${voices.length}</td></tr>
+          <tr><td>Input Keys</td><td>${keys.length}</td></tr>
+          <tr><td>Operations</td><td>${ops.length}</td></tr>
+        </tbody>
+      </table>`;
+  }
+
+  function renderDabQuickOperationsTable(rows) {
+    const arr = Array.isArray(rows) ? rows : [];
+    if (!arr.length) return renderSysstateEmpty('No operations data.');
+    return `<table class="sysstate-table">
+      <thead><tr><th>Operation</th><th>Supported</th><th>Metadata</th></tr></thead>
+      <tbody>
+        ${arr.map(row => `<tr>
+          <td>${escHtml(String(row.operation || '-'))}</td>
+          <td>${row.supported ? 'Yes' : 'No'}</td>
+          <td>${escHtml(String(row.metadata_source || '-'))}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>`;
   }
 
   async function loadDabOperationsGrid(deviceId = getSelectedDabDeviceId(), forceRefresh = false) {
@@ -3937,12 +4025,12 @@
     // Using a more structured HTML table
     let table = `<style>
       .yts-table { width:100%; border-collapse:collapse; font-size:0.78rem; }
-      .yts-table th, .yts-table td { padding: 0.45rem 0.6rem; text-align:left; border-bottom:1px solid #27272a; }
-      .yts-table th { font-weight:600; color:#b0b0b5; background: #18181b; position: sticky; top: 0; }
+      .yts-table th, .yts-table td { padding: 0.45rem 0.6rem; text-align:left; border-bottom:1px solid ${uiColor('--border')}; color:${uiColor('--text')}; }
+      .yts-table th { font-weight:600; color:${uiColor('--text-muted')}; background:${uiColor('--surface-2')}; position: sticky; top: 0; }
       .yts-table tr { cursor:pointer; }
-      .yts-table tr:hover { background: #27272a; }
-      .yts-table .id { color:#e4e4e7; max-width:180px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-      .yts-table .suite { color:#fcd34d; }
+      .yts-table tr:hover { background: ${uiColor('--surface-3')}; }
+      .yts-table .id { color:${uiColor('--text-strong')}; max-width:180px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      .yts-table .suite { color:${uiColor('--warning')}; }
     </style>
     <table class="yts-table">
       <thead><tr><th>Test ID</th><th>Title</th><th>Suite</th></tr></thead>
@@ -5606,12 +5694,12 @@
     
     let table = `<style>
       .yts-table { width:100%; border-collapse:collapse; font-size:0.78rem; }
-      .yts-table th, .yts-table td { padding: 0.45rem 0.6rem; text-align:left; border-bottom:1px solid #27272a; }
-      .yts-table th { font-weight:600; color:#b0b0b5; background: #18181b; position: sticky; top: 0; }
+      .yts-table th, .yts-table td { padding: 0.45rem 0.6rem; text-align:left; border-bottom:1px solid ${uiColor('--border')}; color:${uiColor('--text')}; }
+      .yts-table th { font-weight:600; color:${uiColor('--text-muted')}; background:${uiColor('--surface-2')}; position: sticky; top: 0; }
       .yts-table tr { cursor:pointer; }
-      .yts-table tr:hover { background: #27272a; }
-      .yts-table .id { color:#e4e4e7; max-width:180px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-      .yts-table .suite { color:#fcd34d; }
+      .yts-table tr:hover { background: ${uiColor('--surface-3')}; }
+      .yts-table .id { color:${uiColor('--text-strong')}; max-width:180px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      .yts-table .suite { color:${uiColor('--warning')}; }
     </style>
     <table class="yts-table">
       <thead><tr><th>Test ID</th><th>Title</th><th>Suite</th></tr></thead>

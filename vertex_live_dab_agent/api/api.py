@@ -7680,14 +7680,25 @@ async def stream_hdmi() -> StreamingResponse:
 
     async def frame_generator():
         boundary = b"--frame\r\n"
+        consecutive_errors = 0
         while True:
-            # Offload the blocking frame capture to a separate thread.
-            frame = await asyncio.to_thread(
-                capture.get_hdmi_stream_frame_jpeg, quality=config.hdmi_stream_jpeg_quality
-            )
+            try:
+                # Offload the blocking frame capture to a separate thread.
+                frame = await asyncio.to_thread(
+                    capture.get_hdmi_stream_frame_jpeg, quality=config.hdmi_stream_jpeg_quality
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                consecutive_errors += 1
+                if consecutive_errors == 1 or consecutive_errors % 20 == 0:
+                    logger.warning("HDMI stream frame capture error (%s): %s", consecutive_errors, exc)
+                await asyncio.sleep(0.12)
+                continue
             if frame is None:
                 await asyncio.sleep(0.08)
                 continue
+            consecutive_errors = 0
             headers = (
                 b"Content-Type: image/jpeg\r\n"
                 + f"Content-Length: {len(frame)}\r\n\r\n".encode("ascii")
