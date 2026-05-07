@@ -82,6 +82,7 @@ class HdmiCaptureSession:
         self._last_error: Optional[str] = None
         self._last_frame: Optional[Any] = None
         self._last_frame_ts: float = 0.0
+        self._opened_at: float = 0.0
         self._reader_stop = threading.Event()
         self._frame_ready = threading.Event()
         self._reader_thread: Optional[threading.Thread] = None
@@ -133,6 +134,7 @@ class HdmiCaptureSession:
 
                 self._cap = cap
                 self._last_error = None
+                self._opened_at = time.monotonic()
                 self._reader_stop.clear()
                 self._frame_ready.clear()
                 self._reader_thread = threading.Thread(
@@ -251,7 +253,7 @@ class HdmiCaptureSession:
         with self._lock:
             if self._last_frame is not None:
                 frame = self._copy_frame(self._last_frame)
-            else:
+            elif (time.monotonic() - self._opened_at) > 1.5:
                 self._last_error = self._last_error or "Failed to read frame"
         return frame
 

@@ -66,6 +66,12 @@ from vertex_live_dab_agent.api.models import (
 )
 from vertex_live_dab_agent.api.tts_service import GoogleTTSService
 from vertex_live_dab_agent.capture.capture import ScreenCapture
+from vertex_live_dab_agent.capture.camera_devices import (
+    DeviceContext,
+    find_device_context,
+    load_device_contexts,
+    validate_camera_devices,
+)
 from vertex_live_dab_agent.capture.hdmi_audio import (
     HdmiAudioStreamSession,
     arecord_available,
@@ -148,6 +154,8 @@ _yts_live_db_path: Optional[Path] = None
 _yts_live_db_lock = threading.Lock()
 _yts_discover_cache: List[Dict[str, str]] = []
 _yts_discover_cache_at: float = 0.0
+_yts_check_cache: Dict[str, Dict[str, Any]] = {}
+_yts_check_cache_at: Dict[str, float] = {}
 _selected_device_id_override: Optional[str] = None
 _discovered_devices_cache: List[Dict[str, Any]] = []
 _discovered_devices_cache_at: float = 0.0
@@ -407,9 +415,32 @@ def _ffmpeg_rotation_filter(rotation_degrees: Optional[int]) -> Optional[str]:
 
 def _resolve_active_capture_video_device() -> tuple[Optional[str], Dict[str, Any]]:
     capture = get_screen_capture()
+    context = _active_device_context()
+    if context is not None:
+        if not context.cameraPath or not os.path.exists(context.cameraPath):
+            status = capture.capture_source_status(include_devices=False)
+            status["context_alignment_error"] = (
+                f"Video mapping missing for selected device {context.displayName}. Please configure camera_devices.json."
+            )
+            return None, status
+        current = capture.capture_source_status(include_devices=False)
+        selected = str(current.get("selected_video_device") or "").strip()
+        active = str(current.get("hdmi_device") or "").strip()
+        if selected != context.cameraPath or (active and active != context.cameraPath):
+            capture.set_capture_preference(
+                source=context.videoSource,
+                device=context.cameraPath,
+                preferred_kind="hdmi" if context.videoSource == "hdmi-capture" else "camera",
+                persist=True,
+            )
     capture.ensure_hdmi_session(force=True)
-    status = capture.capture_source_status()
+    status = capture.capture_source_status(include_devices=False)
     device = str(status.get("hdmi_device") or status.get("selected_video_device") or "").strip()
+    if context is not None and device != context.cameraPath:
+        status["context_alignment_error"] = (
+            f"Active capture source {device or '(none)'} does not match selected camera {context.cameraPath}."
+        )
+        return None, status
     return (device or None), status
 
 
@@ -1714,6 +1745,49 @@ async def _get_device_settings_values_cached(device_id: str, *, force: bool = Fa
             _device_settings_values_inflight.pop(device_id, None)
 
 
+async def _is_dab_discovered_device(device_id: str) -> bool:
+    """Return true when a selected/context device is currently available through DAB."""
+    resolved = str(device_id or "").strip()
+    if not resolved:
+        return False
+    context = find_device_context(resolved)
+    candidates = {resolved}
+    if context is not None:
+        candidates.update(
+            {
+                str(context.contextId or "").strip(),
+                str(context.dabDeviceId or "").strip(),
+                str(context.ytsDeviceId or "").strip(),
+            }
+        )
+    try:
+        devices, _warning = await _discover_dab_devices()
+    except Exception:
+        devices = list(_discovered_devices_cache)
+    discovered_ids = {str(item.get("device_id") or "").strip() for item in devices if isinstance(item, dict)}
+    return bool(discovered_ids.intersection({item for item in candidates if item}))
+
+
+async def _non_dab_settings_values_payload(device_id: str) -> Dict[str, Any]:
+    """Settings/get compatible response for YTS-only devices such as Samsung TV."""
+    context = find_device_context(device_id)
+    yts_discovery: Dict[str, Any] = {}
+    if context is not None:
+        yts_discovery = await _get_yts_discovery_for_context(context) or {}
+    return {
+        "success": False,
+        "device_id": str(device_id or "").strip(),
+        "captured_at": _utc_now_iso(),
+        "count": 0,
+        "failed": 0,
+        "values": [],
+        "source": "yts_discover",
+        "warning": "Selected device is not available through DAB; DAB settings are not supported for this device.",
+        "yts_discovered_device": yts_discovery,
+        "yts_check": {},
+    }
+
+
 def _load_device_capabilities_cache() -> Dict[str, Any]:
     path = _device_capabilities_cache_path()
     if not path.exists():
@@ -1748,6 +1822,7 @@ def _is_valid_discovered_device_id(value: Any) -> bool:
 def _load_device_context_state() -> Dict[str, Any]:
     state = {
         "selected_device_id": str(get_config().dab_device_id or "").strip(),
+        "selected_context_id": "",
     }
     path = _device_context_path()
     if path.exists():
@@ -1757,6 +1832,9 @@ def _load_device_context_state() -> Dict[str, Any]:
                 selected = str(loaded.get("selected_device_id") or "").strip()
                 if _is_valid_discovered_device_id(selected):
                     state["selected_device_id"] = selected
+                context_id = str(loaded.get("selected_context_id") or loaded.get("contextId") or "").strip()
+                if context_id:
+                    state["selected_context_id"] = context_id
         except Exception as exc:
             logger.warning("Failed to load device context from %s: %s", path, exc)
     return state
@@ -1772,32 +1850,46 @@ def _save_device_context_state(state: Dict[str, Any]) -> None:
 
 def _resolve_selected_device_id(device_id: Optional[str] = None) -> str:
     explicit = str(device_id or "").strip()
+    explicit_context = find_device_context(explicit)
+    if explicit_context is not None:
+        return explicit_context.dabDeviceId
     if _is_valid_discovered_device_id(explicit):
         return explicit
     if _is_valid_discovered_device_id(_selected_device_id_override):
         return str(_selected_device_id_override or "").strip()
     loaded = _load_device_context_state()
+    loaded_context = find_device_context(str(loaded.get("selected_context_id") or "").strip())
+    if loaded_context is not None:
+        return loaded_context.dabDeviceId
     selected = str(loaded.get("selected_device_id") or "").strip()
+    selected_context = find_device_context(selected)
+    if selected_context is not None:
+        return selected_context.dabDeviceId
     if _is_valid_discovered_device_id(selected):
         return selected
     return str(get_config().dab_device_id or "").strip()
 
 
 async def _apply_selected_device_context(device_id: Optional[str], persist: bool = True) -> Dict[str, Any]:
-    global _selected_device_id_override, _dab_client, _screen_capture
+    global _selected_device_id_override, _dab_client, _screen_capture, _yts_live_visual_cache
 
-    resolved = _resolve_selected_device_id(device_id)
+    requested = str(device_id or "").strip()
+    context = find_device_context(requested) or find_device_context(_resolve_selected_device_id(requested))
+    resolved = context.dabDeviceId if context is not None else _resolve_selected_device_id(device_id)
     _selected_device_id_override = resolved or None
 
     config = get_config()
     if resolved:
         config.dab_device_id = resolved
+    if context is not None and context.audioDevice:
+        config.hdmi_audio_device = context.audioDevice
 
     old_dab = _dab_client
     _dab_client = None
 
     old_capture = _screen_capture
     _screen_capture = None
+    _yts_live_visual_cache = {}
 
     if old_capture is not None:
         try:
@@ -1805,16 +1897,203 @@ async def _apply_selected_device_context(device_id: Optional[str], persist: bool
         except Exception:
             pass
 
-    if old_dab is not None:
-        try:
-            await old_dab.close()
-        except Exception:
-            pass
+    if persist:
+        old_capture = _screen_capture
+        _screen_capture = None
+        _yts_live_visual_cache = {}
 
-    state = {"selected_device_id": resolved}
+        if old_capture is not None:
+            try:
+                old_capture.close()
+            except Exception:
+                pass
+
+        with contextlib.suppress(Exception):
+            await _live_av_stream_manager.stop()
+        with contextlib.suppress(Exception):
+            await _close_all_webrtc_peers()
+
+    state = {
+        "selected_device_id": resolved,
+        "selected_context_id": context.contextId if context is not None else "",
+    }
     if persist:
         _save_device_context_state(state)
+    if context is not None:
+        try:
+            capture = get_screen_capture()
+            if context.cameraPath:
+                capture.set_capture_preference(
+                    source=context.videoSource,
+                    device=context.cameraPath,
+                    preferred_kind="hdmi" if context.videoSource == "hdmi-capture" else "camera",
+                    persist=True,
+                )
+
+            async def _warm_capture_session() -> None:
+                with contextlib.suppress(Exception):
+                    await asyncio.to_thread(capture.ensure_hdmi_session, True)
+
+            asyncio.create_task(_warm_capture_session())
+        except Exception as exc:
+            logger.warning("Unable to apply capture selection for context %s: %s", context.contextId, exc)
+        _log_selected_device_context(context)
     return state
+
+
+def _active_device_context() -> Optional[DeviceContext]:
+    loaded = _load_device_context_state()
+    for candidate in (
+        str(loaded.get("selected_context_id") or "").strip(),
+        str(_selected_device_id_override or "").strip(),
+        str(loaded.get("selected_device_id") or "").strip(),
+        str(get_config().dab_device_id or "").strip(),
+    ):
+        context = find_device_context(candidate)
+        if context is not None:
+            return context
+    return None
+
+
+def _log_selected_device_context(context: DeviceContext) -> None:
+    logger.info(
+        "Selected context:\n- contextId=%s\n- displayName=%s\n- dabDeviceId=%s\n- ytsDeviceId=%s\n- adbDeviceId=%s\n- irDeviceId=%s\n- videoSource=%s\n- cameraPath=%s\n- audioDevice=%s\n- geminiFeedSource=%s",
+        context.contextId,
+        context.displayName,
+        context.dabDeviceId,
+        context.ytsDeviceId,
+        context.adbDeviceId,
+        context.irDeviceId,
+        context.videoSource,
+        context.cameraPath,
+        context.audioDevice,
+        context.cameraPath,
+    )
+
+
+def _context_payload(context: Optional[DeviceContext], *, active: bool = False) -> Dict[str, Any]:
+    if context is None:
+        return {}
+    payload = context.to_dict()
+    payload["active"] = bool(active)
+    return payload
+
+
+async def _validate_active_device_context(*, require_ready: bool = False) -> Dict[str, Any]:
+    context = _active_device_context()
+    issues: List[str] = []
+    if context is None:
+        selected = _resolve_selected_device_id()
+        issues.append(
+            f"Video mapping missing for selected device {selected or '(none)'}. Please configure camera_devices.json."
+        )
+        payload = {
+            "contextId": "",
+            "displayName": selected,
+            "valid": False,
+            "dabReady": False,
+            "ytsReady": False,
+            "irReady": False,
+            "cameraReady": False,
+            "cameraPath": "",
+            "videoSource": "",
+            "geminiFeedSource": "",
+            "streamPreviewSource": "",
+            "issues": issues,
+        }
+        if require_ready:
+            raise HTTPException(status_code=400, detail=issues[0])
+        return payload
+
+    dab_ready = bool(context.dabDeviceId)
+    yts_ready = bool(context.ytsDeviceId)
+    ir_ready = bool(context.irDeviceId)
+    camera_ready = bool(context.cameraPath and os.path.exists(context.cameraPath))
+    if not dab_ready:
+        issues.append(f"DAB device mapping missing for selected device {context.displayName}.")
+    if not yts_ready:
+        issues.append(f"YTS device mapping missing for selected device {context.displayName}.")
+    if not ir_ready:
+        issues.append(f"IR device mapping missing for selected device {context.displayName}.")
+    if not context.cameraPath:
+        issues.append(f"Video mapping missing for selected device {context.displayName}. Please configure camera_devices.json.")
+    elif not os.path.exists(context.cameraPath):
+        issues.append(f"Video path for selected device {context.displayName} does not exist: {context.cameraPath}")
+
+    capture_status: Dict[str, Any] = {}
+    try:
+        capture_status = get_screen_capture().capture_source_status(include_devices=False)
+    except Exception as exc:
+        issues.append(f"Capture status unavailable: {exc}")
+    selected_stream = str(capture_status.get("selected_video_device") or "").strip()
+    active_stream = str(capture_status.get("hdmi_device") or selected_stream or "").strip()
+    configured_source = str(capture_status.get("configured_source") or "").strip()
+    gemini_feed_source = context.cameraPath
+    if configured_source and configured_source != context.videoSource:
+        issues.append(f"Capture video source {configured_source} does not match selected context source {context.videoSource}.")
+    if context.cameraPath and selected_stream and selected_stream != context.cameraPath:
+        issues.append(f"Stream preview source {selected_stream} does not match selected camera {context.cameraPath}.")
+    if context.cameraPath and active_stream and active_stream != context.cameraPath:
+        issues.append(f"Active capture source {active_stream} does not match selected camera {context.cameraPath}.")
+    if gemini_feed_source != context.cameraPath:
+        issues.append("Gemini feed source does not match selected camera.")
+
+    yts_discovery: Optional[Dict[str, Any]] = None
+    if yts_ready:
+        try:
+            yts_discovery = await _get_yts_discovery_for_context(context)
+            if yts_discovery:
+                yts_ready = bool(str(yts_discovery.get("short_id") or "").strip())
+                if not yts_ready:
+                    issues.append(f"YTS discover did not return a short device id for selected context {context.displayName}.")
+            else:
+                yts_ready = False
+                issues.append(f"YTS discover did not find a device mapped to selected context {context.displayName}.")
+        except Exception as exc:
+            yts_ready = False
+            issues.append(f"YTS discover failed for selected context {context.displayName}: {exc}")
+
+    if ir_ready:
+        try:
+            devices = await asyncio.to_thread(_get_ir_service().list_devices)
+            known_ir = {str(item.get("device_id") or "").strip() for item in devices}
+            if known_ir and context.irDeviceId not in known_ir:
+                ir_ready = False
+                issues.append(f"IR device/profile {context.irDeviceId} is not configured.")
+        except Exception as exc:
+            ir_ready = False
+            issues.append(f"IR device/profile validation failed: {exc}")
+
+    valid = dab_ready and yts_ready and ir_ready and camera_ready and not issues
+    payload = {
+        **_context_payload(context, active=True),
+        "contextId": context.contextId,
+        "valid": bool(valid),
+        "dabReady": bool(dab_ready),
+        "ytsReady": bool(yts_ready),
+        "ytsShortId": str((yts_discovery or {}).get("short_id") or ""),
+        "ytsDiscoveredDevice": yts_discovery or {},
+        "ytsCheck": {},
+        "irReady": bool(ir_ready),
+        "cameraReady": bool(camera_ready),
+        "cameraPath": context.cameraPath,
+        "videoSource": context.videoSource,
+        "geminiFeedSource": gemini_feed_source,
+        "streamPreviewSource": active_stream or selected_stream,
+        "issues": issues,
+    }
+    if require_ready and not valid:
+        raise HTTPException(status_code=400, detail=issues[0] if issues else "Active device context is not ready")
+    return payload
+
+
+def _log_active_context_for_job(context: DeviceContext) -> None:
+    logger.info('Using active device context: %s', context.displayName)
+    logger.info("YTS device: %s", context.ytsDeviceId)
+    logger.info("DAB device: %s", context.dabDeviceId)
+    logger.info("Video source: %s", context.videoSource)
+    logger.info("Camera: %s", context.cameraPath)
+    logger.info("Gemini feed: %s", context.cameraPath)
 
 
 def _normalize_discovered_devices(payload: Any) -> List[Dict[str, Any]]:
@@ -1900,12 +2179,33 @@ async def _discover_dab_devices(max_age_seconds: float = 30.0) -> tuple[List[Dic
 async def _ensure_selected_device_context(device_id: Optional[str], persist: bool = False) -> str:
     explicit = str(device_id or "").strip()
     if explicit:
+        active_context = _active_device_context()
+        explicit_context = find_device_context(explicit)
+        if active_context is not None and explicit_context is None:
+            mapped_values = {
+                active_context.contextId,
+                active_context.dabDeviceId,
+                active_context.ytsDeviceId,
+                active_context.adbDeviceId,
+                active_context.irDeviceId,
+                active_context.cameraId,
+                active_context.cameraPath,
+            }
+            if explicit not in {str(v or "").strip() for v in mapped_values}:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"YTS device_id={explicit} is not mapped to active device context {active_context.displayName}.",
+                )
         current = _resolve_selected_device_id()
         if explicit != current:
             state = await _apply_selected_device_context(explicit, persist=persist)
             return str(state.get("selected_device_id") or "").strip()
         if persist:
-            _save_device_context_state({"selected_device_id": explicit})
+            active_context = _active_device_context()
+            _save_device_context_state({
+                "selected_device_id": explicit,
+                "selected_context_id": active_context.contextId if active_context is not None else "",
+            })
         return explicit
     return _resolve_selected_device_id()
 
@@ -2379,10 +2679,17 @@ def _video_device_identity(value: Any) -> str:
 
 def _is_hdmi_capture_device_mismatch(status: Dict[str, Any]) -> bool:
     configured_source = str(status.get("configured_source") or "").strip().lower()
-    if configured_source != "hdmi-capture":
+    if configured_source not in {"hdmi-capture", "camera-capture"}:
         return False
     selected = _normalize_video_device_path(status.get("selected_video_device"))
     active = _normalize_video_device_path(status.get("hdmi_device"))
+    context = _active_device_context()
+    if context is not None:
+        expected = _normalize_video_device_path(context.cameraPath)
+        if expected and selected and selected != expected:
+            return True
+        if expected and active and active != expected:
+            return True
     if not selected or not active:
         return False
     if selected == active:
@@ -3168,7 +3475,7 @@ async def _run_yts_post_revalidation(state: Dict[str, Any]) -> None:
 
 
 def _resolve_yts_recording_device() -> Optional[str]:
-    status = get_screen_capture().capture_source_status()
+    status = get_screen_capture().capture_source_status(include_devices=False)
     selected = str(status.get("selected_video_device") or "").strip()
     active = str(status.get("hdmi_device") or "").strip()
     return selected or active or None
@@ -3462,7 +3769,9 @@ def _summarize_yts_live_state(state: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _list_yts_live_states(limit: int = 10, active_only: bool = False) -> List[Dict[str, Any]]:
+def _list_yts_live_states(limit: int = 10, active_only: bool = False, *, cleanup_stale: bool = True) -> List[Dict[str, Any]]:
+    if cleanup_stale:
+        _mark_stale_yts_live_commands()
     conn = _ensure_yts_live_db()
     capped_limit = max(1, min(int(limit or 10), 100))
     query = "SELECT state_json FROM yts_live_commands"
@@ -3478,15 +3787,18 @@ def _list_yts_live_states(limit: int = 10, active_only: bool = False) -> List[Di
 
 
 def _mark_stale_yts_live_commands() -> None:
-    stale_states = _list_yts_live_states(limit=100, active_only=True)
+    stale_states = _list_yts_live_states(limit=100, active_only=True, cleanup_stale=False)
     if not stale_states:
         return
     for state_summary in stale_states:
         command_id = str(state_summary.get("command_id") or "")
-        if not command_id or command_id in _yts_live_tasks:
+        task = _yts_live_tasks.get(command_id)
+        if not command_id or (task is not None and not task.done()):
             continue
+        if task is not None and task.done():
+            _yts_live_tasks.pop(command_id, None)
         state = _get_yts_live_state(command_id) or _normalize_yts_live_state({"command_id": command_id})
-        message = "Server restarted while this YTS command was running. Live terminal attachment is no longer available."
+        message = "YTS command was marked running but no live process is attached. Marking it failed so a new job can start."
         if message not in str(state.get("stderr") or ""):
             separator = "\n" if state.get("stderr") else ""
             state["stderr"] = f"{state.get('stderr') or ''}{separator}{message}"
@@ -3495,6 +3807,11 @@ def _mark_stale_yts_live_commands() -> None:
         state["awaiting_input"] = False
         state["pending_prompt"] = None
         _persist_yts_live_state(state)
+
+
+def _find_active_yts_live_command() -> Optional[Dict[str, Any]]:
+    active = _list_yts_live_states(limit=1, active_only=True)
+    return active[0] if active else None
 
 
 def _read_yts_test_catalog(path: Optional[Path] = None) -> List[Dict[str, str]]:
@@ -3596,7 +3913,7 @@ def _parse_yts_discover_output(stdout_text: str, stderr_text: str = "") -> List[
     seen: set[str] = set()
 
     pattern = re.compile(
-        r"^\s*\((?P<short>[A-Za-z0-9]+)\)\s+(?P<label>.*?)\s+\((?P<kind>adb|dab)\s*:\s*(?P<value>[^)]+)\)\s*$",
+        r"^\s*\((?P<short>[A-Za-z0-9]+)\)\s+(?P<label>.*?)\s+\((?:(?P<kind>[a-z0-9]+)\s*:\s*)?(?P<value>[^)]+)\)\s*$",
         flags=re.IGNORECASE,
     )
 
@@ -3615,6 +3932,12 @@ def _parse_yts_discover_output(stdout_text: str, stderr_text: str = "") -> List[
         if not short_id:
             continue
 
+        if not kind:
+            if re.match(r"^\d{1,3}(?:\.\d{1,3}){3}", value):
+                kind = "ip"
+            else:
+                kind = "unknown"
+
         key = f"{short_id}:{kind}:{value}".lower()
         if key in seen:
             continue
@@ -3628,9 +3951,47 @@ def _parse_yts_discover_output(stdout_text: str, stderr_text: str = "") -> List[
             item["adb"] = value
         elif kind == "dab":
             item["dab"] = value
+        elif kind == "ip":
+            item["ip"] = value
+        else:
+            item["value"] = value
         entries.append(item)
 
     return entries
+
+
+def _yts_discovered_item_matches_context(item: Dict[str, str], context: DeviceContext) -> bool:
+    short_id = str(item.get("short_id") or "").strip().lower()
+    label = str(item.get("label") or "").strip().lower()
+    adb_val = str(item.get("adb") or "").strip().lower()
+    dab_val = str(item.get("dab") or "").strip().lower()
+    ip_val = str(item.get("ip") or "").strip().lower()
+    context_values = {
+        context.contextId,
+        context.displayName,
+        context.dabDeviceId,
+        context.ytsDeviceId,
+        context.adbDeviceId,
+    }
+    normalized = {str(value or "").strip().lower() for value in context_values if str(value or "").strip()}
+    normalized.update({f"adb:{context.adbDeviceId}".lower()} if context.adbDeviceId else set())
+    normalized.update({f"dab:{context.dabDeviceId}".lower()} if context.dabDeviceId else set())
+    if short_id and short_id in normalized:
+        return True
+    if adb_val and (adb_val in normalized or f"adb:{adb_val}" in normalized):
+        return True
+    if dab_val and (dab_val in normalized or f"dab:{dab_val}" in normalized):
+        return True
+    if ip_val and ip_val in normalized:
+        return True
+    compact_label = label.replace(" ", "").replace("-", "")
+    for value in normalized:
+        if not value:
+            continue
+        compact = value.replace(" ", "").replace("-", "")
+        if compact and compact in compact_label:
+            return True
+    return False
 
 
 async def _get_yts_discovered_devices(max_age_seconds: float = 30.0) -> List[Dict[str, str]]:
@@ -3650,7 +4011,109 @@ async def _get_yts_discovered_devices(max_age_seconds: float = 30.0) -> List[Dic
     )
     _yts_discover_cache = list(parsed)
     _yts_discover_cache_at = time.monotonic()
+    logger.info("YTS discover found %d device(s): %s", len(parsed), parsed)
     return parsed
+
+
+async def _get_yts_discovery_for_context(context: DeviceContext, max_age_seconds: float = 30.0) -> Optional[Dict[str, str]]:
+    try:
+        discovered = await _get_yts_discovered_devices(max_age_seconds=max_age_seconds)
+    except Exception as exc:
+        logger.warning("YTS discover unavailable while resolving %s: %s", context.displayName, exc)
+        return None
+    for item in discovered:
+        if _yts_discovered_item_matches_context(item, context):
+            return dict(item)
+    return None
+
+
+async def _resolve_yts_execution_device_id_for_context(context: DeviceContext) -> str:
+    discovered = await _get_yts_discovery_for_context(context)
+    short_id = str((discovered or {}).get("short_id") or "").strip()
+    if short_id:
+        return short_id
+    return context.ytsDeviceId
+
+
+async def _require_yts_short_id_for_context(context: DeviceContext) -> str:
+    discovered = await _get_yts_discovery_for_context(context)
+    short_id = str((discovered or {}).get("short_id") or "").strip()
+    if short_id:
+        return short_id
+    raise HTTPException(
+        status_code=400,
+        detail={
+            "message": (
+                f"YTS discover did not return a short device id for selected context {context.displayName}. "
+                "Run YTS discover and map the discovered short id in camera_devices.json before starting YTS."
+            ),
+            "validation": {
+                "contextId": context.contextId,
+                "displayName": context.displayName,
+                "valid": False,
+                "ytsReady": False,
+                "ytsShortId": "",
+                "ytsDiscoveredDevice": discovered or {},
+                "issues": [
+                    f"YTS short device id missing for selected context {context.displayName}.",
+                ],
+            },
+        },
+    )
+
+
+async def _yts_device_id_belongs_to_context(raw_device_id: Any, context: DeviceContext) -> bool:
+    raw = str(raw_device_id or "").strip()
+    if not raw:
+        return False
+    direct = {
+        context.contextId,
+        context.dabDeviceId,
+        context.ytsDeviceId,
+        context.adbDeviceId,
+        f"adb:{context.adbDeviceId}" if context.adbDeviceId else "",
+        f"dab:{context.dabDeviceId}" if context.dabDeviceId else "",
+    }
+    if raw in {str(value or "").strip() for value in direct if str(value or "").strip()}:
+        return True
+    discovered = await _get_yts_discovery_for_context(context)
+    if discovered:
+        values = {
+            discovered.get("short_id"),
+            discovered.get("adb"),
+            discovered.get("dab"),
+            discovered.get("ip"),
+            discovered.get("value"),
+            f"adb:{discovered.get('adb')}" if discovered.get("adb") else "",
+            f"dab:{discovered.get('dab')}" if discovered.get("dab") else "",
+        }
+        if raw in {str(value or "").strip() for value in values if str(value or "").strip()}:
+            return True
+    return False
+
+
+async def _run_yts_check_for_context(context: DeviceContext, *, max_age_seconds: float = 60.0) -> Dict[str, Any]:
+    device_id = await _resolve_yts_execution_device_id_for_context(context)
+    now = time.monotonic()
+    cached = _yts_check_cache.get(context.contextId)
+    cached_at = _yts_check_cache_at.get(context.contextId, 0.0)
+    if cached and (now - cached_at) <= max(0.0, float(max_age_seconds)):
+        return dict(cached)
+    try:
+        result = await asyncio.to_thread(_run_yts_command, _get_yts_command_prefix() + ["check", device_id])
+    except Exception as exc:
+        result = {"returncode": 127, "stdout": "", "stderr": str(exc)}
+    payload = {
+        "device_id": device_id,
+        "success": int(result.get("returncode") or 0) == 0,
+        "returncode": int(result.get("returncode") or 0),
+        "stdout": str(result.get("stdout") or ""),
+        "stderr": str(result.get("stderr") or ""),
+        "checked_at": _utc_now_iso(),
+    }
+    _yts_check_cache[context.contextId] = dict(payload)
+    _yts_check_cache_at[context.contextId] = now
+    return payload
 
 
 def _is_ip_port(value: str) -> bool:
@@ -3663,8 +4126,65 @@ def _is_ip_port(value: str) -> bool:
     return bool(host and port.isdigit())
 
 
+def _looks_like_ip(value: str) -> bool:
+    return bool(re.match(r"^\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?$", str(value or "").strip()))
+
+
+def _get_cached_yts_discovery_for_context(context: DeviceContext) -> Optional[Dict[str, str]]:
+    for item in list(_yts_discover_cache or []):
+        if _yts_discovered_item_matches_context(item, context):
+            return dict(item)
+    return None
+
+
+async def _validate_active_yts_context_for_start(context: DeviceContext) -> Dict[str, Any]:
+    """Validate the YTS side of the active context without blocking job creation."""
+    issues: List[str] = []
+    if not str(context.ytsDeviceId or "").strip():
+        issues.append(f"YTS device mapping missing for selected device {context.displayName}.")
+    discovered = _get_cached_yts_discovery_for_context(context)
+    configured_yts_id = str(context.ytsDeviceId or "").strip()
+    short_id = str((discovered or {}).get("short_id") or "").strip()
+    if not short_id and configured_yts_id and not _looks_like_ip(configured_yts_id):
+        short_id = configured_yts_id
+    if not short_id:
+        issues.append(f"YTS short device id missing for selected context {context.displayName}.")
+    payload = {
+        "contextId": context.contextId,
+        "displayName": context.displayName,
+        "valid": not issues,
+        "ytsReady": not issues,
+        "ytsShortId": short_id,
+        "ytsDiscoveredDevice": discovered or {},
+        "ytsCheck": {},
+        "issues": issues,
+    }
+    if issues:
+        logger.warning("Blocking YTS command start: %s", "; ".join(issues))
+        raise HTTPException(status_code=400, detail={"message": issues[0], "validation": payload})
+    return payload
+
+
 async def _resolve_yts_runner_device_id(device_id: Optional[str]) -> str:
-    selected_device_id = await _ensure_selected_device_context(device_id, persist=bool(device_id))
+    raw_device_id = str(device_id or "").strip()
+    requested_context = find_device_context(raw_device_id) if raw_device_id else None
+    context_selector = requested_context.dabDeviceId if requested_context is not None else None
+    selected_device_id = await _ensure_selected_device_context(context_selector, persist=bool(context_selector))
+    active_context = _active_device_context()
+    if active_context is not None:
+        if raw_device_id and requested_context is None and not await _yts_device_id_belongs_to_context(raw_device_id, active_context):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"YTS device_id={raw_device_id} is not mapped to active device context "
+                    f"{active_context.displayName}."
+                ),
+            )
+        validation = await _validate_active_yts_context_for_start(active_context)
+        short_id = str(validation.get("ytsShortId") or "").strip()
+        if short_id:
+            return short_id
+        return await _require_yts_short_id_for_context(active_context)
     candidate = str(selected_device_id or "").strip()
     if not candidate:
         raise HTTPException(status_code=400, detail="No selected device available")
@@ -4542,7 +5062,7 @@ async def _capture_yts_visual_context(command_id: str, force_fresh: bool = False
 
     try:
         capture = get_screen_capture()
-        capture_status = capture.capture_source_status()
+        capture_status = capture.capture_source_status(include_devices=False)
         mismatch_detected = _is_hdmi_capture_device_mismatch(capture_status)
         live_stream_available = bool(capture_status.get("hdmi_available")) and hasattr(capture, "capture_live_stream_frame")
         for attempt in range(_YTS_INTERACTIVE_CAPTURE_ATTEMPTS):
@@ -4562,7 +5082,7 @@ async def _capture_yts_visual_context(command_id: str, force_fresh: bool = False
                 continue
             source = str(result.source or capture_status.get("configured_source") or "unknown")
             image_b64 = result.image_b64
-            latest_status = capture.capture_source_status()
+            latest_status = capture.capture_source_status(include_devices=False)
             mismatch_now = _is_hdmi_capture_device_mismatch(latest_status)
             mismatch_detected = mismatch_detected or mismatch_now
             if mismatch_now:
@@ -4716,7 +5236,7 @@ def get_vertex_live_visual_client() -> Optional[VertexPlannerClient]:
 
 async def _capture_yts_live_monitor_frame(command_id: str) -> Dict[str, Any]:
     capture = get_screen_capture()
-    capture_status = capture.capture_source_status()
+    capture_status = capture.capture_source_status(include_devices=False)
     if _is_hdmi_capture_device_mismatch(capture_status):
         return {
             "source": "capture-mismatch",
@@ -4917,14 +5437,73 @@ async def _suggest_yts_prompt_response(command_id: str, prompt_text: str, option
         state["ai_status_message"] = "Gemini is watching the TV stream and reading the terminal guide..."
         _persist_yts_live_state(state)
 
+    def _operator_ai_message(message: str, payload: Dict[str, Any]) -> str:
+        prompt_label = f"Prompt {payload.get('prompt_id')}: " if payload.get("prompt_id") is not None else ""
+        visual_summary = str(payload.get("visual_summary") or "").strip()
+        visual_source = str(payload.get("visual_source") or "").strip()
+        final = str(payload.get("final") or payload.get("response") or "").strip()
+        analysis = payload.get("visual_analysis") or payload.get("analysis") or {}
+        analysis_summary = ""
+        if isinstance(analysis, dict):
+            analysis_summary = str(analysis.get("summary") or "").strip()
+        observed = analysis_summary or visual_summary
+
+        lowered_message = str(message or "").strip().lower()
+        if "suggestion decision" in lowered_message and final:
+            if observed:
+                return (
+                    f"{prompt_label}As per the YTS test requirement, Gemini checked the live TV feed"
+                    f" and observed: {observed} Therefore it selected option {final}."
+                )
+            return (
+                f"{prompt_label}As per the YTS test requirement, Gemini checked the live TV feed"
+                f" and selected option {final}."
+            )
+        if "captured visual context" in lowered_message:
+            source_text = f" from {visual_source}" if visual_source else ""
+            return (
+                f"{prompt_label}Gemini captured the current TV picture{source_text}"
+                " and will use that video frame as the visual source of truth."
+            )
+        if "missing screenshot" in lowered_message:
+            return f"{prompt_label}Gemini did not answer because no fresh TV frame was available."
+        if "client is unavailable" in lowered_message:
+            return f"{prompt_label}Gemini did not answer because the model client is unavailable."
+        if "gemini exception" in lowered_message:
+            error = str(payload.get("error") or "").strip()
+            if error:
+                return f"{prompt_label}Gemini could not answer this attempt because the model service returned an error: {error}"
+            return f"{prompt_label}Gemini could not answer this attempt because the model service returned an error."
+        return f"{prompt_label}{str(message or '').strip()}"
+
     def _log_ai(message: str, payload: Optional[Dict[str, Any]] = None) -> None:
         if not state:
             return
-        raw = json.dumps(payload or {}, ensure_ascii=False)
+        payload = payload or {}
+        raw = json.dumps(payload, ensure_ascii=False)
+        details: List[str] = []
+        if payload.get("prompt_id") is not None:
+            details.append(f"prompt {payload.get('prompt_id')}")
+        if payload.get("visual_summary"):
+            details.append(f"TV: {payload.get('visual_summary')}")
+        if payload.get("visual_source"):
+            details.append(f"source: {payload.get('visual_source')}")
+        if payload.get("evidence_image"):
+            details.append(f"evidence: {payload.get('evidence_image')}")
+        if payload.get("final"):
+            details.append(f"answer: {payload.get('final')}")
+        elif payload.get("raw_suggestion"):
+            details.append(f"suggestion: {payload.get('raw_suggestion')}")
+        if payload.get("error"):
+            details.append(f"error: {payload.get('error')}")
+        human_message = str(message or "")
+        if details:
+            human_message = f"{human_message} - {'; '.join(str(item) for item in details)}"
         state.setdefault("logs", []).append(
             {
                 "stream": "ai",
-                "message": str(message or ""),
+                "message": human_message,
+                "operator_message": _operator_ai_message(message, payload),
                 "raw_message": raw,
             }
         )
@@ -4940,6 +5519,7 @@ async def _suggest_yts_prompt_response(command_id: str, prompt_text: str, option
             "Captured visual context for prompt suggestion",
             {
                 "prompt_id": prompt_id,
+                "prompt_text": prompt_text,
                 "visual_source": visual_context.get("source"),
                 "visual_summary": visual_context.get("summary"),
                 "analysis": visual_context.get("analysis"),
@@ -4951,6 +5531,7 @@ async def _suggest_yts_prompt_response(command_id: str, prompt_text: str, option
                 "Deferred AI response due to missing screenshot",
                 {
                     "prompt_id": prompt_id,
+                    "prompt_text": prompt_text,
                     "reason": "No fresh TV screenshot available",
                 },
             )
@@ -4969,6 +5550,7 @@ async def _suggest_yts_prompt_response(command_id: str, prompt_text: str, option
                 "Deferred AI response because Gemini client is unavailable",
                 {
                     "prompt_id": prompt_id,
+                    "prompt_text": prompt_text,
                     "reason": "Gemini client unavailable",
                 },
             )
@@ -5032,6 +5614,9 @@ async def _suggest_yts_prompt_response(command_id: str, prompt_text: str, option
                 "Gemini suggestion decision trace",
                 {
                     "prompt_id": prompt_id,
+                    "prompt_text": prompt_text,
+                    "visual_source": visual_context.get("source"),
+                    "visual_summary": visual_context.get("summary"),
                     "raw_suggestion": raw_suggestion,
                     "normalized": normalized_suggestion,
                     "safe_checked": safe_suggestion,
@@ -5056,6 +5641,7 @@ async def _suggest_yts_prompt_response(command_id: str, prompt_text: str, option
                 "Deferred AI response due to Gemini exception",
                 {
                     "prompt_id": prompt_id,
+                    "prompt_text": prompt_text,
                     "error": _sanitize_error_text(exc),
                 },
             )
@@ -5174,8 +5760,12 @@ async def _append_yts_stream_output(command_id: str, stream_name: str, stream) -
 
 async def _run_yts_command_live(command_id: str, request: "YtsCommandRequest") -> None:
     state = _yts_live_commands[command_id]
+    active_context = _active_device_context()
+    if active_context is not None:
+        _log_active_context_for_job(active_context)
     cmd = _build_yts_command(request)
     state["command"] = " ".join(cmd)
+    state["logs"].append({"stream": "system", "message": f"Starting YTS command: {state['command']}"})
     if state.get("record_video"):
         state["video_recording_status"] = "pending"
         if state.get("record_audio"):
@@ -5215,6 +5805,9 @@ async def _run_yts_command_live(command_id: str, request: "YtsCommandRequest") -
         return
 
     _yts_live_processes[command_id] = process
+    state = _get_yts_live_state(command_id) or state
+    state["logs"].append({"stream": "system", "message": f"YTS process started with pid {process.pid}"})
+    _persist_yts_live_state(state)
 
     stdout_task = asyncio.create_task(_append_yts_stream_output(command_id, "stdout", process.stdout))
     stderr_task = asyncio.create_task(_append_yts_stream_output(command_id, "stderr", process.stderr))
@@ -5224,6 +5817,7 @@ async def _run_yts_command_live(command_id: str, request: "YtsCommandRequest") -
         await asyncio.gather(stdout_task, stderr_task)
         state["returncode"] = returncode
         state["status"] = "completed" if returncode == 0 else "failed"
+        state["logs"].append({"stream": "system", "message": f"YTS process finished with exit code {returncode}"})
 
         if request.output_file and Path(request.output_file).exists():
             try:
@@ -5282,6 +5876,7 @@ async def _run_yts_command_live(command_id: str, request: "YtsCommandRequest") -
         visual_task = _yts_live_visual_tasks.get(command_id)
         if visual_task and not visual_task.done():
             visual_task.cancel()
+        _yts_live_tasks.pop(command_id, None)
 
 
 def _find_active_run_id() -> Optional[str]:
@@ -5826,6 +6421,9 @@ def _resolve_audio_input(
 ) -> tuple[Optional[str], Optional[str]]:
     """Resolve `(input_format, device)` for HDMI audio stream."""
     config = get_config()
+    context = _active_device_context()
+    if context is not None and context.audioDevice:
+        return str(config.hdmi_audio_input_format or "alsa").strip() or "alsa", context.audioDevice
     configured_device = str(config.hdmi_audio_device or "").strip()
     if configured_device.lower() == "auto":
         configured_device = ""
@@ -5868,7 +6466,7 @@ def _resolve_audio_input(
 def _guess_audio_input_for_selected_capture(*, capture_status: Optional[Dict[str, Any]] = None) -> Optional[str]:
     """Best-effort match between selected HDMI capture card and ALSA input."""
     try:
-        status = capture_status or get_screen_capture().capture_source_status()
+        status = capture_status or get_screen_capture().capture_source_status(include_devices=False)
     except Exception:
         return None
 
@@ -6150,14 +6748,23 @@ async def _stop_livekit_agent() -> None:
 async def _lifespan(_app: FastAPI):
     global _selected_device_id_override, _device_capabilities_cache, _device_capabilities_cache_at
 
+    await asyncio.to_thread(validate_camera_devices)
+    contexts = load_device_contexts()
     loaded_device = str(_load_device_context_state().get("selected_device_id") or "").strip()
     if _is_valid_discovered_device_id(loaded_device):
         _selected_device_id_override = loaded_device
         get_config().dab_device_id = loaded_device
+    if contexts:
+        active_context = _active_device_context() or contexts[0]
+        await _apply_selected_device_context(active_context.contextId, persist=False)
 
     await asyncio.to_thread(_mark_stale_yts_live_commands)
     await asyncio.to_thread(_refresh_yts_test_catalog, _catalog_path_for_mode(False), False, False)
     await asyncio.to_thread(_refresh_yts_test_catalog, _catalog_path_for_mode(True), True, False)
+    try:
+        await _get_yts_discovered_devices(max_age_seconds=0.0)
+    except Exception as exc:
+        logger.warning("Startup YTS discover warmup failed: %s", exc)
     try:
         _loaded_cap = _load_device_capabilities_cache()
         if _loaded_cap:
@@ -6223,7 +6830,7 @@ def _legacy_status_payload() -> dict:
     screen_capture = _screen_capture
     if screen_capture is not None:
         try:
-            capture_status = screen_capture.capture_source_status()
+            capture_status = screen_capture.capture_source_status(include_devices=True)
         except Exception as exc:
             logger.warning("Failed to build websocket capture status snapshot: %s", exc)
             capture_status = {}
@@ -6543,17 +7150,35 @@ async def runtime_model_update(request: RuntimeModelUpdateRequest) -> RuntimeMod
 
 
 class DeviceContextSelectRequest(BaseModel):
-    device_id: str
+    device_id: Optional[str] = None
+    contextId: Optional[str] = None
+    context_id: Optional[str] = None
     persist: bool = True
 
 
 @app.get("/dab/devices", response_model=dict)
 async def dab_devices() -> dict:
-    """Discover DAB devices and return normalized device list."""
+    """Discover DAB and YTS devices and return normalized device list."""
+    yts_devices = await _get_yts_discovered_devices(max_age_seconds=30.0)
     devices, warning = await _discover_dab_devices()
-    selected_device_id = _resolve_selected_device_id()
+
     discovered_ids = {str(item.get("device_id") or "").strip() for item in devices}
-    if devices and selected_device_id not in discovered_ids:
+    for yd in yts_devices:
+        short_id = yd.get("short_id")
+        if not short_id:
+            continue
+        if short_id not in discovered_ids:
+            devices.append({
+                "device_id": short_id,
+                "label": yd.get("label") or f"YTS Device {short_id}",
+                "raw": yd,
+                "source": "yts"
+            })
+            discovered_ids.add(short_id)
+
+    selected_device_id = _resolve_selected_device_id()
+    selected_context = find_device_context(selected_device_id)
+    if devices and selected_device_id not in discovered_ids and selected_context is None:
         selected_device_id = str(devices[0].get("device_id") or "").strip()
         if selected_device_id:
             await _apply_selected_device_context(selected_device_id, persist=True)
@@ -6593,85 +7218,170 @@ async def dab_capabilities_cache(refresh: bool = False) -> dict:
 
 @app.get("/device/context", response_model=dict)
 async def device_context() -> dict:
-    """Return current selected DAB device context."""
+    """Return current selected unified device context."""
     devices = list(_discovered_devices_cache)
     warning: Optional[str] = None
     if not devices:
         devices, warning = await _discover_dab_devices()
     selected_device_id = _resolve_selected_device_id()
     discovered_ids = {str(item.get("device_id") or "").strip() for item in devices}
-    if devices and selected_device_id not in discovered_ids:
+    selected_context = find_device_context(selected_device_id)
+    if devices and selected_device_id not in discovered_ids and selected_context is None:
         selected_device_id = str(devices[0].get("device_id") or "").strip()
         if selected_device_id:
             await _apply_selected_device_context(selected_device_id, persist=True)
+    active_context = _active_device_context()
+    validation = await _validate_active_device_context(require_ready=False)
     return {
+        "context": _context_payload(active_context, active=True),
+        **_context_payload(active_context, active=True),
         "selected_device_id": selected_device_id,
         "configured_device_id": str(get_config().dab_device_id or "").strip(),
         "devices": devices,
+        "validation": validation,
         "warning": warning,
     }
 
 
 @app.post("/device/context/select", response_model=dict)
 async def select_device_context(request: DeviceContextSelectRequest) -> dict:
-    """Set selected DAB device context and persist it."""
-    requested_device_id = str(request.device_id or "").strip()
+    """Select one unified device context and apply all bound sources."""
+    requested_device_id = str(request.contextId or request.context_id or request.device_id or "").strip()
     if not _is_valid_discovered_device_id(requested_device_id):
-        raise HTTPException(status_code=400, detail="device_id is required")
+        raise HTTPException(status_code=400, detail="device_id or contextId is required")
+
+    requested_context = find_device_context(requested_device_id)
+    if requested_context is not None:
+        requested_device_id = requested_context.dabDeviceId
 
     devices, warning = await _discover_dab_devices()
     discovered_ids = {str(item.get("device_id") or "").strip() for item in devices}
-    if discovered_ids and requested_device_id not in discovered_ids:
+    if discovered_ids and requested_device_id not in discovered_ids and requested_context is None:
         raise HTTPException(status_code=400, detail=f"Unknown device_id: {requested_device_id}")
 
     state = await _apply_selected_device_context(requested_device_id, persist=bool(request.persist))
+    active_context = _active_device_context()
+    validation = await _validate_active_device_context(require_ready=False)
     return {
+        "context": _context_payload(active_context, active=True),
+        **_context_payload(active_context, active=True),
         "selected_device_id": str(state.get("selected_device_id") or "").strip(),
         "configured_device_id": str(get_config().dab_device_id or "").strip(),
         "devices": devices,
+        "validation": validation,
         "warning": warning,
     }
 
 
+@app.get("/device/contexts", response_model=dict)
+async def device_contexts() -> dict:
+    """Return all configured unified device contexts with readiness status."""
+    active = _active_device_context()
+    contexts = []
+    for context in load_device_contexts():
+        is_active = active is not None and context.contextId == active.contextId
+        if is_active:
+            readiness = await _validate_active_device_context(require_ready=False)
+        else:
+            yts_discovery = await _get_yts_discovery_for_context(context)
+            yts_short_id = str((yts_discovery or {}).get("short_id") or "")
+            readiness = {
+                "valid": bool(context.dabDeviceId and context.ytsDeviceId and yts_discovery and context.irDeviceId and context.cameraPath and os.path.exists(context.cameraPath)),
+                "dabReady": bool(context.dabDeviceId),
+                "ytsReady": bool(context.ytsDeviceId and yts_discovery),
+                "ytsShortId": yts_short_id,
+                "ytsDiscoveredDevice": yts_discovery or {},
+                "irReady": bool(context.irDeviceId),
+                "cameraReady": bool(context.cameraPath and os.path.exists(context.cameraPath)),
+                "videoSource": context.videoSource,
+                "issues": ([] if context.cameraPath and os.path.exists(context.cameraPath) else [f"Video path for selected device {context.displayName} does not exist: {context.cameraPath or '(missing)'}"]),
+            }
+        contexts.append({**_context_payload(context, active=is_active), "readiness": readiness})
+    return {
+        "success": True,
+        "activeContextId": active.contextId if active else "",
+        "contexts": contexts,
+    }
+
+
+@app.get("/device/context/validate", response_model=dict)
+async def validate_device_context() -> dict:
+    """Validate active unified device context alignment."""
+    return await _validate_active_device_context(require_ready=False)
+
+
 @app.get("/dab/device-info", response_model=dict)
-async def dab_device_info(device_id: Optional[str] = None) -> dict:
+async def dab_device_info(device_id: Optional[str] = None, refresh: bool = False) -> dict:
     """Return DAB device metadata for selected or requested device."""
     current_selected_device_id = str(_resolve_selected_device_id() or "").strip()
     resolved_device_id = str(_resolve_selected_device_id(device_id) or "").strip()
     if not _is_valid_discovered_device_id(resolved_device_id):
         raise HTTPException(status_code=400, detail="No selected device available")
 
+    switched = False
     if str(device_id or "").strip() and resolved_device_id != current_selected_device_id:
-        await _apply_selected_device_context(resolved_device_id, persist=True)
+        await _apply_selected_device_context(resolved_device_id, persist=False)
+        switched = True
 
     try:
-        resp = await get_dab_client().get_device_info()
-    except DABError as exc:
+        try:
+            resp = await get_dab_client().get_device_info()
+            if resp.success:
+                return {
+                    "success": True,
+                    "device_id": resolved_device_id,
+                    "result": resp.data,
+                }
+        except Exception:
+            pass
+
+        context = find_device_context(resolved_device_id)
+        if context:
+            yts_short_id = await _resolve_yts_execution_device_id_for_context(context)
+            discovered = await _get_yts_discovery_for_context(context)
+            data = {
+                "deviceId": resolved_device_id,
+                "name": context.displayName,
+                "short_id": yts_short_id,
+                "ytsDiscoveredDevice": discovered or {},
+            }
+            if not refresh:
+                return {
+                    "success": bool(discovered),
+                    "device_id": resolved_device_id,
+                    "result": data,
+                    "source": "yts_discover",
+                }
+            if yts_short_id:
+                try:
+                    yts_res = await asyncio.to_thread(_run_yts_command, _get_yts_command_prefix() + ["check", yts_short_id])
+                    if yts_res["returncode"] == 0:
+                        stdout = yts_res["stdout"]
+                        user_agent_match = re.search(r"User-Agent:\s+(.*)", stdout)
+                        cert_scope_match = re.search(r"cert_scope:\s+(.*)", stdout)
+                        if user_agent_match:
+                            data["userAgent"] = user_agent_match.group(1).strip()
+                        if cert_scope_match:
+                            data["certScope"] = cert_scope_match.group(1).strip()
+
+                        return {
+                            "success": True,
+                            "device_id": resolved_device_id,
+                            "result": data,
+                            "source": "yts_check"
+                        }
+                except Exception:
+                    pass
+
         return {
             "success": False,
             "device_id": resolved_device_id,
             "result": {},
-            "error": str(exc),
+            "error": "Failed to load device info via DAB or YTS discover/check",
         }
-    except Exception as exc:
-        return {
-            "success": False,
-            "device_id": resolved_device_id,
-            "result": {},
-            "error": str(exc),
-        }
-    if not resp.success:
-        return {
-            "success": False,
-            "device_id": resolved_device_id,
-            "result": resp.data,
-            "error": str(resp.data.get("error") or "Failed to load device info"),
-        }
-    return {
-        "success": True,
-        "device_id": resolved_device_id,
-        "result": resp.data,
-    }
+    finally:
+        if switched:
+            await _apply_selected_device_context(current_selected_device_id, persist=False)
 
 
 @app.get("/dab/device-settings", response_model=dict)
@@ -6681,60 +7391,90 @@ async def dab_device_settings(device_id: Optional[str] = None) -> dict:
     resolved_device_id = str(_resolve_selected_device_id(device_id) or "").strip()
     if not _is_valid_discovered_device_id(resolved_device_id):
         raise HTTPException(status_code=400, detail="No selected device available")
+    if not await _is_dab_discovered_device(resolved_device_id):
+        values_payload = await _non_dab_settings_values_payload(resolved_device_id)
+        return {
+            "success": False,
+            "device_id": resolved_device_id,
+            "captured_at": values_payload.get("captured_at"),
+            "warning": values_payload.get("warning"),
+            "degraded": True,
+            "list_status": 0,
+            "list_error": values_payload.get("warning"),
+            "settings_count": 0,
+            "failed_reads": 0,
+            "settings": [],
+            "source": values_payload.get("source"),
+            "yts_check": values_payload.get("yts_check") or {},
+        }
 
+    switched = False
     if str(device_id or "").strip() and resolved_device_id != current_selected_device_id:
-        await _apply_selected_device_context(resolved_device_id, persist=True)
+        await _apply_selected_device_context(resolved_device_id, persist=False)
+        switched = True
 
-    catalog = await _get_device_dab_catalog_cached(resolved_device_id, force=False)
-    values_payload = await _get_device_settings_values_cached(resolved_device_id, force=False, throttle=True)
-    settings_entries = list((catalog.get("settings_list") or {}).get("list") or [])
-    by_key = {
-        str(item.get("key") or "").strip(): item
-        for item in (values_payload.get("values") or [])
-        if isinstance(item, dict)
-    }
-    settings_with_values: List[Dict[str, Any]] = []
-    for entry in settings_entries:
-        if not isinstance(entry, dict):
-            continue
-        key = str(entry.get("key") or "").strip()
-        merged = dict(entry)
-        if key and key in by_key:
-            merged.update(by_key[key])
-        settings_with_values.append(merged)
+    try:
+        catalog = await _get_device_dab_catalog_cached(resolved_device_id, force=False)
+        values_payload = await _get_device_settings_values_cached(resolved_device_id, force=False, throttle=True)
+        settings_entries = list((catalog.get("settings_list") or {}).get("list") or [])
+        by_key = {
+            str(item.get("key") or "").strip(): item
+            for item in (values_payload.get("values") or [])
+            if isinstance(item, dict)
+        }
+        settings_with_values: List[Dict[str, Any]] = []
+        for entry in settings_entries:
+            if not isinstance(entry, dict):
+                continue
+            key = str(entry.get("key") or "").strip()
+            merged = dict(entry)
+            if key and key in by_key:
+                merged.update(by_key[key])
+            settings_with_values.append(merged)
 
-    failed_reads = int(values_payload.get("failed") or 0)
-    settings_meta = catalog.get("settings_list") or {}
-    return {
-        "success": bool(settings_meta.get("success", True)),
-        "device_id": resolved_device_id,
-        "captured_at": str(values_payload.get("captured_at") or _utc_now_iso()),
-        "warning": settings_meta.get("warning"),
-        "degraded": bool(settings_meta.get("degraded")),
-        "list_status": int(settings_meta.get("status", 0) or 0),
-        "list_error": settings_meta.get("error"),
-        "settings_count": len(settings_with_values),
-        "failed_reads": failed_reads,
-        "settings": settings_with_values,
-    }
+        failed_reads = int(values_payload.get("failed") or 0)
+        settings_meta = catalog.get("settings_list") or {}
+        return {
+            "success": bool(settings_meta.get("success", True)),
+            "device_id": resolved_device_id,
+            "captured_at": str(values_payload.get("captured_at") or _utc_now_iso()),
+            "warning": settings_meta.get("warning"),
+            "degraded": bool(settings_meta.get("degraded")),
+            "list_status": int(settings_meta.get("status", 0) or 0),
+            "list_error": settings_meta.get("error"),
+            "settings_count": len(settings_with_values),
+            "failed_reads": failed_reads,
+            "settings": settings_with_values,
+        }
+    finally:
+        if switched:
+            await _apply_selected_device_context(current_selected_device_id, persist=False)
 
 
 @app.get("/dab/device-settings/values", response_model=dict)
 async def dab_device_setting_values(device_id: Optional[str] = None, force: bool = False) -> dict:
     """Refresh setting values only (system/settings/get) using cached catalog when possible."""
+    current_selected_device_id = str(_resolve_selected_device_id() or "").strip()
     resolved_device_id = str(_resolve_selected_device_id(device_id) or "").strip()
     if not _is_valid_discovered_device_id(resolved_device_id):
         raise HTTPException(status_code=400, detail="No selected device available")
+    if not await _is_dab_discovered_device(resolved_device_id):
+        return await _non_dab_settings_values_payload(resolved_device_id)
 
-    current_selected_device_id = str(_resolve_selected_device_id() or "").strip()
+    switched = False
     if str(device_id or "").strip() and resolved_device_id != current_selected_device_id:
-        await _apply_selected_device_context(resolved_device_id, persist=True)
+        await _apply_selected_device_context(resolved_device_id, persist=False)
+        switched = True
 
-    return await _get_device_settings_values_cached(
-        resolved_device_id,
-        force=bool(force),
-        throttle=not bool(force),
-    )
+    try:
+        return await _get_device_settings_values_cached(
+            resolved_device_id,
+            force=bool(force),
+            throttle=not bool(force),
+        )
+    finally:
+        if switched:
+            await _apply_selected_device_context(current_selected_device_id, persist=False)
 
 
 @app.get("/dab/device-system-state", response_model=dict)
@@ -6745,37 +7485,43 @@ async def dab_device_system_state(device_id: Optional[str] = None, refresh: bool
     if not _is_valid_discovered_device_id(resolved_device_id):
         raise HTTPException(status_code=400, detail="No selected device available")
 
+    switched = False
     if str(device_id or "").strip() and resolved_device_id != current_selected_device_id:
-        await _apply_selected_device_context(resolved_device_id, persist=True)
-
-    snapshot_path = _device_system_state_path(resolved_device_id)
-    if not refresh and snapshot_path.exists():
-        try:
-            cached = json.loads(snapshot_path.read_text(encoding="utf-8"))
-            if isinstance(cached, dict):
-                return cached
-        except Exception:
-            pass
-
-    catalog = await _get_device_dab_catalog_cached(resolved_device_id, force=bool(refresh))
-    values_payload = await _get_device_settings_values_cached(
-        resolved_device_id,
-        force=bool(refresh),
-        throttle=not bool(refresh),
-    )
-    snapshot = _build_device_capability_status_snapshot(
-        device_id=resolved_device_id,
-        catalog=catalog,
-        values_payload=values_payload,
-        snapshot_path=snapshot_path,
-    )
+        await _apply_selected_device_context(resolved_device_id, persist=False)
+        switched = True
 
     try:
-        snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception as exc:
-        logger.warning("Failed to persist device system state snapshot for %s: %s", resolved_device_id, exc)
+        snapshot_path = _device_system_state_path(resolved_device_id)
+        if not refresh and snapshot_path.exists():
+            try:
+                cached = json.loads(snapshot_path.read_text(encoding="utf-8"))
+                if isinstance(cached, dict):
+                    return cached
+            except Exception:
+                pass
 
-    return snapshot
+        catalog = await _get_device_dab_catalog_cached(resolved_device_id, force=bool(refresh))
+        values_payload = await _get_device_settings_values_cached(
+            resolved_device_id,
+            force=bool(refresh),
+            throttle=not bool(refresh),
+        )
+        snapshot = _build_device_capability_status_snapshot(
+            device_id=resolved_device_id,
+            catalog=catalog,
+            values_payload=values_payload,
+            snapshot_path=snapshot_path,
+        )
+
+        try:
+            snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as exc:
+            logger.warning("Failed to persist device system state snapshot for %s: %s", resolved_device_id, exc)
+
+        return snapshot
+    finally:
+        if switched:
+            await _apply_selected_device_context(current_selected_device_id, persist=False)
 
 
 async def _refresh_device_system_state_snapshot_safe(device_id: Optional[str] = None) -> None:
@@ -6797,14 +7543,14 @@ async def _refresh_device_setting_values_snapshot_safe(device_id: Optional[str] 
 @app.get("/capture/source", response_model=CaptureSourceResponse)
 async def capture_source() -> CaptureSourceResponse:
     """Return capture source mode and HDMI availability diagnostics."""
-    status = get_screen_capture().capture_source_status()
+    status = get_screen_capture().capture_source_status(include_devices=False)
     return CaptureSourceResponse(**status)
 
 
 @app.get("/capture/devices", response_model=dict)
 async def capture_devices() -> dict:
     """List available /dev/video* devices with kind/readability diagnostics."""
-    status = get_screen_capture().capture_source_status()
+    status = get_screen_capture().capture_source_status(include_devices=True)
     return {
         "configured_source": status.get("configured_source"),
         "selected_video_device": status.get("selected_video_device"),
@@ -6818,7 +7564,24 @@ async def capture_devices() -> dict:
 async def capture_select(request: CaptureSelectRequest) -> CaptureSourceResponse:
     """Select capture source and /dev/video device (HDMI card or camera)."""
     try:
+        context = _active_device_context()
+        if context is not None:
+            requested_device = str(request.device or "").strip()
+            requested_source = str(request.source or "").strip().lower()
+            if requested_device and requested_device != context.cameraPath:
+                raise ValueError(
+                    f"Capture device {requested_device} is not mapped to active device context {context.displayName}."
+                )
+            if requested_source in {"camera", "camera-capture", "hdmi", "hdmi-capture", "capture-card", "auto", ""}:
+                if not context.cameraPath:
+                    raise ValueError(
+                        f"Video mapping missing for selected device {context.displayName}. Please configure camera_devices.json."
+                    )
+                request.source = context.videoSource
+                request.device = context.cameraPath
+                request.preferred_kind = "hdmi" if context.videoSource == "hdmi-capture" else "camera"
         capture = get_screen_capture()
+        previous_status = capture.capture_source_status(include_devices=False)
         status = capture.set_capture_preference(
             source=request.source,
             device=request.device,
@@ -6826,17 +7589,22 @@ async def capture_select(request: CaptureSelectRequest) -> CaptureSourceResponse
             rotation_degrees=request.rotation_degrees,
             persist=bool(request.persist),
         )
+        selection_changed = any(
+            previous_status.get(key) != status.get(key)
+            for key in ("configured_source", "selected_video_device", "preferred_video_kind", "rotation_degrees")
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
     # Source/device switch must reset active live stream workers so they do
     # not keep stale FFmpeg/WebRTC bindings to previous camera/audio nodes.
-    with contextlib.suppress(Exception):
-        await _live_av_stream_manager.stop()
-    with contextlib.suppress(Exception):
-        await _close_all_webrtc_peers()
+    if selection_changed:
+        with contextlib.suppress(Exception):
+            await _live_av_stream_manager.stop()
+        with contextlib.suppress(Exception):
+            await _close_all_webrtc_peers()
 
-    if bool(status.get("hdmi_configured")):
+    if selection_changed and bool(status.get("hdmi_configured")):
         async def _warm_capture_session() -> None:
             with contextlib.suppress(Exception):
                 await asyncio.to_thread(capture.ensure_hdmi_session, True)
@@ -6854,7 +7622,7 @@ async def audio_source(verbose: bool = False) -> dict:
 def _audio_source_payload(*, include_probe_details: bool) -> dict:
     """Return HDMI audio stream diagnostics with optional expensive probe details."""
     c = get_config()
-    capture_status = get_screen_capture().capture_source_status()
+    capture_status = get_screen_capture().capture_source_status(include_devices=False)
     guessed_device = _guess_audio_input_for_selected_capture(capture_status=capture_status)
     input_format, device = _resolve_audio_input(capture_status=capture_status)
     follow_active_video = bool(getattr(c, "hdmi_audio_follow_active_video", True))
@@ -6907,7 +7675,7 @@ def _audio_source_payload(*, include_probe_details: bool) -> dict:
 @app.get("/stream/status", response_model=dict)
 async def stream_status() -> dict:
     """Return a consolidated status report for video and audio streaming."""
-    video_status = get_screen_capture().capture_source_status()
+    video_status = get_screen_capture().capture_source_status(include_devices=False)
     audio_status = _audio_source_payload(include_probe_details=False)
     return {
         "video": video_status,
@@ -6930,6 +7698,10 @@ async def stream_av_status() -> dict:
 async def start_run(request: StartRunRequest) -> StartRunResponse:
     """Start a new automation run."""
     await _ensure_selected_device_context(request.device_id, persist=bool(request.device_id))
+    await _validate_active_device_context(require_ready=True)
+    active_context = _active_device_context()
+    if active_context is not None:
+        _log_active_context_for_job(active_context)
 
     active_run_id = _find_active_run_id()
     if active_run_id:
@@ -7082,21 +7854,87 @@ class YtsInteractiveSuggestRequest(BaseModel):
 @app.post("/yts/command/live")
 async def yts_live_command(request: YtsCommandRequest) -> dict:
     """Start a YTS command and capture live stdout/stderr for polling."""
-    selected_device_id = await _ensure_selected_device_context(request.device_id, persist=bool(request.device_id))
+    active_yts_job = _find_active_yts_live_command()
+    if active_yts_job:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Another YTS job is already running "
+                f"(command_id={active_yts_job.get('command_id')}). Stop it or wait until it finishes before starting a new job."
+            ),
+        )
+    requested_context = find_device_context(request.device_id) if request.device_id else None
+    context_selector = requested_context.dabDeviceId if requested_context is not None else None
+    selected_device_id = await _ensure_selected_device_context(context_selector, persist=bool(context_selector))
+    active_context = _active_device_context()
+    if active_context is None:
+        raise HTTPException(status_code=400, detail="Active device context is not configured")
+    _log_active_context_for_job(active_context)
+    validation = await _validate_active_yts_context_for_start(active_context)
+    yts_execution_device_id = str(validation.get("ytsShortId") or "").strip()
+    if not yts_execution_device_id:
+        yts_execution_device_id = await _require_yts_short_id_for_context(active_context)
+    request.device_id = yts_execution_device_id
+    for option in list(request.global_options.keys()):
+        normalized_option = str(option or "").strip().lower()
+        if normalized_option in {"--device", "--device-id", "--device_id", "-d"}:
+            raw_option_device = request.global_options.get(option)
+            if raw_option_device and not await _yts_device_id_belongs_to_context(raw_option_device, active_context):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"YTS device_id={raw_option_device} is not mapped to active device context {active_context.displayName}.",
+                )
+            request.global_options[option] = yts_execution_device_id
 
     if str(request.command or "").strip().lower() == "test":
         params = list(request.params or [])
-        raw_test_device = params[0] if params else selected_device_id
-        resolved_test_device = await _resolve_yts_runner_device_id(raw_test_device)
         if params:
-            params[0] = resolved_test_device
+            raw_test_device = params[0]
+            if not await _yts_device_id_belongs_to_context(raw_test_device, active_context):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"YTS device_id={raw_test_device} is not mapped to active device context {active_context.displayName}.",
+                )
+            params[0] = yts_execution_device_id
         else:
-            params = [resolved_test_device]
+            params = [yts_execution_device_id]
         request.params = params
+    else:
+        command_name = str(request.command or "").strip().lower()
+        device_param_commands = {
+            "launch",
+            "stop",
+            "cert",
+            "check",
+            "reset",
+            "wakeup",
+            "evergreen-channel",
+            "evergreen-update",
+        }
+        if command_name in device_param_commands:
+            params = list(request.params or [])
+            if params:
+                raw_device = params[0]
+                if not await _yts_device_id_belongs_to_context(raw_device, active_context):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"YTS device_id={raw_device} is not mapped to active device context {active_context.displayName}.",
+                    )
+                params[0] = yts_execution_device_id
+            else:
+                params = [yts_execution_device_id]
+            request.params = params
 
     command_id = str(uuid.uuid4())
     state = _new_yts_live_state(command_id, bool(request.interactive_ai))
-    state["device_id"] = selected_device_id
+    state["device_id"] = yts_execution_device_id
+    state["configured_yts_device_id"] = active_context.ytsDeviceId
+    state["dab_device_id"] = active_context.dabDeviceId
+    state["context_id"] = active_context.contextId
+    state["camera_path"] = active_context.cameraPath
+    state["audio_device"] = active_context.audioDevice
+    state["gemini_feed_source"] = active_context.cameraPath
+    state["device_context_validation"] = validation
     state["record_video"] = bool(request.record_video)
     state["record_audio"] = bool(request.record_video and request.record_audio)
     state["video_recording_status"] = "pending" if request.record_video else "disabled"
@@ -7106,6 +7944,8 @@ async def yts_live_command(request: YtsCommandRequest) -> dict:
         if len(params) >= 2:
             state["test_id"] = str(params[1]).strip()
     _yts_live_commands[command_id] = state
+    state["command"] = " ".join(_build_yts_command(request))
+    state["logs"].append({"stream": "system", "message": f"Queued YTS command: {state['command']}"})
     _write_yts_terminal_log_artifact(state)
     _persist_yts_live_state(state)
     if request.interactive_ai:
@@ -7114,7 +7954,8 @@ async def yts_live_command(request: YtsCommandRequest) -> dict:
     return {
         "command_id": command_id,
         "status": state["status"],
-        "device_id": selected_device_id,
+        "device_id": yts_execution_device_id,
+        "context": _context_payload(active_context, active=True),
     }
 
 
@@ -7666,7 +8507,7 @@ async def stream_hdmi() -> StreamingResponse:
     """MJPEG stream from HDMI capture card for browser live preview."""
     config = get_config()
     capture = get_screen_capture()
-    status = capture.capture_source_status()
+    status = capture.capture_source_status(include_devices=False)
 
     if not status.get("hdmi_configured"):
         raise HTTPException(
@@ -7686,14 +8527,14 @@ async def stream_hdmi() -> StreamingResponse:
                 capture.get_hdmi_stream_frame_jpeg, quality=config.hdmi_stream_jpeg_quality
             )
             if frame is None:
-                await asyncio.sleep(0.08)
+                await asyncio.sleep(0.02)
                 continue
             headers = (
                 b"Content-Type: image/jpeg\r\n"
                 + f"Content-Length: {len(frame)}\r\n\r\n".encode("ascii")
             )
             yield boundary + headers + frame + b"\r\n"
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(0.001)
 
     return StreamingResponse(
         frame_generator(),
@@ -7718,7 +8559,7 @@ async def stream_audio() -> StreamingResponse:
 
     capture = get_screen_capture()
     capture.ensure_hdmi_session(force=True)
-    capture_status = capture.capture_source_status()
+    capture_status = capture.capture_source_status(include_devices=False)
     strict_source_lock = bool(getattr(c, "hdmi_audio_follow_active_video", True)) and bool(
         str(capture_status.get("hdmi_device") or "").strip()
     )
@@ -7848,16 +8689,34 @@ async def manual_action(request: ManualActionRequest) -> ManualActionResponse:
             or params.get("mode")
             or "DAB"
         ).strip().upper()
+        # Manual remote control is a hot path: avoid discovery/camera validation
+        # here so key presses are sent immediately.
+        active_context = _active_device_context()
 
         if control_mode == "IR":
             ir_service = _get_ir_service()
-            ir_device_id = str(
+            provided_ir_id = str(
                 request.ir_device_id
                 or params.get("ir_device_id")
                 or params.get("irDeviceId")
                 or params.get("device_id")
-                or "samsung_tv_default"
-            ).strip() or "samsung_tv_default"
+                or ""
+            ).strip()
+
+            if active_context is not None:
+                ir_device_id = active_context.irDeviceId
+                if provided_ir_id and provided_ir_id not in {ir_device_id, "samsung_tv_default"}:
+                    return ManualActionResponse(
+                        success=False,
+                        action=action,
+                        error=(
+                            f"IR device {provided_ir_id} is not mapped to active device context "
+                            f"{active_context.displayName}."
+                        ),
+                    )
+            else:
+                ir_device_id = provided_ir_id or "samsung_tv_default"
+
             result = await asyncio.to_thread(ir_service.send_dab_style_action, ir_device_id, action)
             success = bool(result.get("success"))
             return ManualActionResponse(
@@ -8220,15 +9079,22 @@ async def manual_action(request: ManualActionRequest) -> ManualActionResponse:
 @app.get("/ir/status")
 async def ir_status() -> dict:
     service = _get_ir_service()
-    return await asyncio.to_thread(service.status)
+    status = await asyncio.to_thread(service.status)
+    active_context = _active_device_context()
+    if active_context:
+        status["active_device_id"] = active_context.irDeviceId
+    return status
 
 
 @app.get("/ir/devices")
 async def ir_devices() -> dict:
     service = _get_ir_service()
     devices = await asyncio.to_thread(service.list_devices)
+    active_context = _active_device_context()
+    active_ir_id = active_context.irDeviceId if active_context else "samsung_tv_default"
     return {
         "brand": "Samsung",
+        "active_device_id": active_ir_id,
         "devices": devices,
     }
 
@@ -8259,6 +9125,19 @@ async def ir_train(request: IrTrainRequest) -> dict:
 
 @app.post("/ir/send")
 async def ir_send(request: IrSendRequest) -> dict:
+    active_context = _active_device_context()
+    requested_device_id = str(request.device_id or "").strip()
+    if active_context is not None:
+        _log_active_context_for_job(active_context)
+        if requested_device_id and requested_device_id not in {active_context.irDeviceId, "samsung_tv_default"}:
+            raise HTTPException(
+                status_code=400,
+                detail=f"IR device {requested_device_id} is not mapped to active device context {active_context.displayName}.",
+            )
+        request.device_id = active_context.irDeviceId
+    elif not requested_device_id:
+        request.device_id = "samsung_tv_default"
+
     service = _get_ir_service()
     result = await asyncio.to_thread(
         service.send_key,
@@ -8493,6 +9372,9 @@ async def dab_device_current_settings(device_id: Optional[str] = None, force: bo
         "count": int(values.get("count") or 0),
         "failed": int(values.get("failed") or 0),
         "current_setting_values": list(values.get("values") or []),
+        "warning": values.get("warning"),
+        "source": values.get("source"),
+        "yts_check": values.get("yts_check") or {},
     }
 
 

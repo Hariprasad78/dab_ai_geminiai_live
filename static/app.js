@@ -15,6 +15,9 @@
     catalog: [],
     selectedTests: new Set(),
     advancedCommand: 'launch',
+    activeContext: null,
+    contexts: [],
+    ytsJobRunning: false,
   };
 
   const commandDefs = {
@@ -69,7 +72,8 @@
       let detail = response.statusText;
       try {
         const payload = await response.json();
-        detail = payload.detail || detail;
+        const rawDetail = payload.detail || detail;
+        detail = typeof rawDetail === 'string' ? rawDetail : (rawDetail?.message || JSON.stringify(rawDetail));
       } catch (_) {}
       throw new Error(detail || response.statusText);
     }
@@ -149,7 +153,7 @@
   }
 
   function syncTestDeviceFromTarget(force = false) {
-    const top = $('target-device-id').value.trim();
+    const top = state.activeContext?.validation?.ytsShortId || state.activeContext?.ytsShortId || state.activeContext?.ytsDeviceId || $('target-device-id').value.trim();
     const test = $('test-device-input');
     if (!top || !test) return;
     if (force || !test.value.trim()) test.value = top;
@@ -181,19 +185,40 @@
     target.style.color = isError ? 'var(--danger)' : '';
   }
 
+  function renderActiveContext(validation = null) {
+    const ctx = state.activeContext || {};
+    const panel = $('active-device-context-panel');
+    const issues = validation?.issues || [];
+    const ytsRunnerId = validation?.ytsShortId || ctx.validation?.ytsShortId || ctx.ytsShortId || ctx.ytsDeviceId || '';
+    const lines = ctx.contextId ? [
+      `Selected Device: ${ctx.displayName || ctx.contextId}`,
+      `DAB: ${ctx.dabDeviceId || '--'}`,
+      `YTS: ${ytsRunnerId || '--'}`,
+      `YTS Config: ${ctx.ytsDeviceId || '--'}`,
+      `IR: ${ctx.irDeviceId || '--'}`,
+      `Video Source: ${ctx.videoSource || '--'}`,
+      `Camera: ${ctx.cameraPath || '--'}`,
+      `Audio: ${ctx.audioDevice || '--'}`,
+      issues.length ? `WARNING: ${issues[0]}` : 'Gemini Feed: READY',
+    ] : ['No selected device context.'];
+    if (panel) {
+      panel.textContent = lines.join(' · ');
+      panel.style.color = issues.length ? 'var(--warning)' : '';
+    }
+    if (ctx.dabDeviceId) $('target-device-id').value = ctx.dabDeviceId;
+    if (ytsRunnerId) $('test-device-input').value = ytsRunnerId;
+  }
+
   async function applyTargetDeviceSelection() {
-    const deviceType = $('target-device-type').value;
     const deviceId = $('target-device-id').value.trim();
     saveTargetDevice();
-    syncTestDeviceFromTarget(true);
     try {
-      await api('/capture/select', 'POST', {
-        source: deviceType === 'tv' ? 'camera-capture' : 'hdmi-capture',
-        preferred_kind: deviceType === 'tv' ? 'camera' : 'hdmi',
-        device: '',
-        persist: true,
-      });
-      renderTargetStatus(`${deviceType === 'tv' ? 'TV' : 'Setup Box'} routing applied${deviceId ? ` for ${deviceId}` : ''}.`);
+      const selected = await api('/device/context/select', 'POST', { device_id: deviceId, persist: true });
+      state.activeContext = selected.context || selected || state.activeContext;
+      if (state.activeContext && selected.validation) state.activeContext.validation = selected.validation;
+      renderActiveContext(selected.validation);
+      syncTestDeviceFromTarget(true);
+      renderTargetStatus(`Routing applied for ${state.activeContext?.displayName || deviceId}.`);
       await Promise.allSettled([loadCaptureSource(), loadCaptureDevices(), refreshStreamStatus()]);
     } catch (error) {
       renderTargetStatus(`Failed to apply routing: ${error.message}`, true);
@@ -211,6 +236,20 @@
       $('health-pill').className = 'pill pill-offline';
       showBanner('error', `Backend health check failed: ${error.message}`);
     }
+  }
+
+  async function loadDeviceContexts() {
+    const payload = await api('/device/contexts').catch(() => null);
+    state.contexts = Array.isArray(payload?.contexts) ? payload.contexts : [];
+    const current = await api('/device/context').catch(() => null);
+    state.activeContext = current?.context || current || state.activeContext || state.contexts.find((item) => item.active) || state.contexts[0] || null;
+    if (state.activeContext && current?.validation) state.activeContext.validation = current.validation;
+    if (state.activeContext?.dabDeviceId) {
+      $('target-device-id').value = state.activeContext.dabDeviceId;
+      $('target-device-type').value = inferDeviceType(state.activeContext.displayName || state.activeContext.dabDeviceId);
+    }
+    renderActiveContext(current?.validation);
+    syncTestDeviceFromTarget(true);
   }
 
   async function loadCaptureSource() {
@@ -235,6 +274,16 @@
     try {
       const data = await api('/capture/devices');
       const select = $('capture-device-select');
+      select.innerHTML = '';
+      const lockedCamera = state.activeContext?.cameraPath || data.selected_video_device || '';
+      if (lockedCamera) {
+        const option = document.createElement('option');
+        option.value = lockedCamera;
+        option.textContent = `${lockedCamera} [selected context]`;
+        select.appendChild(option);
+        select.value = lockedCamera;
+        return;
+      }
       select.innerHTML = '<option value="">device: auto</option>';
       (data.devices || []).forEach((device) => {
         if (!device.device) return;
@@ -250,9 +299,9 @@
   async function applyCaptureSelection() {
     try {
       await api('/capture/select', 'POST', {
-        source: $('capture-mode-select').value,
-        preferred_kind: $('capture-kind-select').value,
-        device: $('capture-device-select').value,
+        source: state.activeContext?.videoSource || 'camera-capture',
+        preferred_kind: state.activeContext?.videoSource === 'hdmi-capture' ? 'hdmi' : 'camera',
+        device: state.activeContext?.cameraPath || $('capture-device-select').value,
         persist: true,
       });
       setManualResult('Capture selection updated.');
@@ -533,7 +582,7 @@
   }
 
   function testRequestBody() {
-    const device = $('test-device-input').value.trim() || $('target-device-id').value.trim();
+    const device = $('test-device-input').value.trim() || state.activeContext?.validation?.ytsShortId || state.activeContext?.ytsShortId || state.activeContext?.ytsDeviceId || $('target-device-id').value.trim();
     if (!device) throw new Error('Device ID is required to run YTS tests.');
     syncTestDeviceFromTarget();
 
@@ -581,7 +630,7 @@
       container.appendChild(wrapper);
     });
     container.querySelectorAll('[data-advanced-arg="device"]').forEach((input) => {
-      if (!input.value) input.value = $('target-device-id').value.trim();
+      input.value = state.activeContext?.validation?.ytsShortId || state.activeContext?.ytsShortId || state.activeContext?.ytsDeviceId || $('target-device-id').value.trim();
     });
   }
 
@@ -593,7 +642,7 @@
     (def.args || []).forEach((arg) => {
       const input = document.querySelector(`[data-advanced-arg="${CSS.escape(arg.name)}"]`);
       let value = input ? String(input.value || '').trim() : '';
-      if (!value && arg.name === 'device') value = $('target-device-id').value.trim();
+      if (arg.name === 'device' && !value) value = state.activeContext?.validation?.ytsShortId || state.activeContext?.ytsShortId || state.activeContext?.ytsDeviceId || $('target-device-id').value.trim();
       if (!value) return;
       if (arg.multiple) params.push(...parseTokens(value));
       else params.push(value);
@@ -605,14 +654,26 @@
     const container = $('command-history-list');
     if (!state.history.length) {
       container.innerHTML = '<div class="empty-state slim">No YTS jobs yet.</div>';
+      setYtsButtonsLocked(false);
       return;
     }
+    setYtsButtonsLocked(state.history.some((item) => String(item.status || '').toLowerCase() === 'running'));
     container.innerHTML = state.history.map((item) => `
       <div class="history-item ${item.command_id === state.currentCommandId ? 'active' : ''}" data-command-id="${esc(item.command_id)}">
         <div><strong>${esc(item.command || '(starting...)')}</strong></div>
         <div class="meta">${esc(item.status)} · updated ${esc(item.updated_at || '')}</div>
         <div class="meta">${esc(item.command_id)}</div>
       </div>`).join('');
+  }
+
+  function setYtsButtonsLocked(locked) {
+    state.ytsJobRunning = !!locked;
+    ['run-test-btn', 'discover-run-btn', 'advanced-run-btn', 'action-discover-btn', 'action-run-tests-btn'].forEach((id) => {
+      const button = $(id);
+      if (!button) return;
+      button.disabled = !!locked;
+      button.title = locked ? 'A YTS job is already running.' : '';
+    });
   }
 
   function renderDownloads(data) {
@@ -658,7 +719,10 @@
   function renderInteractionLog(data) {
     const prompts = Array.isArray(data.prompts) ? data.prompts : [];
     const responses = Array.isArray(data.responses) ? data.responses : [];
-    if (!prompts.length && !responses.length) {
+    const aiTraceLogs = Array.isArray(data.logs)
+      ? data.logs.filter((entry) => String(entry?.stream || '').toLowerCase() === 'ai')
+      : [];
+    if (!prompts.length && !responses.length && !aiTraceLogs.length) {
       $('interaction-log').textContent = 'No interactive prompts or Gemini responses recorded for this job yet.';
       return;
     }
@@ -673,6 +737,12 @@
       lines.push('', 'Responses:');
       responses.forEach((response, index) => {
         lines.push(`  ${index + 1}. [${response.source || 'manual'}] ${response.message || ''}`);
+      });
+    }
+    if (aiTraceLogs.length) {
+      lines.push('', 'Gemini Activity:');
+      aiTraceLogs.forEach((entry, index) => {
+        lines.push(`  ${index + 1}. ${entry.operator_message || entry.message || ''}`);
       });
     }
     $('interaction-log').textContent = lines.join('\n');
@@ -722,7 +792,7 @@
       } catch (_) {
         stopCommandPolling();
       }
-    }, 1000);
+    }, 500);
   }
 
   async function loadHistory(preserve = true) {
@@ -739,12 +809,18 @@
 
   async function runLiveCommand(body, successMessage = '') {
     clearBanners();
+    if (state.ytsJobRunning) {
+      showBanner('warning', 'A YTS job is already running. Wait for it to finish before starting another job.');
+      return;
+    }
+    setYtsButtonsLocked(true);
     try {
       const started = await api('/yts/command/live', 'POST', body);
       if (successMessage) showBanner('info', successMessage);
-      await loadHistory(false);
       await openCommand(started.command_id, true);
+      void loadHistory(true);
     } catch (error) {
+      setYtsButtonsLocked(false);
       showBanner('error', `Failed to start YTS command: ${error.message}`);
     }
   }
@@ -998,6 +1074,7 @@
     switchWorkspace('yts');
     switchTab('test');
 
+    await loadDeviceContexts();
     await Promise.allSettled([
       loadHealth(),
       loadCaptureSource(),
@@ -1010,9 +1087,10 @@
     await resumeLastCommand();
 
     window.setInterval(loadHealth, 30000);
-    window.setInterval(refreshStreamStatus, 30000);
-    window.setInterval(loadCaptureSource, 30000);
-    window.setInterval(loadCaptureDevices, 30000);
+    window.setInterval(loadDeviceContexts, 60000);
+    window.setInterval(refreshStreamStatus, 60000);
+    window.setInterval(loadCaptureSource, 60000);
+    window.setInterval(loadCaptureDevices, 120000);
     window.setInterval(() => loadHistory(true), 30000);
   }
 
