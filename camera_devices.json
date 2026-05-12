@@ -1,0 +1,52 @@
+{
+  "devices": [
+    {
+      "contextId": "adt4",
+      "displayName": "ADT-4",
+      "dabDeviceId": "adt-4",
+      "ytsDeviceId": "42",
+      "adbDeviceId": "10.99.57.52:5555",
+      "irDeviceId": "adt4_ir",
+      "cameraId": "adt4_hdmi",
+      "videoSource": "hdmi-capture",
+      "cameraPath": "/dev/v4l/by-id/usb-MACROSILICON_USB3._0_capture-video-index0",
+      "audioDevice": "hw:3,0"
+    },
+    {
+      "contextId": "sony",
+      "displayName": "Sony TV",
+      "dabDeviceId": "sony",
+      "ytsDeviceId": "e9",
+      "adbDeviceId": "10.99.57.61:5555",
+      "irDeviceId": "sony_ir",
+      "cameraId": "sonytv_cam",
+      "videoSource": "camera-capture",
+      "cameraPath": "/dev/v4l/by-id/usb-046d_081b_CE135500-video-index0",
+      "audioDevice": "hw:4,0"
+    },
+    {
+      "contextId": "samsung",
+      "displayName": "Samsung TV",
+      "dabDeviceId": "samsung",
+      "ytsDeviceId": "39",
+      "adbDeviceId": "",
+      "irDeviceId": "samsung_tv_default",
+      "cameraId": "samsung_cam",
+      "videoSource": "camera-capture",
+      "cameraPath": "/dev/v4l/by-id/usb-EBP6415700137706NL_LG_Smart_Cam_01.00.00-video-index0",
+      "audioDevice": "hw:5,0"
+    },
+    {
+      "contextId": "kirkwood",
+      "displayName": "Kirkwood",
+      "dabDeviceId": "kirkwood",
+      "ytsDeviceId": "kirkwood",
+      "adbDeviceId": "",
+      "irDeviceId": "kirkwood_ir",
+      "cameraId": "kirkwood_cam",
+      "videoSource": "camera-capture",
+      "cameraPath": "/dev/kirkwood_cam",
+      "audioDevice": "hw:6,0"
+    }
+  ]
+}

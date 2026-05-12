@@ -63,13 +63,13 @@ class Config:
     dab_request_timeout: float = field(default_factory=lambda: float(os.environ.get("DAB_REQUEST_TIMEOUT", "120.0")))
     dab_max_retries: int = field(default_factory=lambda: int(os.environ.get("DAB_MAX_RETRIES", "3")))
     dab_keypress_timeout: float = field(
-        default_factory=lambda: float(os.environ.get("DAB_KEYPRESS_TIMEOUT", "0.8"))
+        default_factory=lambda: float(os.environ.get("DAB_KEYPRESS_TIMEOUT", "0.35"))
     )
     dab_keypress_max_retries: int = field(
         default_factory=lambda: int(os.environ.get("DAB_KEYPRESS_MAX_RETRIES", "0"))
     )
     manual_keypress_dedupe_window_ms: int = field(
-        default_factory=lambda: int(os.environ.get("MANUAL_KEYPRESS_DEDUPE_WINDOW_MS", "180"))
+        default_factory=lambda: int(os.environ.get("MANUAL_KEYPRESS_DEDUPE_WINDOW_MS", "80"))
     )
     youtube_app_id: str = field(default_factory=lambda: os.environ.get("YOUTUBE_APP_ID", "youtube"))
 

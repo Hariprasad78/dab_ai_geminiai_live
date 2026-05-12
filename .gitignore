@@ -37,6 +37,7 @@ coverage.xml
 # Credentials (never commit these)
 *.json
 !pyproject.toml
+!camera_devices.json
 service-account*.json
 credentials*.json
 

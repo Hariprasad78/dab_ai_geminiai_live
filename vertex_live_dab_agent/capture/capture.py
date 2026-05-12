@@ -14,6 +14,7 @@ from vertex_live_dab_agent.config import get_config
 from vertex_live_dab_agent.dab.client import DABClientBase
 from vertex_live_dab_agent.capture.camera_devices import (
     camera_label,
+    find_device_context,
     get_camera_path,
     validate_camera_devices,
 )
@@ -305,18 +306,9 @@ class ScreenCapture:
             if device is not None:
                 dev = str(device or "").strip()
                 if dev and not dev.startswith("/dev/"):
-                    raise ValueError("device must be a /dev/* path")
-                # Be tolerant to stale selections from UI while camera nodes are
-                # re-enumerating; fall back to auto device instead of hard 400.
-                if dev and not os.path.exists(dev):
-                    logger.warning("Requested capture device missing; falling back to auto: %s", dev)
-                    dev = ""
-                if dev and not self._is_capture_capable_device(dev):
-                    logger.warning(
-                        "Requested device is not capture-capable (index != 0); falling back to auto: %s",
-                        dev,
-                    )
-                    dev = ""
+                    raise ValueError("device must be an existing /dev/* path")
+                if dev and os.path.exists(dev) and not self._is_capture_capable_device(dev):
+                    raise ValueError("device is not capture-capable (requires /dev/video* index0)")
                 self._selected_video_device = dev or None
             elif source is not None and previous_source != self._image_source and self._selected_video_device:
                 # If caller switches capture source without specifying a device,
@@ -352,15 +344,14 @@ class ScreenCapture:
                 or previous_rotation != self._rotation_degrees
             )
 
-            self.close()
-            self._next_hdmi_probe_ts = 0.0
-            self._warned_no_hdmi = False
-
-            # Make camera switching return quickly; stream endpoints will lazily
-            # open and stabilize the session on demand.
-            self._hdmi = None
-
             if selection_changed:
+                self.close()
+                self._next_hdmi_probe_ts = 0.0
+                self._warned_no_hdmi = False
+
+                # Make camera switching return quickly; stream endpoints will lazily
+                # open and stabilize the session on demand.
+                self._hdmi = None
                 logger.info(
                     "Capture selection changed: source=%s preferred_kind=%s device=%s",
                     self._image_source,
@@ -371,7 +362,7 @@ class ScreenCapture:
             if persist:
                 self._save_capture_preference()
 
-            return self.capture_source_status()
+            return self.capture_source_status(include_devices=False)
 
     def _init_hdmi_session(self) -> Optional[HdmiCaptureSession]:
         if self._image_source not in {"auto", "hdmi-capture", "camera-capture"}:
@@ -396,6 +387,7 @@ class ScreenCapture:
         kind_pref = self._effective_kind_preference()
         explicit_device_requested = bool(configured)
         explicit_from_selection = bool((self._selected_video_device or "").strip())
+        explicit_from_context = find_device_context(configured) is not None
 
         device_details = self._list_video_device_details()
         if self._image_source == "hdmi-capture":
@@ -420,7 +412,7 @@ class ScreenCapture:
         # Recovery path: if a previously selected /dev/videoN disappears or
         # stops producing frames after switching sources, fall back to
         # auto-discovered peers of the requested kind.
-        if not explicit_device_requested or explicit_from_selection:
+        if (not explicit_device_requested or explicit_from_selection) and not explicit_from_context:
             candidates.extend([d for d in devs if d not in candidates])
 
         candidate_errors = []
@@ -596,7 +588,7 @@ class ScreenCapture:
             self._hdmi = self._init_hdmi_session()
             return self._hdmi is not None
 
-    def capture_source_status(self) -> Dict[str, Any]:
+    def capture_source_status(self, include_devices: bool = True) -> Dict[str, Any]:
         """Return capture source state for API/UI diagnostics."""
         with self._session_lock:
             hdmi_available = self._hdmi is not None
@@ -607,14 +599,16 @@ class ScreenCapture:
             preferred_video_kind = self._preferred_video_kind
             effective_preferred_kind = self._effective_kind_preference()
             rotation_degrees = self._rotation_degrees
-        video_details = self._list_video_device_details()
+        video_details = self._list_video_device_details() if include_devices else []
         video_devices = [d["device"] for d in video_details]
-        device_readable = {dev: bool(os.access(dev, os.R_OK)) for dev in video_devices}
-        try:
-            video_gid = grp.getgrnam("video").gr_gid
-            user_in_video_group = video_gid in os.getgroups()
-        except Exception:
-            user_in_video_group = None
+        device_readable = {dev: bool(os.access(dev, os.R_OK)) for dev in video_devices} if include_devices else {}
+        user_in_video_group = None
+        if include_devices:
+            try:
+                video_gid = grp.getgrnam("video").gr_gid
+                user_in_video_group = video_gid in os.getgroups()
+            except Exception:
+                user_in_video_group = None
 
         return {
             "configured_source": configured_source,
@@ -654,11 +648,9 @@ class ScreenCapture:
             )
             frame = self._hdmi.capture_jpeg_bytes(quality=jpeg_quality)
             if frame is None:
-                self._hdmi_stream_miss_count += 1
-                # Do not tear down capture on single transient misses.
-                if self._hdmi_stream_miss_count < self._hdmi_stream_reset_after_misses:
+                if not self._hdmi.last_error:
                     return None
-                self._hdmi_stream_miss_count = 0
+                self._last_hdmi_error = self._hdmi.last_error
                 failed_session = self._hdmi
                 failed_session.close()
                 self._hdmi = self._init_hdmi_session()
@@ -686,10 +678,9 @@ class ScreenCapture:
 
             frame = self._hdmi.read_frame()
             if frame is None:
-                self._hdmi_stream_miss_count += 1
-                if self._hdmi_stream_miss_count < self._hdmi_stream_reset_after_misses:
+                if not self._hdmi.last_error:
                     return None
-                self._hdmi_stream_miss_count = 0
+                self._last_hdmi_error = self._hdmi.last_error
                 failed_session = self._hdmi
                 failed_session.close()
                 self._hdmi = self._init_hdmi_session()

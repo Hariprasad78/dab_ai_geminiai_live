@@ -121,7 +121,8 @@
               <div class="surface">
                 <h3>Capture Routing</h3>
                 <div class="status-line" id="capture-source-info">Checking capture source…</div>
-                <div class="field-grid capture-grid">
+                <div class="status-line" id="active-device-context-panel">Loading selected device routing…</div>
+                <div class="field-grid capture-grid" style="display:none;">
                   <label>
                     <span>Source</span>
                     <select id="capture-mode-select">
@@ -180,7 +181,7 @@
             <div class="field-grid two-col">
               <label>
                 <span>Device ID*</span>
-                <input id="test-device-input" placeholder="e.g. adb:123456 or 10.99.57.51" />
+                <input id="test-device-input" placeholder="Uses selected device context" />
               </label>
               <label>
                 <span>JSON Output File</span>

@@ -716,9 +716,13 @@
       <span class="model-status" id="live-model-status">Loading live model...</span>
     </div>
     <div class="device-toolbar">
-      <label for="dab-device-select">DAB Device</label>
+      <label for="dab-device-select">Selected Device</label>
       <select id="dab-device-select" onchange="onDabDeviceChanged()">
         <option value="">Loading devices...</option>
+      </select>
+      <label for="video-source-select">Video Source</label>
+      <select id="video-source-select" onchange="onVideoSourceChanged()">
+        <option value="">Loading sources...</option>
       </select>
       <button class="secondary mini-btn" onclick="refreshDabDevices()">Refresh</button>
       <span class="device-status" id="dab-device-status">Discovering devices...</span>
@@ -932,7 +936,7 @@
         <div style="font-size:0.8rem; color:var(--text-muted); margin-bottom:0.75rem;" id="capture-source-info">
           Checking capture source...
         </div>
-        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0.5rem; margin-bottom:0.65rem;">
+        <div style="display:none; grid-template-columns: 1fr 1fr; gap:0.5rem; margin-bottom:0.65rem;">
           <select id="capture-mode-select">
             <option value="auto">auto</option>
             <option value="hdmi-capture">hdmi-capture</option>
@@ -945,7 +949,8 @@
             <option value="camera">kind: camera</option>
           </select>
         </div>
-        <div style="display:grid; grid-template-columns: 1fr auto auto; gap:0.5rem; margin-bottom:0.75rem;">
+        <div id="active-device-context-panel" class="yts-subtle" style="margin-bottom:0.75rem;">Loading selected device routing...</div>
+        <div style="display:none; grid-template-columns: 1fr auto auto; gap:0.5rem; margin-bottom:0.75rem;">
           <select id="capture-device-select">
             <option value="">device: auto</option>
           </select>
@@ -984,9 +989,9 @@
               <option value="IR">IR</option>
             </select>
           </div>
-          <div>
+          <div style="display:none;">
             <label for="ir-device-select" style="margin-bottom:0.25rem;">IR Device (Samsung)</label>
-            <select id="ir-device-select" onchange="onIrDeviceChanged()">
+            <select id="ir-device-select" onchange="onIrDeviceChanged()" disabled>
               <option value="samsung_tv_default">Samsung TV (Default)</option>
             </select>
           </div>
@@ -1131,10 +1136,6 @@
           <label style="margin-top:1rem;">Interactive / Gemini Log</label>
           <div class="yts-result-box" id="yts-interaction-log">Gemini suggestions, prompt history, and manual terminal responses will appear here.</div>
           <div id="yts-download-container" style="margin-top:0.75rem;"></div>
-          <label style="margin-top:1rem;">Validation Report (In-App)</label>
-          <div id="yts-report-viewer" class="yts-report-viewer-wrap">
-            <div class="yts-report-empty">Open or run a YTS job to render its HTML report here.</div>
-          </div>
         </div>
       </div>
       <div class="yts-runner-panel">
@@ -1367,6 +1368,8 @@
   let lastTrainedIrKey = '--';
   let lastIrSendResult = '--';
   let selectedDabDeviceId = '';
+  let activeDeviceContext = null;
+  let configuredDeviceContexts = [];
   let discoveredDabDevices = [];
   let dabDeviceSettingsSnapshot = [];
   let dabDeviceSettingsMeta = { capturedAt: '', failedReads: 0, warning: '', degraded: false };
@@ -1607,7 +1610,8 @@
     const resp = await fetch(apiBase + path, opts);
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({ detail: resp.statusText }));
-      throw new Error(err.detail || resp.statusText);
+      const detail = err.detail;
+      throw new Error(typeof detail === 'string' ? detail : (detail?.message || JSON.stringify(detail || resp.statusText)));
     }
     const data = await resp.json();
     if (path === '/action' && method === 'POST' && body && String(body.action || '').toUpperCase() === 'SET_SETTING') {
@@ -2666,6 +2670,7 @@
     try {
       const data = await api('/ir/devices');
       irDeviceList = Array.isArray(data.devices) ? data.devices : [];
+      const activeIrDeviceId = String(data.active_device_id || activeDeviceContext?.irDeviceId || '').trim();
       select.innerHTML = '';
       if (!irDeviceList.length) {
         const fallback = document.createElement('option');
@@ -2682,9 +2687,15 @@
           option.textContent = `${item.model || id} (${item.key_count || 0} keys)`;
           select.appendChild(option);
         }
-        const preferred = String(preferredDeviceId || selectedIrDeviceId || localStorage.getItem(IR_DEVICE_STORAGE_KEY) || '').trim();
+        const preferred = String(activeIrDeviceId || preferredDeviceId || selectedIrDeviceId || localStorage.getItem(IR_DEVICE_STORAGE_KEY) || '').trim();
         const exists = irDeviceList.some(item => String(item.device_id || '').trim() === preferred);
         if (exists) {
+          selectedIrDeviceId = preferred;
+        } else if (preferred) {
+          const option = document.createElement('option');
+          option.value = preferred;
+          option.textContent = `${preferred} (active context)`;
+          select.appendChild(option);
           selectedIrDeviceId = preferred;
         } else {
           const samsungCandidate = irDeviceList.find(item => {
@@ -2812,17 +2823,45 @@
     return '';
   }
 
+  function activeYtsRunnerDeviceId(validation = null) {
+    return String(
+      validation?.ytsShortId ||
+      activeDeviceContext?.ytsShortId ||
+      activeDeviceContext?.validation?.ytsShortId ||
+      activeDeviceContext?.ytsDeviceId ||
+      selectedDabDeviceId ||
+      ''
+    ).trim();
+  }
+
   function setSelectedDabDeviceId(deviceId, persist = true) {
     const next = isValidDabDeviceId(deviceId) ? String(deviceId || '').trim() : '';
     selectedDabDeviceId = next;
     const select = document.getElementById('dab-device-select');
     if (select && select.value !== next) select.value = next;
+    const sourceSelect = document.getElementById('video-source-select');
+    if (sourceSelect && sourceSelect.value !== next) sourceSelect.value = next;
     const liveSelect = document.getElementById('live-stream-device-select');
     if (liveSelect && liveSelect.value !== next) liveSelect.value = next;
     const selectedEl = document.getElementById('dab-selected-device');
     if (selectedEl) selectedEl.textContent = next || '--';
     const ytsDeviceEl = document.getElementById('yts-arg-test-device');
-    if (ytsDeviceEl && next && ytsDeviceEl.value !== next) ytsDeviceEl.value = next;
+    if (ytsDeviceEl && next && !ytsDeviceEl.value.trim()) ytsDeviceEl.value = activeYtsRunnerDeviceId();
+    if (activeDeviceContext?.irDeviceId) {
+      selectedIrDeviceId = activeDeviceContext.irDeviceId;
+      localStorage.setItem(IR_DEVICE_STORAGE_KEY, selectedIrDeviceId);
+      const irSelect = document.getElementById('ir-device-select');
+      if (irSelect) {
+        if (![...irSelect.options].some(opt => opt.value === selectedIrDeviceId)) {
+          const opt = document.createElement('option');
+          opt.value = selectedIrDeviceId;
+          opt.textContent = selectedIrDeviceId;
+          irSelect.appendChild(opt);
+        }
+        irSelect.value = selectedIrDeviceId;
+      }
+    }
+    renderActiveDeviceContextPanel();
     if (persist) {
       if (next) localStorage.setItem(DAB_DEVICE_STORAGE_KEY, next);
       else localStorage.removeItem(DAB_DEVICE_STORAGE_KEY);
@@ -2833,11 +2872,46 @@
     const value = String(deviceId || '').trim();
     try {
       if (value || deviceId === '') {
-        await api('/device/context/select', 'POST', { device_id: value, persist: !!persist });
+        const data = await api('/device/context/select', 'POST', { device_id: value, persist: !!persist });
+        activeDeviceContext = data.context || data || activeDeviceContext;
+        if (activeDeviceContext && data.validation) activeDeviceContext.validation = data.validation;
+        if (activeDeviceContext?.dabDeviceId) selectedDabDeviceId = activeDeviceContext.dabDeviceId;
+        const ytsDeviceEl = document.getElementById('yts-arg-test-device');
+        if (ytsDeviceEl) ytsDeviceEl.value = activeYtsRunnerDeviceId(data.validation);
+        if (activeDeviceContext?.irDeviceId) selectedIrDeviceId = activeDeviceContext.irDeviceId;
+        if (activeDeviceContext?.irDeviceId) localStorage.setItem(IR_DEVICE_STORAGE_KEY, selectedIrDeviceId);
+        renderActiveDeviceContextPanel(data.validation);
+        await Promise.allSettled([loadIrDevices(selectedIrDeviceId), loadCaptureSource(), refreshCaptureDevices(), refreshStreamDiagnostics()]);
       }
     } catch (_) {
       // Keep local UI responsive even if persistence fails.
     }
+  }
+
+  function renderActiveDeviceContextPanel(validation = null) {
+    const el = document.getElementById('active-device-context-panel');
+    if (!el) return;
+    const ctx = activeDeviceContext || {};
+    if (!ctx.contextId && !ctx.dabDeviceId) {
+      el.textContent = 'No selected device context.';
+      setUiColor(el, '--warning');
+      return;
+    }
+    const issues = validation?.issues || ctx.validation?.issues || [];
+    const readyText = issues.length ? `WARNING: ${issues[0]}` : 'Gemini Feed: READY';
+    const ytsRunnerId = activeYtsRunnerDeviceId(validation);
+    el.innerHTML = [
+      `Selected Device: ${escHtml(ctx.displayName || ctx.contextId || selectedDabDeviceId || '--')}`,
+      `DAB: ${escHtml(ctx.dabDeviceId || selectedDabDeviceId || '--')}`,
+      `YTS: ${escHtml(ytsRunnerId || ctx.ytsDeviceId || '--')}`,
+      `YTS Config: ${escHtml(ctx.ytsDeviceId || '--')}`,
+      `IR: ${escHtml(ctx.irDeviceId || '--')}`,
+      `Video Source: ${escHtml(ctx.videoSource || '--')}`,
+      `Camera: ${escHtml(ctx.cameraPath || '--')}`,
+      `Audio: ${escHtml(ctx.audioDevice || '--')}`,
+      escHtml(readyText),
+    ].join('<br>');
+    el.style.color = issues.length ? uiColor('--warning') : uiColor('--success');
   }
 
   function refreshLiveStreamDeviceOptions(adbDevices = []) {
@@ -2899,6 +2973,8 @@
 
   function getDiscoveredDabDevice(deviceId) {
     const resolved = String(deviceId || '').trim();
+    const context = configuredDeviceContexts.find(item => String(item.dabDeviceId || item.contextId || '').trim() === resolved);
+    if (context) return { device_id: context.dabDeviceId, label: context.displayName, raw: context };
     return discoveredDabDevices.find(device => String(device.device_id || '').trim() === resolved) || null;
   }
 
@@ -2915,6 +2991,17 @@
       return;
     }
     const merged = { ...(discovered?.raw || {}), ...(discovered || {}), ...info };
+    const ctx = activeDeviceContext || {};
+    const contextFields = [
+      ['Selected Device', ctx.displayName],
+      ['DAB', ctx.dabDeviceId],
+      ['YTS', ctx.ytsDeviceId],
+      ['IR', ctx.irDeviceId],
+      ['Video Source', ctx.videoSource],
+      ['Camera', ctx.cameraPath],
+      ['Audio', ctx.audioDevice],
+      ['Gemini Feed', ctx.cameraPath ? 'READY' : 'MISSING'],
+    ];
     const overviewFields = [
       ['Name', merged.name || merged.deviceName],
       ['Device ID', merged.deviceId || merged.device_id],
@@ -2946,6 +3033,8 @@
       <div class="device-window">
         <div class="device-section">
           <h3>Overview</h3>
+          ${renderDeviceKv(contextFields)}
+          <h3 style="margin-top:0.95rem;">DAB Details</h3>
           ${renderDeviceKv(overviewFields)}
           <div class="device-raw">
             <details>
@@ -2978,7 +3067,7 @@
     infoStatusEl.textContent = 'Loading';
     statusEl.textContent = `Loading device info for ${resolved}...`;
     try {
-      const data = await api(`/dab/device-info?device_id=${encodeURIComponent(resolved)}`);
+      const data = await api(`/dab/device-info?device_id=${encodeURIComponent(resolved)}&refresh=${forceCatalogRefresh ? 'true' : 'false'}`);
       const discovered = getDiscoveredDabDevice(resolved);
       setSelectedDabDeviceId(resolved);
       infoStatusEl.textContent = data.success ? 'Loaded' : 'Unavailable';
@@ -2995,6 +3084,7 @@
 
   async function loadDabDevices(preferredDeviceId = null) {
     const select = document.getElementById('dab-device-select');
+    const sourceSelect = document.getElementById('video-source-select');
     const statusEl = document.getElementById('dab-device-status');
     const countEl = document.getElementById('dab-device-count');
     if (!select) return;
@@ -3002,35 +3092,55 @@
     statusEl.textContent = 'Discovering devices...';
     try {
       const context = await api('/device/context').catch(() => null);
+      activeDeviceContext = context?.context || context || activeDeviceContext;
+      if (activeDeviceContext && context?.validation) activeDeviceContext.validation = context.validation;
+      const contextsPayload = await api('/device/contexts').catch(() => null);
+      configuredDeviceContexts = Array.isArray(contextsPayload?.contexts) ? contextsPayload.contexts : [];
       const data = await api('/dab/devices');
       discoveredDabDevices = (Array.isArray(data.devices) ? data.devices : []).filter(device => isValidDabDeviceId(device.device_id));
       countEl.textContent = String(discoveredDabDevices.length);
       select.innerHTML = '';
-      if (!discoveredDabDevices.length) {
+      if (sourceSelect) sourceSelect.innerHTML = '';
+      const selectorItems = configuredDeviceContexts.length
+        ? configuredDeviceContexts.map(item => ({
+            device_id: item.dabDeviceId || item.dab_device_id || item.contextId,
+            label: item.displayName || item.contextId || item.dabDeviceId,
+            raw: item,
+          })).filter(item => isValidDabDeviceId(item.device_id))
+        : discoveredDabDevices;
+      if (!selectorItems.length) {
         select.innerHTML = '<option value="">No devices found</option>';
         setSelectedDabDeviceId('', false);
         document.getElementById('dab-device-info-status').textContent = 'No devices';
-        statusEl.textContent = 'No DAB devices discovered yet.';
+        statusEl.textContent = 'No device contexts configured yet.';
         renderDabDeviceSummary(null);
         return;
       }
-      for (const device of discoveredDabDevices) {
+      for (const device of selectorItems) {
         const option = document.createElement('option');
         option.value = device.device_id || '';
         option.textContent = device.label || device.device_id || '';
         select.appendChild(option);
+        if (sourceSelect) {
+          const sourceOption = document.createElement('option');
+          const source = device.raw?.videoSource || device.raw?.video_source || '';
+          sourceOption.value = device.device_id || '';
+          sourceOption.textContent = `${device.label || device.device_id || ''}${source ? ` - ${source}` : ''}`;
+          sourceSelect.appendChild(sourceOption);
+        }
       }
       const stored = localStorage.getItem(DAB_DEVICE_STORAGE_KEY) || '';
-      const defaultId = preferredDeviceId || context?.selected_device_id || stored || data.selected_device_id || discoveredDabDevices[0]?.device_id || '';
-      const exists = discoveredDabDevices.some(device => device.device_id === defaultId);
-      const resolved = exists ? defaultId : (discoveredDabDevices[0]?.device_id || '');
+      const defaultId = preferredDeviceId || activeDeviceContext?.dabDeviceId || context?.selected_device_id || stored || data.selected_device_id || selectorItems[0]?.device_id || '';
+      const exists = selectorItems.some(device => device.device_id === defaultId);
+      const resolved = exists ? defaultId : (selectorItems[0]?.device_id || '');
       setSelectedDabDeviceId(resolved, Boolean(resolved));
+      if (sourceSelect) sourceSelect.value = resolved;
       await persistSelectedDeviceContext(resolved, Boolean(resolved));
       refreshLiveStreamDeviceOptions();
-      updateCaptureBindingSummary(context?.binding || {}, resolved);
+      updateCaptureBindingSummary(activeDeviceContext || {}, resolved);
       statusEl.textContent = data.fallback_used
         ? `Discovery timed out; using ${discoveredDabDevices.length} fallback device${discoveredDabDevices.length === 1 ? '' : 's'}.`
-        : `Discovered ${discoveredDabDevices.length} device${discoveredDabDevices.length === 1 ? '' : 's'}.`;
+        : `Loaded ${selectorItems.length} configured device context${selectorItems.length === 1 ? '' : 's'}.`;
       await loadDabDeviceInfo(resolved, true);
     } catch (e) {
       countEl.textContent = '0';
@@ -3054,6 +3164,14 @@
     await persistSelectedDeviceContext(deviceId, true);
     await loadDabDeviceInfo(deviceId, true);
     await Promise.allSettled([loadCaptureSource(), refreshStreamDiagnostics()]);
+  }
+
+  async function onVideoSourceChanged() {
+    const select = document.getElementById('video-source-select');
+    const deviceId = select ? select.value : '';
+    const deviceSelect = document.getElementById('dab-device-select');
+    if (deviceSelect && deviceSelect.value !== deviceId) deviceSelect.value = deviceId;
+    await onDabDeviceChanged();
   }
   async function checkHealth() {
     try {
@@ -3108,6 +3226,16 @@
     try {
       const data = await api('/capture/devices');
       const devices = Array.isArray(data.devices) ? data.devices : [];
+      sel.innerHTML = '';
+      const lockedCamera = activeDeviceContext?.cameraPath || data.selected_video_device || '';
+      if (lockedCamera) {
+        const opt = document.createElement('option');
+        opt.value = lockedCamera;
+        opt.textContent = `${lockedCamera} [selected context]`;
+        sel.appendChild(opt);
+        sel.value = lockedCamera;
+        return;
+      }
       sel.innerHTML = '<option value="">device: auto</option>';
       for (const d of devices) {
         const dev = d.device || '';
@@ -3158,7 +3286,7 @@
     const resultEl = document.getElementById('manual-result');
     const wasStreaming = hdmiStreamRunning;
     const requestedSource = modeSel ? modeSel.value : 'auto';
-    const requestedDevice = devSel ? String(devSel.value || '').trim() : '';
+    const requestedDevice = activeDeviceContext?.cameraPath || (devSel ? String(devSel.value || '').trim() : '');
     const prevApplyLabel = setCaptureSelectionBusy(true, wasStreaming ? 'Switching camera…' : 'Applying capture settings…');
     try {
       if (wasStreaming && streamBox) {
@@ -3166,8 +3294,8 @@
         setHdmiStreamOverlay('Switching camera…');
       }
       await api('/capture/select', 'POST', {
-        source: requestedSource,
-        preferred_kind: kindSel ? kindSel.value : 'auto',
+        source: activeDeviceContext?.videoSource || requestedSource,
+        preferred_kind: activeDeviceContext?.cameraPath ? (activeDeviceContext?.videoSource === 'hdmi-capture' ? 'hdmi' : 'camera') : (kindSel ? kindSel.value : 'auto'),
         device: requestedDevice,
         persist: true,
       });
@@ -4725,7 +4853,14 @@
       if (currentYtsCommandId) {
         pollLiveYtsCommand(currentYtsCommandId);
       }
-    }, 1000);
+    }, 500);
+  }
+
+  function setYtsRunControlsLocked(locked) {
+    document.querySelectorAll('[data-yts-run-button="true"]').forEach(button => {
+      button.disabled = !!locked;
+      button.title = locked ? 'A YTS job is already running.' : '';
+    });
   }
 
   function formatYtsStatusBadge(status) {
@@ -4774,12 +4909,9 @@
 
     if (aiTraceLogs.length) {
       lines.push('');
-      lines.push('AI Movement Trace:');
+      lines.push('Gemini Activity:');
       aiTraceLogs.forEach((entry, index) => {
-        lines.push(`  ${index + 1}. ${entry.message || ''}`);
-        if (entry.raw_message) {
-          lines.push(`     ↳ ${entry.raw_message}`);
-        }
+        lines.push(`  ${index + 1}. ${entry.operator_message || entry.message || ''}`);
       });
     }
 
@@ -4792,8 +4924,11 @@
 
     if (!Array.isArray(ytsCommandHistory) || !ytsCommandHistory.length) {
       container.innerHTML = '<div class="empty-state" style="padding:1rem;">No YTS jobs yet.</div>';
+      setYtsRunControlsLocked(false);
       return;
     }
+    const hasRunningJob = ytsCommandHistory.some(item => String(item.status || '').toLowerCase() === 'running');
+    setYtsRunControlsLocked(hasRunningJob);
 
     container.innerHTML = ytsCommandHistory.map(item => {
       const commandId = item.command_id || '';
@@ -4881,7 +5016,6 @@
     const statusEl = document.getElementById('yts-command-status');
     const outputEl = document.getElementById('yts-command-output');
     const downloadContainer = document.getElementById('yts-download-container');
-    const reportViewer = document.getElementById('yts-report-viewer');
     const stopBtn = document.getElementById('yts-command-stop-btn');
     const promptBox = document.getElementById('yts-interactive-prompt');
     const isRunning = data.status === 'running';
@@ -4979,16 +5113,6 @@
     }
     downloadContainer.innerHTML = downloadButtons.join(' ');
 
-    if (reportViewer && data.command_id) {
-      const reportUrl = `${apiOrigin}/yts/command/live/${encodeURIComponent(data.command_id)}/report-view?t=${encodeURIComponent(data.updated_at || Date.now())}`;
-      reportViewer.innerHTML = `
-        <div class="yts-report-viewer-header">
-          <div class="yts-subtle">HTML report for ${escHtml(data.command_id)}</div>
-          <a class="yts-download-link secondary" href="${apiOrigin}/yts/command/live/${encodeURIComponent(data.command_id)}/report-view" target="_blank" rel="noopener">Open in new tab</a>
-        </div>
-        <iframe class="yts-report-viewer-frame" src="${reportUrl}" title="YTS HTML report"></iframe>
-      `;
-    }
   }
 
   function renderYtsGeminiLivePreview(data) {
@@ -5205,7 +5329,7 @@
       });
 
       panel += `<div class="btn-row" style="margin-top:1rem;">
-                  <button onclick="runYtsCommand('${command}')">▶ Run</button>
+                  <button data-yts-run-button="true" onclick="runYtsCommand('${command}')">▶ Run</button>
                 </div>
               </div>`;
       panelsContainer.innerHTML += panel;
@@ -5229,7 +5353,7 @@
       <p class="description">${escHtml(details.description)}</p>
       
       <label>Device ID*</label>
-      <input id="yts-arg-test-device" placeholder="e.g., adb:123456 or 10.99.57.51" required>
+      <input id="yts-arg-test-device" placeholder="Uses selected device context" required>
 
       <div class="yts-inline-actions">
         <button class="secondary" onclick="refreshYtsTestCatalog()">↻ Refresh Test Catalog</button>
@@ -5303,7 +5427,7 @@
       <div class="yts-hint">If no explicit test IDs are selected, the current suite/category/name filter automatically expands to matching tests.</div>
 
       <div class="btn-row" style="margin-top:1rem;">
-        <button onclick="runYtsCommand('test')">▶ Run Test</button>
+        <button data-yts-run-button="true" onclick="runYtsCommand('test')">▶ Run Test</button>
       </div>
     </div>`;
     container.innerHTML += panel;
@@ -5367,6 +5491,17 @@
   async function runYtsCommand(command) {
     const resultContainer = document.getElementById('yts-command-result-container');
 
+    const runningJob = Array.isArray(ytsCommandHistory)
+      ? ytsCommandHistory.find(item => String(item.status || '').toLowerCase() === 'running')
+      : null;
+    if (runningJob) {
+      setCurrentYtsCommand(runningJob.command_id);
+      startYtsCommandPolling(runningJob.command_id);
+      await pollLiveYtsCommand(runningJob.command_id);
+      document.getElementById('yts-command-status').innerHTML = statusHtml('--warning', `■ Wait for current YTS job to finish: ${escHtml(runningJob.command_id || '')}`);
+      return;
+    }
+
     const selectedDeviceId = requireSelectedDabDevice('yts-command-output', 'Select a DAB device before running YTS commands.');
     if (!selectedDeviceId) {
       document.getElementById('yts-command-status').innerHTML = statusHtml('--error', '✗ No DAB device selected.');
@@ -5374,14 +5509,11 @@
     }
 
     clearYtsCommandPolling();
+    setYtsRunControlsLocked(true);
     resultContainer.style.display = 'block';
     document.getElementById('yts-command-status').innerHTML = statusHtml('--info', `▌ Starting ${command}...`);
     document.getElementById('yts-command-output').textContent = '';
     document.getElementById('yts-download-container').innerHTML = '';
-    const reportViewer = document.getElementById('yts-report-viewer');
-    if (reportViewer) {
-      reportViewer.innerHTML = '<div class="yts-report-empty">Waiting for report generation...</div>';
-    }
     document.getElementById('yts-command-stop-btn').style.display = '';
 
     const details = ytsCommands[command];
@@ -5399,7 +5531,7 @@
     if (command === 'test') {
       const deviceInput = document.getElementById('yts-arg-test-device');
       if (deviceInput && !deviceInput.value.trim() && selectedDeviceId) {
-        deviceInput.value = selectedDeviceId;
+        deviceInput.value = activeYtsRunnerDeviceId() || selectedDeviceId;
       }
       const device = deviceInput ? deviceInput.value.trim() : '';
       if (!device) {
@@ -5486,14 +5618,15 @@
     try {
       const startData = await api('/yts/command/live', 'POST', body);
       setCurrentYtsCommand(startData.command_id);
-      await loadYtsCommandHistory(true);
       scrollToSection('yts-runner-card');
-      await pollLiveYtsCommand(currentYtsCommandId);
       startYtsCommandPolling(currentYtsCommandId);
+      await pollLiveYtsCommand(currentYtsCommandId);
+      void loadYtsCommandHistory(true);
 
     } catch(e) {
       clearYtsCommandPolling();
       setCurrentYtsCommand(null);
+      setYtsRunControlsLocked(false);
       document.getElementById('yts-command-stop-btn').style.display = 'none';
       document.getElementById('yts-command-status').innerHTML = `<span style="color:#f87171;">✗ API Error: ${escHtml(e.message)}</span>`;
     }
@@ -6313,11 +6446,11 @@
   initializeDashboard();
   startCurrentSettingsRefreshLoop();
   setInterval(checkHealth, 30000);
-  setInterval(loadRuns, 12000);
-  setInterval(loadCaptureSource, 20000);
-  setInterval(refreshCaptureDevices, 30000);
-  setInterval(refreshStreamDiagnostics, 30000);
-  setInterval(refreshSystemMetrics, 5000);
+  setInterval(loadRuns, 20000);
+  setInterval(loadCaptureSource, 60000);
+  setInterval(refreshCaptureDevices, 120000);
+  setInterval(refreshStreamDiagnostics, 60000);
+  setInterval(refreshSystemMetrics, 15000);
   window.addEventListener('resize', drawPerfGraph);
 </script>
 </body>

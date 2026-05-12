@@ -1,5 +1,7 @@
 """Tests for screenshot capture helpers."""
 
+import time
+
 import pytest
 
 from vertex_live_dab_agent.capture.capture import ScreenCapture, extract_output_image_b64
@@ -43,6 +45,43 @@ def test_hdmi_capture_session_forces_720p_resolution():
     assert session.height == 720
 
 
+def test_hdmi_capture_session_allows_initial_frame_warmup():
+    session = HdmiCaptureSession(device="/dev/video0")
+    session._cap = object()
+    session._opened_at = time.monotonic()
+    session._frame_ready.set()
+
+    assert session.read_frame() is None
+    assert session.last_error is None
+
+
+def test_stream_frame_keeps_warming_capture_session():
+    class FakeDab:
+        async def capture_screenshot(self):
+            return None
+
+    class WarmingSession:
+        device = "/dev/video0"
+        last_error = None
+
+        def __init__(self):
+            self.closed = 0
+
+        def capture_jpeg_bytes(self, quality=80):
+            return None
+
+        def close(self):
+            self.closed += 1
+
+    capture = ScreenCapture(FakeDab())
+    session = WarmingSession()
+    capture._hdmi = session
+
+    assert capture.get_hdmi_stream_frame_jpeg() is None
+    assert capture._hdmi is session
+    assert session.closed == 0
+
+
 def test_init_hdmi_session_does_not_fallback_when_explicit_device_selected(monkeypatch):
     class FakeDab:
         async def capture_screenshot(self):
@@ -69,6 +108,7 @@ def test_init_hdmi_session_does_not_fallback_when_explicit_device_selected(monke
     capture._image_source = "hdmi-capture"
     capture._selected_video_device = "/dev/video42"
 
+    monkeypatch.setattr(capture, "_list_video_device_details", lambda: [])
     monkeypatch.setattr("vertex_live_dab_agent.capture.capture.HdmiCaptureSession", FakeSession)
     monkeypatch.setattr("vertex_live_dab_agent.capture.capture.os.path.exists", lambda p: str(p).startswith("/dev/video"))
     monkeypatch.setattr("vertex_live_dab_agent.capture.capture.os.access", lambda *_args, **_kwargs: True)
