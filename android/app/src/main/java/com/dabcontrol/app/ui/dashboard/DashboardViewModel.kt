@@ -11,10 +11,13 @@ import com.dabcontrol.app.data.repo.YtsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -32,6 +35,8 @@ class DashboardViewModel @Inject constructor(
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(DashboardUiState())
     val uiState: StateFlow<DashboardUiState> = _uiState.asStateFlow()
+    private var autoRefreshJob: Job? = null
+    private var refreshJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -44,7 +49,8 @@ class DashboardViewModel @Inject constructor(
                 _uiState.value = _uiState.value.copy(selectedDeviceId = deviceId)
             }
         }
-        refresh()
+        refresh(silent = false)
+        startAutoRefresh()
     }
 
     fun onApiBaseUrlChanged(value: String) {
@@ -88,13 +94,34 @@ class DashboardViewModel @Inject constructor(
     fun saveApiBaseUrl() {
         viewModelScope.launch {
             apiSettingsStore.saveApiBaseUrl(_uiState.value.apiBaseUrl)
-            refresh()
+            refresh(silent = false)
         }
     }
 
-    fun refresh() {
-        viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isLoading = true, error = null)
+    fun toggleAutoRefresh() {
+        val enabled = !_uiState.value.autoRefreshEnabled
+        _uiState.value = _uiState.value.copy(
+            autoRefreshEnabled = enabled,
+            refreshStateLabel = if (enabled) {
+                "Live sync every ${_uiState.value.refreshIntervalSeconds}s"
+            } else {
+                "Manual refresh"
+            }
+        )
+        if (enabled) {
+            startAutoRefresh()
+        } else {
+            autoRefreshJob?.cancel()
+            autoRefreshJob = null
+        }
+    }
+
+    fun refresh(silent: Boolean = false) {
+        if (refreshJob?.isActive == true) return
+        refreshJob = viewModelScope.launch {
+            if (!silent) {
+                _uiState.value = _uiState.value.copy(isLoading = true, error = null)
+            }
             val healthDeferred = async { dashboardRepository.fetchHealth() }
             val metricsDeferred = async { dashboardRepository.fetchMetrics() }
             val devicesDeferred = async { controlsRepository.fetchDevices() }
@@ -147,8 +174,31 @@ class DashboardViewModel @Inject constructor(
                 loadHistory = appendHistory(_uiState.value.loadHistory, metrics?.timestampShort, metrics?.load1m),
                 tempHistory = appendHistory(_uiState.value.tempHistory, metrics?.timestampShort, metrics?.cpuTempC),
                 metricsPreview = metricsPreview,
+                backendStatusSummary = buildBackendStatusSummary(
+                    healthStatus = healthStatus,
+                    mode = mode,
+                    deviceCount = deviceIds.size,
+                    selectedDeviceId = resolvedSelected,
+                    modelsResult = modelsResult
+                ),
+                refreshStateLabel = buildRefreshStateLabel(
+                    timestamp = metrics?.timestampShort,
+                    silent = silent
+                ),
                 error = buildError(healthResult, metricsResult, devicesResult, modelsResult)
             )
+        }
+    }
+
+    private fun startAutoRefresh() {
+        autoRefreshJob?.cancel()
+        autoRefreshJob = viewModelScope.launch {
+            while (isActive) {
+                delay(_uiState.value.refreshIntervalSeconds * 1000L)
+                if (_uiState.value.autoRefreshEnabled) {
+                    refresh(silent = true)
+                }
+            }
         }
     }
 
@@ -216,6 +266,36 @@ class DashboardViewModel @Inject constructor(
         if (devices !is ApiResult.Success) issues.add("Devices failed")
         if (models !is ApiResult.Success) issues.add("Gemini models failed")
         return if (issues.isEmpty()) null else issues.joinToString(" · ")
+    }
+
+    private fun buildBackendStatusSummary(
+        healthStatus: String,
+        mode: String,
+        deviceCount: Int,
+        selectedDeviceId: String,
+        modelsResult: ApiResult<*>
+    ): String {
+        val modelState = if (modelsResult is ApiResult.Success) "models synced" else "model sync issue"
+        return listOf(
+            "health $healthStatus",
+            "mode $mode",
+            "$deviceCount device${if (deviceCount == 1) "" else "s"} visible",
+            if (selectedDeviceId.isBlank()) "no device selected" else "device $selectedDeviceId",
+            modelState
+        ).joinToString(" · ")
+    }
+
+    private fun buildRefreshStateLabel(
+        timestamp: String?,
+        silent: Boolean
+    ): String {
+        val cadence = "every ${_uiState.value.refreshIntervalSeconds}s"
+        val sample = timestamp?.takeIf { it.isNotBlank() && it != "--" } ?: "waiting"
+        return if (silent) {
+            "Live sync $cadence · last sample $sample"
+        } else {
+            "Manual refresh complete · last sample $sample"
+        }
     }
 
     private fun appendHistory(

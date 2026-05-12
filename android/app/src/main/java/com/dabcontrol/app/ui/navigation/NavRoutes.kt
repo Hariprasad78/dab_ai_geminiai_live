@@ -3,6 +3,7 @@ package com.dabcontrol.app.ui.navigation
 object NavRoutes {
     const val DASHBOARD = "dashboard"
     const val LIVE_CONTROL = "live_control"
+    const val DEVICE_INFO = "device_info"
     const val AI_RUNNER = "ai_runner"
     const val YTS_RUNNER = "yts_runner"
     const val YTS_RESULTS = "yts_results"
@@ -12,6 +13,7 @@ object NavRoutes {
     const val YTS_ARTIFACT = "yts_artifact/{commandId}/{artifactType}"
 
     const val CONTROLS = LIVE_CONTROL
+    const val DEVICE = DEVICE_INFO
     const val RUNS = AI_RUNNER
     const val YTS = YTS_RUNNER
 

@@ -88,6 +88,8 @@ class ScreenCapture:
         self._warned_dab_cooldown = False
         self._warned_no_hdmi = False
         self._last_hdmi_error: Optional[str] = None
+        self._hdmi_stream_miss_count = 0
+        self._hdmi_stream_reset_after_misses = 20
         self._hdmi = hdmi_session
 
     def _normalize_rotation_degrees(self, rotation_degrees: Optional[int]) -> int:
@@ -240,6 +242,13 @@ class ScreenCapture:
             elif self._image_source == "camera-capture":
                 kind_pref = "camera"
         return kind_pref
+
+    def set_dab_client(self, dab_client: DABClientBase) -> None:
+        """Update DAB client used for screenshot fallback without resetting video session."""
+        if dab_client is None:
+            return
+        with self._session_lock:
+            self._dab = dab_client
 
     def _is_kind_enabled(self, kind: str) -> bool:
         k = str(kind or "").lower()
@@ -651,6 +660,8 @@ class ScreenCapture:
                     if self._hdmi is not None:
                         self._hdmi.close()
                     self._hdmi = None
+            else:
+                self._hdmi_stream_miss_count = 0
             return frame
 
     def get_hdmi_stream_frame_raw(self) -> Optional[Any]:
@@ -679,6 +690,8 @@ class ScreenCapture:
                     if self._hdmi is not None:
                         self._hdmi.close()
                     self._hdmi = None
+            else:
+                self._hdmi_stream_miss_count = 0
             return frame
 
     def close(self) -> None:

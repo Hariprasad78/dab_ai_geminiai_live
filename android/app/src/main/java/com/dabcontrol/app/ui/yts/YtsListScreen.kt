@@ -7,6 +7,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -87,6 +88,7 @@ fun YtsListScreen(
     val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
     var showCommandCenter by rememberSaveable(isLandscape) { mutableStateOf(!isLandscape) }
     var runnerSplit by rememberSaveable { mutableStateOf(0.56f) }
+    var floatingStreamHidden by rememberSaveable { mutableStateOf(false) }
     val createListState = rememberLazyListState()
     val runnerListState = rememberLazyListState()
     val resultsListState = rememberLazyListState()
@@ -188,14 +190,29 @@ fun YtsListScreen(
             }
         }
 
-        if (
+        val shouldOfferFloatingStream =
             state.activeTab == YtsWorkspaceTab.RUNNING_SESSION &&
             state.isStreaming &&
             (runnerListState.firstVisibleItemIndex > 0 || runnerListState.firstVisibleItemScrollOffset > 420)
-        ) {
+
+        if (!state.isStreaming || state.activeTab != YtsWorkspaceTab.RUNNING_SESSION) {
+            floatingStreamHidden = false
+        }
+
+        if (shouldOfferFloatingStream && floatingStreamHidden) {
+            OutlinedButton(
+                onClick = { floatingStreamHidden = false },
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(12.dp)
+            ) {
+                Text("Reopen Stream")
+            }
+        } else if (shouldOfferFloatingStream) {
             FloatingYtsStreamOverlay(
                 frameBytes = state.streamFrameBytes,
                 streamStatus = state.streamStatus,
+                onHide = { floatingStreamHidden = true },
                 modifier = Modifier.align(Alignment.BottomEnd)
             )
         }
@@ -396,9 +413,12 @@ private fun JobBlueprintCard(
         OutlinedTextField(
             value = state.jsonOutputFile,
             onValueChange = onJsonOutputChanged,
-            label = { Text("JSON Output File") },
+            label = { Text("Result Bundle Output Path") },
             modifier = Modifier.fillMaxWidth(),
-            singleLine = true
+            singleLine = true,
+            supportingText = {
+                Text("Used for structured result export while reports and artifacts stay accessible from the Results workspace.")
+            }
         )
         ToggleRow("Guided mode", state.guidedMode, onGuidedModeToggle)
         ToggleRow("Use Gemini for interactive responses", state.interactiveAi, onInteractiveAiToggle)
@@ -1088,7 +1108,7 @@ private fun FullStreamPanel(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(360.dp)
+                .aspectRatio(16f / 9f)
                 .background(Brush.linearGradient(listOf(Color(0xFF0F172A), Color(0xFF1E293B)))),
             contentAlignment = Alignment.Center
         ) {
@@ -1097,7 +1117,7 @@ private fun FullStreamPanel(
                     bitmap = bitmap,
                     contentDescription = "Device live stream",
                     modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop
+                    contentScale = ContentScale.Fit
                 )
             } else {
                 Text(
@@ -1114,6 +1134,7 @@ private fun FullStreamPanel(
 private fun FloatingYtsStreamOverlay(
     frameBytes: ByteArray?,
     streamStatus: String,
+    onHide: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val bitmap = frameBytes?.let { bytes ->
@@ -1138,22 +1159,31 @@ private fun FloatingYtsStreamOverlay(
             modifier = Modifier.padding(8.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            Text("Live", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-            Surface(shape = MaterialTheme.shapes.medium) {
+            Row(
+                modifier = Modifier.width(320.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Live", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                OutlinedButton(onClick = onHide) {
+                    Text("Hide")
+                }
+            }
+            Surface(shape = MaterialTheme.shapes.medium, modifier = Modifier.width(320.dp)) {
                 if (bitmap != null) {
                     Image(
                         bitmap = bitmap,
                         contentDescription = "Floating YTS live stream",
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(120.dp),
-                        contentScale = ContentScale.Crop
+                            .aspectRatio(16f / 9f),
+                        contentScale = ContentScale.Fit
                     )
                 } else {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(120.dp),
+                            .aspectRatio(16f / 9f),
                         contentAlignment = Alignment.Center
                     ) {
                         Text("Waiting...", color = MaterialTheme.colorScheme.onSurfaceVariant)

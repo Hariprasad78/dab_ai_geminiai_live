@@ -191,6 +191,10 @@ class TaskMacroRequest(BaseModel):
     instruction: str
     execute: bool = False
     continue_on_error: bool = True
+    control_mode: Optional[str] = None
+    ir_device_id: Optional[str] = None
+    device_id: Optional[str] = None
+    max_steps: int = Field(default=8, ge=1, le=50)
 
 
 class TaskMacroResponse(BaseModel):

@@ -114,7 +114,7 @@
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: "Space Grotesk", "Segoe UI Variable", "Aptos", "Trebuchet MS", sans-serif;
+      font-family: "SF Pro Text", "SF Pro Display", Inter, "Segoe UI", Roboto, Arial, sans-serif;
       background:
         radial-gradient(960px 560px at -10% -10%, rgba(255, 255, 255, 0.06), transparent 54%),
         radial-gradient(840px 520px at 110% 0%, rgba(113, 113, 122, 0.14), transparent 52%),
@@ -298,15 +298,34 @@
     .log-line .PASS { color: #4ade80; }
     .log-line .FAIL { color: #f87171; }
     #screenshot-img { max-width: 100%; border-radius: 0.5rem; border: 1px solid #3f3f46; }
-    #hdmi-stream-img { max-width: 100%; border-radius: 0.5rem; border: 1px solid #3f3f46; display: block; width: 100%; transition: opacity 220ms ease, filter 220ms ease; }
+    #hdmi-stream-img, #hdmi-stream-player, #floating-stream-img, #floating-stream-player {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      background: #050505;
+      transition: opacity 220ms ease, filter 220ms ease;
+    }
     #hdmi-stream-container {
       position: relative;
-      min-height: 210px;
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      min-height: 0;
       border-radius: 0.6rem;
       overflow: hidden;
       background: #09090b;
       border: 1px solid #3f3f46;
       transition: box-shadow 220ms ease, border-color 220ms ease;
+    }
+    #hdmi-stream-container .empty-state {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0;
+      min-height: 0;
+      text-align: center;
     }
     #hdmi-stream-container.switching {
       border-color: #71717a;
@@ -343,6 +362,67 @@
       transition: opacity 180ms ease;
     }
     #audio-stream-player { width: 100%; margin-top: 0.6rem; }
+    .floating-stream-window {
+      position: fixed;
+      right: 1rem;
+      bottom: 1rem;
+      z-index: 60;
+      width: min(560px, calc(100vw - 2rem));
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 0.75rem;
+      overflow: hidden;
+      background: #09090b;
+      box-shadow: 0 24px 70px rgba(0, 0, 0, 0.5);
+    }
+    .floating-stream-window.hidden { display: none; }
+    .floating-stream-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      padding: 0.55rem 0.65rem;
+      background: rgba(18, 18, 20, 0.96);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    .floating-stream-title { font-size: 0.78rem; font-weight: 700; color: var(--text); }
+    .floating-stream-actions { display: flex; gap: 0.4rem; align-items: center; }
+    .floating-stream-stage {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      background: #050505;
+    }
+    .floating-stream-stage .empty-state {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0;
+      min-height: 0;
+      text-align: center;
+      padding: 0.75rem;
+    }
+    .floating-stream-reopen {
+      position: fixed;
+      right: 1rem;
+      bottom: 1rem;
+      z-index: 59;
+      display: none;
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.38);
+    }
+    .floating-stream-reopen.visible { display: inline-flex; }
+    @media (max-width: 760px) {
+      .floating-stream-window {
+        right: 0.75rem;
+        bottom: 0.75rem;
+        width: calc(100vw - 1.5rem);
+      }
+      .floating-stream-reopen {
+        right: 0.75rem;
+        bottom: 0.75rem;
+      }
+    }
     .remote-layout { display: grid; grid-template-columns: 1.1fr 1fr; gap: 1rem; align-items: start; }
     .remote-panel { background: linear-gradient(180deg, rgba(24, 24, 27, 0.92), rgba(14, 14, 16, 0.94)); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 1rem; padding: 0.9rem; box-shadow: inset 0 1px 0 rgba(255,255,255,0.04); }
     .remote-mode-toolbar { display:flex; gap:0.5rem; align-items:end; flex-wrap:wrap; margin-bottom:0.75rem; }
@@ -424,28 +504,28 @@
     .model-toolbar { display:flex; gap:0.45rem; align-items:center; flex-wrap:wrap; }
     .model-toolbar label { margin:0; font-size:0.72rem; color:var(--text-muted); }
     .model-toolbar select { width:min(290px, 52vw); padding:0.35rem 0.45rem; font-size:0.78rem; }
-    .model-status { font-size:0.72rem; color:#d4d4d8; max-width:360px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-    .device-status { font-size:0.72rem; color:#d4d4d8; }
+    .model-status { font-size:0.72rem; color:var(--text-muted); max-width:360px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .device-status { font-size:0.72rem; color:var(--text-muted); }
     .device-info-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:0.75rem; margin-bottom:0.9rem; }
     .device-window { display:grid; grid-template-columns:1fr 1fr; gap:0.8rem; }
-    .device-section { background:#111113; border:1px solid #3f3f46; border-radius:0.65rem; padding:0.75rem; }
-    .device-section h3 { font-size:0.84rem; color:#d4d4d8; margin-bottom:0.5rem; }
+    .device-section { background:var(--surface-1); border:1px solid var(--border); border-radius:0.65rem; padding:0.75rem; }
+    .device-section h3 { font-size:0.84rem; color:var(--text-strong); margin-bottom:0.5rem; }
     .device-kv { display:grid; grid-template-columns: minmax(120px, 0.8fr) 1.2fr; gap:0.35rem 0.55rem; font-size:0.8rem; }
     .device-kv > div:nth-child(odd) { color:var(--text-muted); }
     .device-kv > div:nth-child(even) { color:var(--text); word-break:break-word; }
     .device-chip-list { display:flex; flex-wrap:wrap; gap:0.35rem; }
-    .device-chip { display:inline-block; border:1px solid #3f3f46; border-radius:999px; padding:0.2rem 0.5rem; font-size:0.72rem; color:#e4e4e7; }
+    .device-chip { display:inline-block; border:1px solid var(--border); border-radius:999px; padding:0.2rem 0.5rem; font-size:0.72rem; color:var(--text-strong); background:var(--surface-2); }
     .device-raw details { margin-top:0.6rem; }
-    .device-raw summary { cursor:pointer; color:#d4d4d8; font-size:0.78rem; }
-    .device-raw pre { margin-top:0.45rem; max-height:180px; overflow:auto; font-size:0.72rem; color:#d4d4d8; }
+    .device-raw summary { cursor:pointer; color:var(--text-muted); font-size:0.78rem; }
+    .device-raw pre { margin-top:0.45rem; max-height:180px; overflow:auto; font-size:0.72rem; color:var(--text); background:var(--surface-0); border:1px solid var(--border); border-radius:0.4rem; padding:0.45rem; }
     .settings-toolbar { display:grid; grid-template-columns: minmax(220px, 1fr) auto; gap:0.6rem; align-items:end; margin-bottom:0.75rem; }
     .settings-meta { display:flex; flex-wrap:wrap; gap:0.6rem; font-size:0.76rem; color:var(--text-muted); margin-bottom:0.65rem; }
-    .settings-table-wrap { border:1px solid #3f3f46; border-radius:0.65rem; background:#111113; overflow:hidden; }
+    .settings-table-wrap { border:1px solid var(--border); border-radius:0.65rem; background:var(--surface-1); overflow:hidden; }
     .settings-table-scroll { max-height:440px; overflow:auto; }
     .settings-table { width:100%; border-collapse:collapse; table-layout:fixed; font-size:0.78rem; }
-    .settings-table thead th { position:sticky; top:0; z-index:2; background:#18181b; color:#e4e4e7; text-align:left; padding:0.55rem; border-bottom:1px solid #3f3f46; }
-    .settings-table tbody td { padding:0.5rem 0.55rem; border-bottom:1px solid #27272a; vertical-align:top; color:#e5e7eb; word-break:break-word; }
-    .settings-table tbody tr:nth-child(2n) { background:rgba(39, 39, 42, 0.45); }
+    .settings-table thead th { position:sticky; top:0; z-index:2; background:var(--surface-2); color:var(--text-muted); text-align:left; padding:0.55rem; border-bottom:1px solid var(--border); }
+    .settings-table tbody td { padding:0.5rem 0.55rem; border-bottom:1px solid var(--border); vertical-align:top; color:var(--text); word-break:break-word; }
+    .settings-table tbody tr:nth-child(2n) { background:color-mix(in srgb, var(--surface-2) 70%, transparent); }
     .settings-col-key { width:22%; }
     .settings-col-value { width:26%; }
     .settings-col-name { width:22%; }
@@ -455,14 +535,14 @@
     .settings-status-fail { color:#fca5a5; }
     .sysstate-meta { display:flex; flex-wrap:wrap; gap:0.6rem; font-size:0.76rem; color:var(--text-muted); margin-bottom:0.65rem; }
     .sysstate-grid { display:grid; grid-template-columns: 1fr 1fr; gap:0.75rem; }
-    .sysstate-panel { background:#111113; border:1px solid #3f3f46; border-radius:0.65rem; overflow:hidden; }
-    .sysstate-panel h3 { font-size:0.82rem; color:#d4d4d8; padding:0.55rem 0.7rem; border-bottom:1px solid #3f3f46; background:#18181b; }
+    .sysstate-panel { background:var(--surface-1); border:1px solid var(--border); border-radius:0.65rem; overflow:hidden; }
+    .sysstate-panel h3 { font-size:0.82rem; color:var(--text-strong); padding:0.55rem 0.7rem; border-bottom:1px solid var(--border); background:var(--surface-2); }
     .sysstate-panel .body { padding:0.7rem; }
-    .sysstate-static-block { min-height:220px; max-height:260px; overflow:auto; border:1px solid #3f3f46; border-radius:0.5rem; background:#111113; padding:0.55rem; }
+    .sysstate-static-block { min-height:220px; max-height:260px; overflow:auto; border:1px solid var(--border); border-radius:0.5rem; background:var(--surface-1); padding:0.55rem; }
     .sysstate-op-actions { border:1px solid #3f3f46; border-radius:0.5rem; background:#111113; padding:0.55rem; margin-bottom:0.55rem; max-height:320px; overflow:auto; display:grid; grid-template-columns:1fr; gap:0.5rem; }
-    .sysstate-op-card { border:1px solid #3f3f46; border-radius:0.45rem; background:#18181b; padding:0.5rem; }
+    .sysstate-op-card { border:1px solid var(--border); border-radius:0.45rem; background:var(--surface-2); padding:0.5rem; }
     .sysstate-op-head { display:flex; justify-content:space-between; gap:0.45rem; align-items:center; margin-bottom:0.4rem; }
-    .sysstate-op-name { color:#d4d4d8; font-size:0.74rem; word-break:break-word; }
+    .sysstate-op-name { color:var(--text-strong); font-size:0.74rem; word-break:break-word; }
     .sysstate-op-body { display:grid; grid-template-columns:1fr auto; gap:0.45rem; align-items:end; }
     .sysstate-op-fields { display:grid; grid-template-columns:repeat(auto-fit, minmax(120px, 1fr)); gap:0.4rem; }
     .sysstate-op-fields input, .sysstate-op-fields select { padding:0.4rem 0.45rem; font-size:0.74rem; }
@@ -470,12 +550,12 @@
     .sysstate-op-note { color:var(--text-muted); font-size:0.72rem; }
     .sysstate-op-result { margin-top:0.45rem; font-size:0.74rem; min-height:1rem; color:var(--text-muted); }
     .sysstate-chip-list { display:flex; flex-wrap:wrap; gap:0.35rem; }
-    .sysstate-chip { display:inline-block; border:1px solid #3f3f46; border-radius:999px; padding:0.2rem 0.5rem; font-size:0.72rem; color:#e4e4e7; background:#18181b; }
+    .sysstate-chip { display:inline-block; border:1px solid var(--border); border-radius:999px; padding:0.2rem 0.5rem; font-size:0.72rem; color:var(--text-strong); background:var(--surface-2); }
     .sysstate-empty { color:var(--text-dim); font-size:0.78rem; }
     .sysstate-table { width:100%; border-collapse:collapse; table-layout:fixed; font-size:0.76rem; }
-    .sysstate-table th { text-align:left; color:#d4d4d8; border-bottom:1px solid #3f3f46; padding:0.38rem; position:sticky; top:0; background:#18181b; }
-    .sysstate-table td { color:#e5e7eb; border-bottom:1px solid #27272a; padding:0.36rem; vertical-align:top; word-break:break-word; }
-    .sysstate-roll { max-height:84px; overflow:auto; white-space:pre-wrap; word-break:break-word; border:1px solid #3f3f46; border-radius:0.35rem; padding:0.25rem; background:#111113; }
+    .sysstate-table th { text-align:left; color:var(--text-muted); border-bottom:1px solid var(--border); padding:0.38rem; position:sticky; top:0; background:var(--surface-2); }
+    .sysstate-table td { color:var(--text); border-bottom:1px solid var(--border); padding:0.36rem; vertical-align:top; word-break:break-word; }
+    .sysstate-roll { max-height:84px; overflow:auto; white-space:pre-wrap; word-break:break-word; border:1px solid var(--border); border-radius:0.35rem; padding:0.25rem; background:var(--surface-1); }
     .health-dot { width: 10px; height: 10px; border-radius: 50%; background: #ef4444; box-shadow: 0 0 12px rgba(239,68,68,0.6); }
     .health-dot.ok { background: #22c55e; box-shadow: 0 0 14px rgba(34,197,94,0.8); }
     .hero { grid-column: 1 / -1; display:grid; grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.95fr); gap:1rem; align-items:stretch; }
@@ -787,9 +867,21 @@
         </div>
       </div>
       <div class="sysstate-panel" style="grid-column:1 / -1;">
-        <h3>Raw Stored JSON (Debug)</h3>
+        <h3>DAB Quick View</h3>
         <div class="body">
-          <div id="dab-system-raw-json" class="sysstate-roll" style="max-height:260px;">No snapshot loaded.</div>
+          <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; margin-bottom:0.6rem;">
+            <label for="dab-quick-view-select" style="margin:0;">View</label>
+            <select id="dab-quick-view-select" onchange="renderDabQuickView()">
+              <option value="summary">Summary</option>
+              <option value="settings-values">Current Settings</option>
+              <option value="settings-meta">Settings Metadata</option>
+              <option value="applications">Applications</option>
+              <option value="voices">Voice Systems</option>
+              <option value="keys">Input Keys</option>
+              <option value="operations">Operations</option>
+            </select>
+          </div>
+          <div id="dab-system-quick-view" class="sysstate-static-block">No snapshot loaded.</div>
         </div>
       </div>
     </div>
@@ -868,6 +960,7 @@
         <div id="capture-switch-status" class="capture-switch-status"></div>
         <div class="btn-row" style="margin-top:0; margin-bottom:0.75rem;">
           <button class="secondary" id="stream-toggle-btn" onclick="toggleHdmiStream()">▶ Start Stream</button>
+          <button class="secondary" id="floating-stream-toggle-btn" onclick="toggleFloatingStreamWindow()" disabled>Float Window</button>
           <button class="secondary" id="audio-toggle-btn" onclick="toggleAudioStream()">🔊 Start Audio</button>
           <button class="secondary" onclick="captureScreenshot()">📷 Screenshot</button>
         </div>
@@ -1154,11 +1247,49 @@
     <textarea id="goal-input" placeholder="e.g. Launch Netflix and verify home screen loads"></textarea>
     <label style="margin-top:0.75rem;">App ID (optional, YouTube only)</label>
     <input id="app-id-input" placeholder="youtube" />
+    <label style="margin-top:0.75rem;">Runner Type</label>
+    <select id="run-engine-select" onchange="updateNewRunModeUi()">
+      <option value="orchestrator">AI Orchestrator Run (/run/start)</option>
+      <option value="task_runner">AI Task Runner (/task/macro)</option>
+    </select>
+    <label style="margin-top:0.75rem;">Control Mode</label>
+    <select id="run-control-mode-select" onchange="updateNewRunModeUi()">
+      <option value="DAB">DAB</option>
+      <option value="IR">IR</option>
+    </select>
+    <div id="run-ir-device-wrap" style="display:none;">
+      <label style="margin-top:0.75rem;">IR Device ID</label>
+      <input id="run-ir-device-input" placeholder="samsung_tv_default" />
+    </div>
     <label style="margin-top:0.75rem;"><input type="checkbox" id="run-ui-nav-toggle" style="width:auto; margin-right:0.45rem;" /> Allow UI navigation fallback</label>
     <div class="btn-row">
       <button onclick="startRun()">▶ Start Run</button>
     </div>
     <div class="error-msg" id="start-error"></div>
+  </div>
+
+  <div class="card full-width" id="new-run-live-card">
+    <h2>Live Stream & Gemini Logs</h2>
+    <div style="display:grid; grid-template-columns:1.15fr 0.85fr; gap:1rem;">
+      <div>
+        <label>Live Streaming Window</label>
+        <div class="yts-live-preview-wrap">
+          <div class="yts-live-preview-head">
+            <div class="yts-live-preview-title">Runtime Live Feed</div>
+            <div id="new-run-live-status" class="yts-subtle">Starts after run/task begins.</div>
+          </div>
+          <div class="yts-live-preview-stage" id="new-run-live-stage">
+            <div class="yts-live-preview-empty">Start a run or task runner job to watch live stream here.</div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <label>Gemini / AI Runtime Logs</label>
+        <div id="new-run-gemini-log" class="yts-result-box" style="min-height:320px; max-height:420px;">
+          No Gemini logs yet.
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Task Trace (Full Bottom) -->
@@ -1178,6 +1309,20 @@
   <span id="api-url"></span>
 </div>
 
+<div id="floating-stream-window" class="floating-stream-window hidden" aria-label="Floating HDMI stream">
+  <div class="floating-stream-head">
+    <div class="floating-stream-title">HDMI Stream</div>
+    <div class="floating-stream-actions">
+      <button class="secondary mini-btn" onclick="hideFloatingStreamWindow()">Hide</button>
+      <button class="secondary mini-btn" onclick="closeFloatingStreamWindow()">Close</button>
+    </div>
+  </div>
+  <div id="floating-stream-stage" class="floating-stream-stage">
+    <div class="empty-state">Start the stream to open the floating preview.</div>
+  </div>
+</div>
+<button id="floating-stream-reopen-btn" class="secondary floating-stream-reopen" onclick="showFloatingStreamWindow()">Reopen Stream</button>
+
 <script src="./config.js"></script>
 <script>
   const API_STORAGE_KEY = 'dab_api_base';
@@ -1195,6 +1340,10 @@
   let hdmiStreamTransitionToken = 0;
   let hdmiStreamStartupTimer = null;
   let hdmiStreamStopTimer = null;
+  let floatingStreamOpen = false;
+  let floatingStreamHidden = false;
+  let floatingStreamMode = '';
+  let floatingStreamUrl = '';
   let hdmiAvWebSocket = null;
   let hdmiAvMediaSource = null;
   let hdmiAvSourceBuffer = null;
@@ -1828,6 +1977,7 @@
     const arr = Array.isArray(rows) ? rows : [];
     if (!arr.length) {
       body.innerHTML = '<tr><td colspan="5" class="sysstate-empty">No operations data.</td></tr>';
+      renderDabQuickView();
       return;
     }
     body.innerHTML = arr.map((row, idx) => {
@@ -1846,6 +1996,7 @@
         <td>${supported ? `<button class="secondary mini-btn" onclick="useOperationInRequestPanel(${idx})">${actionLabel}</button>` : '<span class="sysstate-empty">-</span>'}</td>
       </tr>`;
     }).join('');
+    renderDabQuickView();
   }
 
   function renderSystemRequestOperationOptions(rows) {
@@ -2072,7 +2223,7 @@
     const appsEl = document.getElementById('dab-system-applications');
     const voicesEl = document.getElementById('dab-system-voices');
     const keysEl = document.getElementById('dab-system-keys');
-    const rawEl = document.getElementById('dab-system-raw-json');
+    const quickViewEl = document.getElementById('dab-system-quick-view');
 
     const data = dabDeviceSystemStateSnapshot;
     if (!data || typeof data !== 'object') {
@@ -2087,7 +2238,7 @@
       if (appsEl) appsEl.innerHTML = renderSysstateEmpty();
       if (voicesEl) voicesEl.innerHTML = renderSysstateEmpty();
       if (keysEl) keysEl.innerHTML = renderSysstateEmpty();
-      if (rawEl) rawEl.textContent = 'No snapshot loaded.';
+      if (quickViewEl) quickViewEl.innerHTML = renderSysstateEmpty('No snapshot loaded.');
       return;
     }
 
@@ -2109,9 +2260,83 @@
     if (appsEl) appsEl.innerHTML = renderApplicationsBlock(apps);
     if (voicesEl) voicesEl.innerHTML = renderSysstateChipList(voices, 'No voices available.');
     if (keysEl) keysEl.innerHTML = renderSysstateChipList(keys, 'No keys available.');
-    if (rawEl) rawEl.textContent = JSON.stringify(data, null, 2);
+    renderDabQuickView();
     refreshDabRequestMetadataControls();
     syncRequestPayloadFromControls();
+  }
+
+  function renderDabQuickView() {
+    const quickViewEl = document.getElementById('dab-system-quick-view');
+    if (!quickViewEl) return;
+    const data = dabDeviceSystemStateSnapshot;
+    if (!data || typeof data !== 'object') {
+      quickViewEl.innerHTML = renderSysstateEmpty('No snapshot loaded.');
+      return;
+    }
+
+    const selectEl = document.getElementById('dab-quick-view-select');
+    const mode = String(selectEl?.value || 'summary').trim();
+    const settingsList = Array.isArray(data?.supported_settings) ? data.supported_settings : (Array.isArray(data?.settings_list?.list) ? data.settings_list.list : []);
+    const settingsValues = Array.isArray(data?.current_setting_values) ? data.current_setting_values : (Array.isArray(data?.settings_get?.values) ? data.settings_get.values : []);
+    const apps = Array.isArray(data?.installed_applications) ? data.installed_applications : (Array.isArray(data?.applications_list?.list) ? data.applications_list.list : []);
+    const voices = Array.isArray(data?.supported_voice_systems) ? data.supported_voice_systems : (Array.isArray(data?.voice_list?.list) ? data.voice_list.list : []);
+    const keys = Array.isArray(data?.supported_keys) ? data.supported_keys : (Array.isArray(data?.keys?.list) ? data.keys.list : []);
+    const ops = Array.isArray(dabOperationsGridRows) ? dabOperationsGridRows : [];
+
+    if (mode === 'settings-values') {
+      quickViewEl.innerHTML = renderSettingsValuesBlock(settingsValues);
+      return;
+    }
+    if (mode === 'settings-meta') {
+      quickViewEl.innerHTML = renderSettingsListBlock(settingsList);
+      return;
+    }
+    if (mode === 'applications') {
+      quickViewEl.innerHTML = renderApplicationsBlock(apps);
+      return;
+    }
+    if (mode === 'voices') {
+      quickViewEl.innerHTML = renderSysstateChipList(voices, 'No voices available.');
+      return;
+    }
+    if (mode === 'keys') {
+      quickViewEl.innerHTML = renderSysstateChipList(keys, 'No keys available.');
+      return;
+    }
+    if (mode === 'operations') {
+      quickViewEl.innerHTML = renderDabQuickOperationsTable(ops);
+      return;
+    }
+
+    quickViewEl.innerHTML = `
+      <table class="sysstate-table">
+        <thead><tr><th>Item</th><th>Count / Value</th></tr></thead>
+        <tbody>
+          <tr><td>Device</td><td>${escHtml(String(data.device_id || '-'))}</td></tr>
+          <tr><td>Last Updated</td><td>${escHtml(String(data.last_updated || data.captured_at || '--'))}</td></tr>
+          <tr><td>Current Settings</td><td>${settingsValues.length}</td></tr>
+          <tr><td>Settings Metadata</td><td>${settingsList.length}</td></tr>
+          <tr><td>Applications</td><td>${apps.length}</td></tr>
+          <tr><td>Voice Systems</td><td>${voices.length}</td></tr>
+          <tr><td>Input Keys</td><td>${keys.length}</td></tr>
+          <tr><td>Operations</td><td>${ops.length}</td></tr>
+        </tbody>
+      </table>`;
+  }
+
+  function renderDabQuickOperationsTable(rows) {
+    const arr = Array.isArray(rows) ? rows : [];
+    if (!arr.length) return renderSysstateEmpty('No operations data.');
+    return `<table class="sysstate-table">
+      <thead><tr><th>Operation</th><th>Supported</th><th>Metadata</th></tr></thead>
+      <tbody>
+        ${arr.map(row => `<tr>
+          <td>${escHtml(String(row.operation || '-'))}</td>
+          <td>${row.supported ? 'Yes' : 'No'}</td>
+          <td>${escHtml(String(row.metadata_source || '-'))}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>`;
   }
 
   async function loadDabOperationsGrid(deviceId = getSelectedDabDeviceId(), forceRefresh = false) {
@@ -3089,6 +3314,16 @@
         }
         if (streamBox) streamBox.classList.remove('switching');
         clearHdmiStreamOverlay();
+        // Force a fresh stream connection so browser/tests do not remain on a
+        // stale MJPEG/WebRTC pipeline after camera source changes.
+        await startHdmiStream({
+          smooth: true,
+          overlayText: 'Reconnecting live stream…',
+          forceRestart: true,
+        });
+        // If Gemini preview is currently tied to an active YTS command, force
+        // its preview img to reload against the new camera source.
+        ytsGeminiPreviewCommandId = null;
       }
       void Promise.allSettled([loadCaptureSource(), refreshCaptureDevices(), refreshStreamDiagnostics()]);
       if (resultEl) {
@@ -3115,6 +3350,111 @@
     if (captureSelectionBusy) return;
     if (hdmiStreamRunning) void stopHdmiStream();
     else void startHdmiStream();
+  }
+
+  function setFloatingStreamButtonState() {
+    const btn = document.getElementById('floating-stream-toggle-btn');
+    if (!btn) return;
+    btn.disabled = !hdmiStreamRunning;
+    btn.textContent = floatingStreamOpen && !floatingStreamHidden ? 'Hide Float' : 'Float Window';
+    btn.className = floatingStreamOpen && !floatingStreamHidden ? 'secondary' : 'secondary';
+  }
+
+  function setFloatingStreamReopenState() {
+    const reopen = document.getElementById('floating-stream-reopen-btn');
+    if (!reopen) return;
+    reopen.classList.toggle('visible', hdmiStreamRunning && floatingStreamOpen && floatingStreamHidden);
+  }
+
+  function renderFloatingStreamPlaceholder(message = 'Start the stream to open the floating preview.') {
+    const stage = document.getElementById('floating-stream-stage');
+    if (!stage) return;
+    stage.innerHTML = `<div class="empty-state">${escHtml(message)}</div>`;
+  }
+
+  function syncFloatingStreamContent() {
+    if (!floatingStreamOpen || floatingStreamHidden || !hdmiStreamRunning) return;
+    const stage = document.getElementById('floating-stream-stage');
+    if (!stage) return;
+    if (floatingStreamMode === 'webrtc') {
+      const mainPlayer = document.getElementById('hdmi-stream-player');
+      const stream = mainPlayer && mainPlayer.srcObject ? mainPlayer.srcObject : hdmiWebRtcRemoteStream;
+      if (!stream) {
+        renderFloatingStreamPlaceholder('Waiting for video...');
+        return;
+      }
+      let player = document.getElementById('floating-stream-player');
+      if (!player) {
+        stage.innerHTML = '<video id="floating-stream-player" playsinline autoplay muted></video>';
+        player = document.getElementById('floating-stream-player');
+      }
+      if (player.srcObject !== stream) player.srcObject = stream;
+      player.autoplay = true;
+      player.playsInline = true;
+      player.muted = true;
+      player.play().catch(() => {});
+      return;
+    }
+    if (floatingStreamMode === 'mjpeg' && floatingStreamUrl) {
+      let img = document.getElementById('floating-stream-img');
+      if (!img) {
+        stage.innerHTML = '<img id="floating-stream-img" alt="Floating HDMI stream" />';
+        img = document.getElementById('floating-stream-img');
+      }
+      if (img.src !== floatingStreamUrl) img.src = floatingStreamUrl;
+      return;
+    }
+    renderFloatingStreamPlaceholder('Waiting for stream...');
+  }
+
+  function showFloatingStreamWindow() {
+    if (!hdmiStreamRunning) return;
+    floatingStreamOpen = true;
+    floatingStreamHidden = false;
+    const win = document.getElementById('floating-stream-window');
+    if (win) win.classList.remove('hidden');
+    syncFloatingStreamContent();
+    setFloatingStreamButtonState();
+    setFloatingStreamReopenState();
+  }
+
+  function hideFloatingStreamWindow() {
+    if (!floatingStreamOpen) return;
+    floatingStreamHidden = true;
+    const win = document.getElementById('floating-stream-window');
+    if (win) win.classList.add('hidden');
+    setFloatingStreamButtonState();
+    setFloatingStreamReopenState();
+  }
+
+  function closeFloatingStreamWindow() {
+    floatingStreamOpen = false;
+    floatingStreamHidden = false;
+    floatingStreamMode = '';
+    floatingStreamUrl = '';
+    const win = document.getElementById('floating-stream-window');
+    if (win) win.classList.add('hidden');
+    renderFloatingStreamPlaceholder();
+    setFloatingStreamButtonState();
+    setFloatingStreamReopenState();
+  }
+
+  function toggleFloatingStreamWindow() {
+    if (!hdmiStreamRunning) return;
+    if (floatingStreamOpen && !floatingStreamHidden) hideFloatingStreamWindow();
+    else showFloatingStreamWindow();
+  }
+
+  function resetFloatingStreamForStop() {
+    floatingStreamOpen = false;
+    floatingStreamHidden = false;
+    floatingStreamMode = '';
+    floatingStreamUrl = '';
+    const win = document.getElementById('floating-stream-window');
+    if (win) win.classList.add('hidden');
+    renderFloatingStreamPlaceholder();
+    setFloatingStreamButtonState();
+    setFloatingStreamReopenState();
   }
 
   function resetHdmiAvPipeline() {
@@ -3183,7 +3523,7 @@
       clearHdmiStreamOverlay();
     }
 
-    container.innerHTML = '<video id="hdmi-stream-player" playsinline autoplay controls style="width:100%;display:block;border-radius:0.5rem;"></video><div id="hdmi-stream-overlay" class="stream-overlay"></div>';
+    container.innerHTML = '<video id="hdmi-stream-player" playsinline autoplay controls></video><div id="hdmi-stream-overlay" class="stream-overlay"></div>';
     const player = document.getElementById('hdmi-stream-player');
     if (!player) return false;
     if (forceRestart) player.src = '';
@@ -3227,6 +3567,9 @@
       }
       container.classList.remove('switching');
       clearHdmiStreamOverlay();
+      floatingStreamMode = 'webrtc';
+      floatingStreamUrl = '';
+      syncFloatingStreamContent();
       player.play().catch(() => {});
     };
 
@@ -3259,6 +3602,9 @@
     document.getElementById('stream-toggle-btn').textContent = '■ Stop Stream';
     document.getElementById('stream-toggle-btn').className = 'danger';
     hdmiStreamRunning = true;
+    floatingStreamMode = 'webrtc';
+    floatingStreamUrl = '';
+    setFloatingStreamButtonState();
     if (hdmiWebRtcHasAudio) {
       const audioContainer = document.getElementById('audio-stream-container');
       if (audioContainer) {
@@ -3348,6 +3694,9 @@
     };
     if (forceRestart) img.src = '';
     img.src = url;
+    floatingStreamMode = 'mjpeg';
+    floatingStreamUrl = url;
+    syncFloatingStreamContent();
     hdmiStreamStartupTimer = window.setTimeout(() => {
       if (token !== hdmiStreamTransitionToken) return;
       setHdmiStreamOverlay('Waiting for first frame from selected camera…');
@@ -3355,6 +3704,7 @@
     document.getElementById('stream-toggle-btn').textContent = '■ Stop Stream';
     document.getElementById('stream-toggle-btn').className = 'danger';
     hdmiStreamRunning = true;
+    setFloatingStreamButtonState();
   }
 
   async function startHdmiStream(options = {}) {
@@ -3418,6 +3768,7 @@
     document.getElementById('audio-toggle-btn').textContent = '🔊 Start Audio';
     document.getElementById('audio-toggle-btn').className = 'secondary';
     hdmiAudioRunning = false;
+    resetFloatingStreamForStop();
   }
 
   function setCaptureSwitchStatus(message, isError = false) {
@@ -3850,12 +4201,12 @@
     // Using a more structured HTML table
     let table = `<style>
       .yts-table { width:100%; border-collapse:collapse; font-size:0.78rem; }
-      .yts-table th, .yts-table td { padding: 0.45rem 0.6rem; text-align:left; border-bottom:1px solid #27272a; }
-      .yts-table th { font-weight:600; color:#b0b0b5; background: #18181b; position: sticky; top: 0; }
+      .yts-table th, .yts-table td { padding: 0.45rem 0.6rem; text-align:left; border-bottom:1px solid ${uiColor('--border')}; color:${uiColor('--text')}; }
+      .yts-table th { font-weight:600; color:${uiColor('--text-muted')}; background:${uiColor('--surface-2')}; position: sticky; top: 0; }
       .yts-table tr { cursor:pointer; }
-      .yts-table tr:hover { background: #27272a; }
-      .yts-table .id { color:#e4e4e7; max-width:180px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-      .yts-table .suite { color:#fcd34d; }
+      .yts-table tr:hover { background: ${uiColor('--surface-3')}; }
+      .yts-table .id { color:${uiColor('--text-strong')}; max-width:180px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      .yts-table .suite { color:${uiColor('--warning')}; }
     </style>
     <table class="yts-table">
       <thead><tr><th>Test ID</th><th>Title</th><th>Suite</th></tr></thead>
@@ -4057,6 +4408,7 @@
   }
 
   async function selectRun(runId) {
+    lastTaskRunnerExecution = null;
     selectedRunId = runId;
     document.getElementById('kpi-run').textContent = runId ? runId.slice(0, 8) : 'None';
     lastNarrationIdx = -1;
@@ -5282,6 +5634,7 @@
   
   let ytsTestCatalogCache = [];
   let ytsSelectedTestIds = new Set();
+  let lastTaskRunnerExecution = null;
 
   function getSelectedSelectValues(selectEl) {
     if (!selectEl) return [];
@@ -5524,12 +5877,12 @@
     
     let table = `<style>
       .yts-table { width:100%; border-collapse:collapse; font-size:0.78rem; }
-      .yts-table th, .yts-table td { padding: 0.45rem 0.6rem; text-align:left; border-bottom:1px solid #27272a; }
-      .yts-table th { font-weight:600; color:#b0b0b5; background: #18181b; position: sticky; top: 0; }
+      .yts-table th, .yts-table td { padding: 0.45rem 0.6rem; text-align:left; border-bottom:1px solid ${uiColor('--border')}; color:${uiColor('--text')}; }
+      .yts-table th { font-weight:600; color:${uiColor('--text-muted')}; background:${uiColor('--surface-2')}; position: sticky; top: 0; }
       .yts-table tr { cursor:pointer; }
-      .yts-table tr:hover { background: #27272a; }
-      .yts-table .id { color:#e4e4e7; max-width:180px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-      .yts-table .suite { color:#fcd34d; }
+      .yts-table tr:hover { background: ${uiColor('--surface-3')}; }
+      .yts-table .id { color:${uiColor('--text-strong')}; max-width:180px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      .yts-table .suite { color:${uiColor('--warning')}; }
     </style>
     <table class="yts-table">
       <thead><tr><th>Test ID</th><th>Title</th><th>Suite</th></tr></thead>
@@ -5650,6 +6003,7 @@
         refreshDabTranscript(selectedRunId),
         refreshTaskTraceLog(selectedRunId, data),
       ]);
+      refreshNewRunLivePanel({ runStatus: data });
 
       if (data.has_screenshot) {
         try {
@@ -5852,20 +6206,125 @@
     const goal = document.getElementById('goal-input').value.trim();
     const appId = document.getElementById('app-id-input').value.trim();
     const uiNavToggle = document.getElementById('run-ui-nav-toggle');
+    const engine = String(document.getElementById('run-engine-select')?.value || 'orchestrator');
+    const controlMode = String(document.getElementById('run-control-mode-select')?.value || 'DAB').toUpperCase();
+    const irDeviceInput = document.getElementById('run-ir-device-input');
+    const irDeviceId = String(irDeviceInput?.value || selectedIrDeviceId || 'samsung_tv_default').trim() || 'samsung_tv_default';
     const errEl = document.getElementById('start-error');
     if (!goal) { errEl.textContent = 'Goal is required.'; return; }
-    const deviceId = requireSelectedDabDevice('start-error', 'Select a DAB device before starting a run.');
-    if (!deviceId) return;
     errEl.textContent = '';
     try {
+      if (engine === 'task_runner') {
+        const taskBody = {
+          instruction: goal,
+          execute: true,
+          continue_on_error: true,
+          control_mode: controlMode,
+          max_steps: 12,
+        };
+        if (controlMode === 'IR') {
+          taskBody.ir_device_id = irDeviceId;
+          if (irDeviceInput) irDeviceInput.value = irDeviceId;
+        } else {
+          const dabDeviceId = requireSelectedDabDevice('start-error', 'Select a DAB device before running DAB task runner.');
+          if (!dabDeviceId) return;
+          taskBody.device_id = dabDeviceId;
+        }
+        const taskData = await api('/task/macro', 'POST', taskBody);
+        lastTaskRunnerExecution = taskData;
+        refreshNewRunLivePanel({ taskRunner: taskData, controlMode });
+        if (!taskData.success) {
+          const firstErr = Array.isArray(taskData.execution?.results)
+            ? taskData.execution.results.find(item => item && item.success === false)
+            : null;
+          errEl.textContent = (firstErr && firstErr.error) || 'Task runner failed.';
+        }
+        return;
+      }
+
+      if (controlMode === 'IR') {
+        errEl.textContent = 'IR mode requires "AI Task Runner (/task/macro)". Select runner type as Task Runner.';
+        return;
+      }
+
+      const deviceId = requireSelectedDabDevice('start-error', 'Select a DAB device before starting a run.');
+      if (!deviceId) return;
       const body = { goal };
       if (appId) body.app_id = appId;
       body.ui_navigation_allowed = !!(uiNavToggle && uiNavToggle.checked);
       body.device_id = deviceId;
+      body.control_mode = controlMode;
+      if (controlMode === 'IR') {
+        body.ir_device_id = irDeviceId;
+        if (irDeviceInput) irDeviceInput.value = irDeviceId;
+      }
       const data = await api('/run/start', 'POST', body);
+      lastTaskRunnerExecution = null;
       await loadRuns();
       selectRun(data.run_id);
     } catch (e) { errEl.textContent = e.message; }
+  }
+
+  function updateNewRunModeUi() {
+    const engine = String(document.getElementById('run-engine-select')?.value || 'orchestrator');
+    const controlMode = String(document.getElementById('run-control-mode-select')?.value || 'DAB').toUpperCase();
+    const irWrap = document.getElementById('run-ir-device-wrap');
+    const uiNav = document.getElementById('run-ui-nav-toggle');
+    if (irWrap) irWrap.style.display = controlMode === 'IR' ? '' : 'none';
+    if (uiNav) uiNav.disabled = engine === 'task_runner';
+  }
+
+  function refreshNewRunLivePanel(context = {}) {
+    const stage = document.getElementById('new-run-live-stage');
+    const statusEl = document.getElementById('new-run-live-status');
+    const logEl = document.getElementById('new-run-gemini-log');
+    if (!stage || !statusEl || !logEl) return;
+
+    const runStatus = context.runStatus || null;
+    const taskRunner = context.taskRunner || null;
+    const activeRun = !!(runStatus && ['PENDING', 'RUNNING'].includes(String(runStatus.status || '').toUpperCase()));
+    const hasTaskRunner = !!taskRunner;
+
+    if (activeRun || hasTaskRunner) {
+      stage.innerHTML = `<img src="${apiBase}/stream/hdmi?ts=${Date.now()}" alt="Runtime live stream" />`;
+      statusEl.textContent = activeRun
+        ? `Run ${selectedRunId ? selectedRunId.slice(0, 8) : ''} is active.`
+        : `Task runner executed in ${escHtml(String(context.controlMode || 'DAB'))} mode.`;
+    } else {
+      stage.innerHTML = '<div class="yts-live-preview-empty">Start a run or task runner job to watch live stream here.</div>';
+      statusEl.textContent = 'Starts after run/task begins.';
+    }
+
+    if (hasTaskRunner) {
+      const steps = Array.isArray(taskRunner.planned_actions) ? taskRunner.planned_actions : [];
+      const results = Array.isArray(taskRunner.execution?.results) ? taskRunner.execution.results : [];
+      const lines = [];
+      lines.push(`Instruction: ${taskRunner.instruction || '-'}`);
+      lines.push(`Success: ${taskRunner.success ? 'YES' : 'NO'}`);
+      lines.push(`Planned Steps: ${steps.length}`);
+      if (steps.length) {
+        lines.push('', 'Planned Actions:');
+        steps.forEach((step, idx) => lines.push(`${idx + 1}. ${String(step?.action || '-')}`));
+      }
+      if (results.length) {
+        lines.push('', 'Execution:');
+        results.forEach((r, idx) => {
+          const tag = r?.success ? 'PASS' : 'FAIL';
+          const err = r?.error ? ` - ${r.error}` : '';
+          lines.push(`${idx + 1}. ${String(r?.action || '-')} => ${tag}${err}`);
+        });
+      }
+      logEl.textContent = lines.join('\n');
+      return;
+    }
+
+    const req = document.getElementById('ai-request-log')?.textContent?.trim() || '';
+    const res = document.getElementById('ai-response-log')?.textContent?.trim() || '';
+    if (!req && !res) {
+      logEl.textContent = 'No Gemini logs yet.';
+      return;
+    }
+    logEl.textContent = `Gemini Request:\n${req || '-'}\n\nGemini Response:\n${res || '-'}`;
   }
 
   async function stopRun() {
@@ -5964,6 +6423,8 @@
     initYtsControlCenter();
     populateIrKeyOptions(defaultIrKeys);
     setRemoteMode(selectedRemoteMode || 'DAB', false);
+    updateNewRunModeUi();
+    refreshNewRunLivePanel();
     await Promise.allSettled([
       checkHealth(),
       loadAiModels(),

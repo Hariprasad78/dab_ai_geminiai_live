@@ -58,7 +58,11 @@ data class IrTrainRequestDto(
 data class TaskMacroRequestDto(
     val instruction: String,
     val execute: Boolean = false,
-    val continue_on_error: Boolean = true
+    val continue_on_error: Boolean = true,
+    val control_mode: String? = null,
+    val ir_device_id: String? = null,
+    val device_id: String? = null,
+    val max_steps: Int = 8
 )
 
 @Serializable

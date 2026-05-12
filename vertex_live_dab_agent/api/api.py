@@ -6386,7 +6386,33 @@ def _plan_task_macro_actions(instruction: str) -> List[ManualActionRequest]:
             )
             continue
 
+        brightness_match = re.search(r"\bbrightness\b[^0-9]*(\d{1,3})", lower)
+        if brightness_match:
+            brightness = max(0, min(100, int(brightness_match.group(1))))
+            actions.append(
+                ManualActionRequest(
+                    action="SET_SETTING",
+                    params={"key": "brightness", "value": brightness},
+                )
+            )
+            continue
+
         key_map = [
+            ("power", "PRESS_POWER"),
+            ("mute", "PRESS_MUTE"),
+            ("volume up", "PRESS_VOLUME_UP"),
+            ("volume down", "PRESS_VOLUME_DOWN"),
+            ("vol up", "PRESS_VOLUME_UP"),
+            ("vol down", "PRESS_VOLUME_DOWN"),
+            ("channel up", "PRESS_CHANNEL_UP"),
+            ("channel down", "PRESS_CHANNEL_DOWN"),
+            ("ch up", "PRESS_CHANNEL_UP"),
+            ("ch down", "PRESS_CHANNEL_DOWN"),
+            ("source", "PRESS_INPUT"),
+            ("input", "PRESS_INPUT"),
+            ("guide", "PRESS_GUIDE"),
+            ("info", "PRESS_INFO"),
+            ("exit", "PRESS_EXIT"),
             ("home", "PRESS_HOME"),
             ("back", "PRESS_BACK"),
             ("up", "PRESS_UP"),
@@ -6399,6 +6425,7 @@ def _plan_task_macro_actions(instruction: str) -> List[ManualActionRequest]:
             ("menu", "PRESS_MENU"),
             ("play", "PRESS_PLAY"),
             ("pause", "PRESS_PAUSE"),
+            ("stop", "PRESS_STOP"),
         ]
         matched = False
         for token, action_name in key_map:
@@ -6650,6 +6677,9 @@ def get_dab_client() -> DABClientBase:
     global _dab_client
     if _dab_client is None:
         _dab_client = create_dab_client()
+    if _screen_capture is not None:
+        with contextlib.suppress(Exception):
+            _screen_capture.set_dab_client(_dab_client)
     return _dab_client
 
 
@@ -8521,14 +8551,25 @@ async def stream_hdmi() -> StreamingResponse:
 
     async def frame_generator():
         boundary = b"--frame\r\n"
+        consecutive_errors = 0
         while True:
-            # Offload the blocking frame capture to a separate thread.
-            frame = await asyncio.to_thread(
-                capture.get_hdmi_stream_frame_jpeg, quality=config.hdmi_stream_jpeg_quality
-            )
+            try:
+                # Offload the blocking frame capture to a separate thread.
+                frame = await asyncio.to_thread(
+                    capture.get_hdmi_stream_frame_jpeg, quality=config.hdmi_stream_jpeg_quality
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                consecutive_errors += 1
+                if consecutive_errors == 1 or consecutive_errors % 20 == 0:
+                    logger.warning("HDMI stream frame capture error (%s): %s", consecutive_errors, exc)
+                await asyncio.sleep(0.12)
+                continue
             if frame is None:
                 await asyncio.sleep(0.02)
                 continue
+            consecutive_errors = 0
             headers = (
                 b"Content-Type: image/jpeg\r\n"
                 + f"Content-Length: {len(frame)}\r\n\r\n".encode("ascii")
@@ -9179,28 +9220,167 @@ async def manual_actions_batch(request: ManualActionBatchRequest) -> ManualActio
 
 @app.post("/task/macro", response_model=TaskMacroResponse)
 async def task_macro(request: TaskMacroRequest) -> TaskMacroResponse:
-    """Expand plain-language task into actions, optionally execute them."""
-    actions = _plan_task_macro_actions(request.instruction)
-    if not actions:
-        raise HTTPException(
-            status_code=400,
-            detail="Could not derive actions from instruction",
+    """Runtime agentic planner for plain-language tasks (no hardcoded macro parser)."""
+    goal = str(request.instruction or "").strip()
+    if not goal:
+        raise HTTPException(status_code=400, detail="instruction is required")
+
+    control_mode = str(request.control_mode or "").strip().upper() or None
+    ir_device_id = str(request.ir_device_id or "").strip() or None
+    device_id = str(request.device_id or "").strip() or None
+    max_steps = max(1, int(request.max_steps or 8))
+
+    # Fast-path for direct remote command intents in IR mode.
+    # The visual planner is optimized for UI navigation and may not always
+    # produce direct PRESS_* actions for goals like "volume up 2".
+    if control_mode == "IR":
+        direct_actions = _plan_task_macro_actions(goal)
+        if direct_actions:
+            routed_actions: List[ManualActionRequest] = []
+            for item in direct_actions:
+                routed_actions.append(
+                    ManualActionRequest(
+                        action=item.action,
+                        params=item.params,
+                        device_id=device_id or item.device_id,
+                        control_mode="IR",
+                        ir_device_id=ir_device_id or item.ir_device_id or "samsung_tv_default",
+                    )
+                )
+
+            if not request.execute:
+                return TaskMacroResponse(
+                    success=True,
+                    instruction=goal,
+                    planned_count=len(routed_actions),
+                    planned_actions=routed_actions,
+                    execution=None,
+                )
+
+            exec_results: List[ManualActionResponse] = []
+            all_success = True
+            for item in routed_actions:
+                try:
+                    result = await manual_action(item)
+                except HTTPException as exc:
+                    result = ManualActionResponse(success=False, action=item.action, error=str(exc.detail))
+                exec_results.append(result)
+                if not result.success:
+                    all_success = False
+                    if not request.continue_on_error:
+                        break
+
+            return TaskMacroResponse(
+                success=all_success,
+                instruction=goal,
+                planned_count=len(routed_actions),
+                planned_actions=routed_actions,
+                execution=ManualActionBatchResponse(
+                    success=all_success,
+                    total=len(exec_results),
+                    results=exec_results,
+                ),
+            )
+
+    planner = get_planner()
+    screen = get_screen_capture()
+    last_actions: List[str] = []
+    planned_actions: List[ManualActionRequest] = []
+    exec_results: List[ManualActionResponse] = []
+    all_success = True
+
+    observe_only_actions = {
+        "CAPTURE_SCREENSHOT",
+        "NEED_BETTER_VIEW",
+        "NEED_PLAYER_CONTROLS_VISIBLE",
+        "NEED_VIDEO_PLAYBACK_CONFIRMED",
+        "NEED_SETTINGS_GEAR_LOCATION",
+        "NEED_PLAYER_MENU_CONFIRMATION",
+        "NEED_STATS_FOR_NERDS_TOGGLE_CONFIRMATION",
+        "GET_STATE",
+    }
+
+    for step_idx in range(max_steps):
+        screenshot_b64: Optional[str] = None
+        ocr_text: Optional[str] = None
+        try:
+            cap = await screen.capture()
+            screenshot_b64 = cap.image_b64
+            ocr_text = cap.ocr_text
+        except Exception:
+            screenshot_b64 = None
+            ocr_text = None
+
+        planned = await planner.plan(
+            goal=goal,
+            screenshot_b64=screenshot_b64,
+            ocr_text=ocr_text,
+            last_actions=last_actions,
+            retry_count=step_idx,
         )
+        action_name = str(planned.action).strip().upper()
+
+        if action_name == "DONE":
+            break
+        if action_name == "FAILED":
+            all_success = False
+            exec_results.append(
+                ManualActionResponse(
+                    success=False,
+                    action="FAILED",
+                    error=str(planned.reason or "Planner failed to derive a valid next step"),
+                )
+            )
+            break
+
+        action_req = ManualActionRequest(
+            action=action_name,
+            params=planned.params or None,
+            device_id=device_id,
+            control_mode=control_mode,
+            ir_device_id=ir_device_id,
+        )
+        planned_actions.append(action_req)
+        last_actions.append(action_name)
+
+        if not request.execute:
+            continue
+
+        if action_name in observe_only_actions:
+            exec_results.append(
+                ManualActionResponse(
+                    success=True,
+                    action=action_name,
+                    result={"observation": True, "reason": str(planned.reason or "")},
+                )
+            )
+            continue
+
+        try:
+            result = await manual_action(action_req)
+        except HTTPException as exc:
+            result = ManualActionResponse(success=False, action=action_name, error=str(exc.detail))
+        exec_results.append(result)
+
+        if not result.success:
+            all_success = False
+            if not request.continue_on_error:
+                break
 
     execution: Optional[ManualActionBatchResponse] = None
     if request.execute:
-        execution = await manual_actions_batch(
-            ManualActionBatchRequest(
-                actions=actions,
-                continue_on_error=request.continue_on_error,
-            )
+        execution = ManualActionBatchResponse(
+            success=all_success,
+            total=len(exec_results),
+            results=exec_results,
         )
 
+    response_success = all_success if request.execute else bool(planned_actions)
     return TaskMacroResponse(
-        success=(execution.success if execution is not None else True),
-        instruction=request.instruction,
-        planned_count=len(actions),
-        planned_actions=actions,
+        success=response_success,
+        instruction=goal,
+        planned_count=len(planned_actions),
+        planned_actions=planned_actions,
         execution=execution,
     )
 

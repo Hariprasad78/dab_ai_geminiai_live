@@ -1,5 +1,24 @@
 package com.dabcontrol.app.ui.controls
 
+data class ControlsInfoRow(
+    val label: String,
+    val value: String
+)
+
+data class ControlsOperationRow(
+    val operation: String,
+    val supported: Boolean,
+    val defaultAction: String,
+    val relatedCount: Int
+)
+
+data class ControlsSettingRow(
+    val name: String,
+    val value: String,
+    val writable: Boolean,
+    val status: String
+)
+
 data class ControlsUiState(
     val isLoading: Boolean = false,
     val apiBaseUrl: String = "",
@@ -12,10 +31,10 @@ data class ControlsUiState(
     val actionName: String = "PRESS_HOME",
     val actionParamsJson: String = "{}",
     val batchActionsJson: String = """[{"action":"PRESS_HOME"},{"action":"WAIT","params":{"seconds":1.0}}]""",
-    val deviceInfoPreview: String = "--",
-    val capabilityPreview: String = "--",
-    val operationsPreview: String = "--",
-    val currentSettingsPreview: String = "--",
+    val deviceInfoRows: List<ControlsInfoRow> = emptyList(),
+    val capabilityRows: List<ControlsInfoRow> = emptyList(),
+    val operationRows: List<ControlsOperationRow> = emptyList(),
+    val settingRows: List<ControlsSettingRow> = emptyList(),
     val lastActionResult: String = "--",
     val lastBatchResult: String = "--",
     val irDeviceId: String = "samsung_tv_default",
