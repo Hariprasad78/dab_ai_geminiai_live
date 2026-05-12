@@ -1542,6 +1542,10 @@ class Orchestrator:
             elif self._is_timezone_setting_key(resolved_key):
                 resolved_key = "timezone"
             else:
+                if state.ui_navigation_allowed:
+                    state.chosen_route = "UI_NAVIGATION_FALLBACK"
+                    state.strategy_selected = "UI_NAVIGATION_ONLY"
+                    return [{"action": ActionType.LAUNCH_APP.value, "params": {"app_id": "settings"}}]
                 state.strategy_selected = "UNSUPPORTED_SETTING_OPERATION"
                 return [{"action": ActionType.FAILED.value, "params": {"reason": str(key_norm.get("reason") or "unsupported setting key")}}]
             setting_key = resolved_key
@@ -1559,6 +1563,9 @@ class Orchestrator:
 
             if method in {"dab", "adb"}:
                 state.strategy_selected = "DIRECT_SETTING_OPERATION"
+                state.chosen_route = "DIRECT_DAB" if method == "dab" else "ADB_FALLBACK"
+                state.requires_post_check = True
+                state.can_mark_done_now = False
                 if setting_value is not None:
                     resolved_value = setting_value
                     if method == "dab":
@@ -1573,8 +1580,18 @@ class Orchestrator:
                                 setting_value,
                                 resolved_value,
                             )
-                    return [{"action": ActionType.SET_SETTING.value, "params": {"key": setting_key, "value": resolved_value}}]
+                    return [
+                        {"action": ActionType.SET_SETTING.value, "params": {"key": setting_key, "value": resolved_value}},
+                        {"action": ActionType.GET_SETTING.value, "params": {"key": setting_key}},
+                    ]
                 return [{"action": ActionType.GET_SETTING.value, "params": {"key": setting_key}}]
+
+            if method != "adb":
+                state.route_rejection_reasons.append("ADB_FALLBACK")
+            if state.ui_navigation_allowed:
+                state.chosen_route = "UI_NAVIGATION_FALLBACK"
+                state.strategy_selected = "UI_NAVIGATION_ONLY"
+                return [{"action": ActionType.LAUNCH_APP.value, "params": {"app_id": "settings"}}]
 
             state.strategy_selected = "UNSUPPORTED_SETTING_OPERATION"
             return [
@@ -1590,6 +1607,10 @@ class Orchestrator:
             ]
 
         if self._is_settings_goal(state.goal):
+            if state.ui_navigation_allowed:
+                state.chosen_route = "UI_NAVIGATION_FALLBACK"
+                state.strategy_selected = "UI_NAVIGATION_ONLY"
+                return [{"action": ActionType.LAUNCH_APP.value, "params": {"app_id": "settings"}}]
             state.strategy_selected = "UNSUPPORTED_SETTING_OPERATION"
             return [
                 {
@@ -2135,7 +2156,7 @@ class Orchestrator:
         g = (goal or "").lower()
         if "youtube" in g and any(k in g for k in ("stats for nerds", "gear icon", "player control", "video control")):
             return False
-        return any(k in g for k in ("setting", "time zone", "timezone", "brightness", "contrast", "screensaver"))
+        return any(k in g for k in ("setting", "time zone", "timezone", "brightness", "contrast", "screensaver", "language"))
 
     @staticmethod
     def _is_youtube_player_task(goal: str) -> bool:
@@ -2613,7 +2634,7 @@ class Orchestrator:
                 aliases[friendly] = key
         if "time zone" in g or "timezone" in g:
             return "timezone"
-        if "language" in g or "locale" in g:
+        if "language" in g or "locale" in g or "launguge" in g:
             return "language"
         if "brightness" in g:
             for key in candidates:

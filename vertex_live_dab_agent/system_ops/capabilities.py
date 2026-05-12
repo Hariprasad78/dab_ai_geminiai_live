@@ -76,6 +76,12 @@ def build_capability_snapshot(
     supported_operations: Iterable[str],
     supported_settings: Iterable[Dict[str, Any]],
     supported_keys: Iterable[str],
+    supported_voices: Optional[Iterable[str]] = None,
+    installed_applications: Optional[Iterable[Dict[str, Any]]] = None,
+    platform_type: str = "unknown",
+    is_android: bool = False,
+    can_use_adb: bool = False,
+    unsupported_or_missing_capabilities: Optional[Iterable[str]] = None,
 ) -> Dict[str, Any]:
     operations = [str(op).strip() for op in (supported_operations or []) if str(op).strip()]
     keys = [str(k).strip().upper() for k in (supported_keys or []) if str(k).strip()]
@@ -93,7 +99,43 @@ def build_capability_snapshot(
         "supported_operations": operations,
         "supported_settings": settings_map,
         "supported_keys": sorted(set(keys)),
+        "supported_voices": [str(v).strip() for v in (supported_voices or []) if str(v).strip()],
+        "installed_applications": [a for a in (installed_applications or []) if isinstance(a, dict)],
+        "platform_type": str(platform_type or "unknown"),
+        "is_android": bool(is_android),
+        "can_use_adb": bool(can_use_adb),
+        "unsupported_or_missing_capabilities": [str(v).strip() for v in (unsupported_or_missing_capabilities or []) if str(v).strip()],
     }
+
+
+def normalize_application(snapshot: Dict[str, Any], user_input: str) -> Dict[str, Any]:
+    value = str(user_input or "").strip()
+    apps = [a for a in (snapshot.get("installed_applications") or []) if isinstance(a, dict)]
+    if not value:
+        return {"success": False, "reason": "application name is required"}
+    if not apps:
+        return {"success": False, "reason": "no installed applications were discovered"}
+
+    token = _normalize_token(value)
+    alias_map: Dict[str, Dict[str, Any]] = {}
+    for app in apps:
+        app_id = str(app.get("appId") or app.get("id") or "").strip()
+        friendly = str(app.get("friendlyName") or app.get("name") or "").strip()
+        if app_id:
+            alias_map[_normalize_token(app_id)] = app
+        if friendly:
+            alias_map[_normalize_token(friendly)] = app
+
+    if token in alias_map:
+        resolved = alias_map[token]
+        return {"success": True, "application": resolved, "corrected": _normalize_token(value) != token, "confidence": 0.98}
+
+    best = difflib.get_close_matches(token, list(alias_map.keys()), n=1, cutoff=0.8)
+    if best:
+        resolved = alias_map[best[0]]
+        score = difflib.SequenceMatcher(a=token, b=best[0]).ratio()
+        return {"success": True, "application": resolved, "corrected": True, "confidence": score}
+    return {"success": False, "reason": f"unsupported or ambiguous application '{value}'"}
 
 
 def has_operation(snapshot: Dict[str, Any], operation: str) -> bool:

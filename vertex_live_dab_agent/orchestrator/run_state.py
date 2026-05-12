@@ -90,6 +90,10 @@ class RunState(BaseModel):
     # Strategy and planning
     # ------------------------------------------------------------------ #
     strategy_selected: Optional[str] = None
+    chosen_route: Optional[str] = None
+    route_rejection_reasons: List[str] = Field(default_factory=list)
+    requires_post_check: bool = False
+    can_mark_done_now: bool = False
     resolution_failures: int = 0
     task_preplan: Dict[str, Any] = Field(default_factory=dict)
     verification_mode: Optional[str] = None
