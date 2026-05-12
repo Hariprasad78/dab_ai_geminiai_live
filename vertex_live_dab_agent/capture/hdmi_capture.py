@@ -79,6 +79,7 @@ class HdmiCaptureSession:
         self._cv2: Optional[Any] = None
         self._cap: Optional[Any] = None
         self._lock = threading.Lock()
+        self._capture_io_lock = threading.Lock()
         self._last_error: Optional[str] = None
         self._last_frame: Optional[Any] = None
         self._last_frame_ts: float = 0.0
@@ -193,6 +194,7 @@ class HdmiCaptureSession:
         """Release the capture device."""
         self._reader_stop.set()
         cap: Optional[Any] = None
+        reader: Optional[threading.Thread] = None
         with self._lock:
             reader = self._reader_thread
             self._reader_thread = None
@@ -200,11 +202,12 @@ class HdmiCaptureSession:
             if self._cap is not None:
                 cap = self._cap
                 self._cap = None
-        if cap is not None:
-            with contextlib.suppress(Exception):
-                cap.release()
         if reader is not None and reader.is_alive() and reader is not threading.current_thread():
-            reader.join(timeout=0.5)
+            reader.join(timeout=1.0)
+        if cap is not None:
+            with self._capture_io_lock:
+                with contextlib.suppress(Exception):
+                    cap.release()
 
     def _copy_frame(self, frame: Any) -> Any:
         try:
@@ -221,7 +224,10 @@ class HdmiCaptureSession:
                     break
                 cv2 = self._cv2
             # Never hold the shared lock during a potentially blocking read.
-            ok, frame = cap.read()
+            with self._capture_io_lock:
+                if self._reader_stop.is_set():
+                    break
+                ok, frame = cap.read()
             if ok and frame is not None:
                 try:
                     rotated = self._rotate_frame(frame)
