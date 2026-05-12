@@ -6,7 +6,10 @@ current HDMI/camera live feed.
 
 It does not start a true bidirectional Gemini Live session. Instead, it
 captures a fresh live frame for each CLI question and sends that frame to the
-configured Gemini model using the repo's existing client wiring.
+configured Gemini model using the repo's existing client wiring. The production
+YTS guided-test path uses the runtime validation agent in
+``vertex_live_dab_agent.yts_agent`` to build continuous sampled visual history,
+extract prompt-specific criteria, and block unsafe Pass decisions.
 
 Usage:
   python3 scripts/gemini_live_feed_cli.py

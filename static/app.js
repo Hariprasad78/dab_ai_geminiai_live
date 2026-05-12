@@ -735,6 +735,32 @@
       </div>`).join('');
   }
 
+  function upsertHistoryItem(data) {
+    if (!data || !data.command_id) return;
+    const summary = {
+      command_id: data.command_id,
+      command: data.command,
+      status: data.status,
+      interactive_ai: data.interactive_ai,
+      record_video: data.record_video,
+      record_audio: data.record_audio,
+      video_recording_status: data.video_recording_status,
+      audio_recording_status: data.audio_recording_status,
+      video_file_name: data.video_file_name,
+      result_file_name: data.result_file_name,
+      report_html_name: data.report_html_name,
+      report_pdf_name: data.report_pdf_name,
+      awaiting_input: data.awaiting_input,
+      updated_at: data.updated_at,
+      created_at: data.created_at,
+      returncode: data.returncode,
+      artifacts_dir: data.artifacts_dir,
+    };
+    const index = state.history.findIndex((item) => item.command_id === data.command_id);
+    if (index >= 0) state.history[index] = { ...state.history[index], ...summary };
+    else state.history.unshift(summary);
+  }
+
   function setYtsButtonsLocked(locked) {
     state.ytsJobRunning = !!locked;
     ['run-test-btn', 'discover-run-btn', 'advanced-run-btn', 'action-discover-btn', 'action-run-tests-btn'].forEach((id) => {
@@ -820,9 +846,13 @@
   function renderCommandDetail(data) {
     state.currentCommandId = data.command_id || null;
     if (state.currentCommandId) localStorage.setItem(YTS_COMMAND_STORAGE_KEY, state.currentCommandId);
+    upsertHistoryItem(data);
     $('live-command-status').textContent = `${data.status || 'unknown'} · ${data.command || '(starting...)'} · ${data.updated_at || ''}`;
-    const lines = Array.isArray(data.logs) && data.logs.length
-      ? data.logs.map((entry) => `[${entry.stream}] ${entry.message}`).join('\n')
+    const terminalLogs = Array.isArray(data.logs)
+      ? data.logs.filter((entry) => String(entry?.stream || '').toLowerCase() !== 'ai')
+      : [];
+    const lines = terminalLogs.length
+      ? terminalLogs.map((entry) => `[${entry.stream}] ${entry.message}`).join('\n')
       : [
           'Command: ' + (data.command || '(starting...)'),
           '',
@@ -879,8 +909,14 @@
   async function runLiveCommand(body, successMessage = '') {
     clearBanners();
     if (state.ytsJobRunning) {
-      showBanner('warning', 'A YTS job is already running. Wait for it to finish before starting another job.');
-      return;
+      await loadHistory(true);
+      const running = state.history.find((item) => String(item.status || '').toLowerCase() === 'running');
+      if (running) {
+        await openCommand(running.command_id, true);
+        showBanner('warning', 'A YTS job is already running. Wait for it to finish before starting another job.');
+        return;
+      }
+      setYtsButtonsLocked(false);
     }
     setYtsButtonsLocked(true);
     try {

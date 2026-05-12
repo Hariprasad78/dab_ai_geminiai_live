@@ -4988,6 +4988,36 @@
     }
   }
 
+  function upsertYtsCommandHistoryItem(data) {
+    if (!data || !data.command_id) return;
+    if (!Array.isArray(ytsCommandHistory)) ytsCommandHistory = [];
+    const summary = {
+      command_id: data.command_id,
+      command: data.command,
+      status: data.status,
+      interactive_ai: data.interactive_ai,
+      record_video: data.record_video,
+      record_audio: data.record_audio,
+      video_recording_status: data.video_recording_status,
+      audio_recording_status: data.audio_recording_status,
+      video_file_name: data.video_file_name,
+      result_file_name: data.result_file_name,
+      report_html_name: data.report_html_name,
+      report_pdf_name: data.report_pdf_name,
+      awaiting_input: data.awaiting_input,
+      updated_at: data.updated_at,
+      created_at: data.created_at,
+      returncode: data.returncode,
+      artifacts_dir: data.artifacts_dir,
+    };
+    const index = ytsCommandHistory.findIndex(item => item.command_id === data.command_id);
+    if (index >= 0) {
+      ytsCommandHistory[index] = { ...ytsCommandHistory[index], ...summary };
+    } else {
+      ytsCommandHistory.unshift(summary);
+    }
+  }
+
   async function openYtsCommandHistoryItem(commandId, options = {}) {
     if (!commandId) return;
     const { startPollingIfRunning = true } = options;
@@ -5031,8 +5061,11 @@
       statusEl.innerHTML = statusHtml('--error', `✗ Command failed${data.returncode !== null ? ` (exit code: ${data.returncode})` : ''}`);
     }
 
-    const liveLog = Array.isArray(data.logs) && data.logs.length
-      ? data.logs.map(entry => `[${entry.stream}] ${entry.message}`).join('\n')
+    const terminalLogs = Array.isArray(data.logs)
+      ? data.logs.filter(entry => String(entry?.stream || '').toLowerCase() !== 'ai')
+      : [];
+    const liveLog = terminalLogs.length
+      ? terminalLogs.map(entry => `[${entry.stream}] ${entry.message}`).join('\n')
       : '(waiting for output)';
 
     let output = `<strong>Command:</strong> ${escHtml(data.command || '(starting...)')}\n\n`;
@@ -5144,10 +5177,12 @@
     try {
       const data = await api(`/yts/command/live/${commandId}`);
       setCurrentYtsCommand(commandId);
+      upsertYtsCommandHistoryItem(data);
       renderYtsLiveCommandState(data);
       renderYtsCommandHistory();
       if (data.status !== 'running') {
         clearYtsCommandPolling();
+        await loadYtsCommandHistory(true);
       }
       return data;
     } catch (e) {
@@ -5495,11 +5530,14 @@
       ? ytsCommandHistory.find(item => String(item.status || '').toLowerCase() === 'running')
       : null;
     if (runningJob) {
-      setCurrentYtsCommand(runningJob.command_id);
-      startYtsCommandPolling(runningJob.command_id);
-      await pollLiveYtsCommand(runningJob.command_id);
-      document.getElementById('yts-command-status').innerHTML = statusHtml('--warning', `■ Wait for current YTS job to finish: ${escHtml(runningJob.command_id || '')}`);
-      return;
+      const latestRunning = await pollLiveYtsCommand(runningJob.command_id);
+      if (latestRunning?.status === 'running') {
+        setCurrentYtsCommand(runningJob.command_id);
+        startYtsCommandPolling(runningJob.command_id);
+        document.getElementById('yts-command-status').innerHTML = statusHtml('--warning', `■ Wait for current YTS job to finish: ${escHtml(runningJob.command_id || '')}`);
+        return;
+      }
+      await loadYtsCommandHistory(true);
     }
 
     const selectedDeviceId = requireSelectedDabDevice('yts-command-output', 'Select a DAB device before running YTS commands.');
@@ -5508,8 +5546,6 @@
       return;
     }
 
-    clearYtsCommandPolling();
-    setYtsRunControlsLocked(true);
     resultContainer.style.display = 'block';
     document.getElementById('yts-command-status').innerHTML = statusHtml('--info', `▌ Starting ${command}...`);
     document.getElementById('yts-command-output').textContent = '';
@@ -5614,6 +5650,9 @@
     if(verboseOut) {
         body.global_options['--verbose-output'] = verboseOut;
     }
+
+    clearYtsCommandPolling();
+    setYtsRunControlsLocked(true);
 
     try {
       const startData = await api('/yts/command/live', 'POST', body);

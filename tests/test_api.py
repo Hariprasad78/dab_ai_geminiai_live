@@ -610,13 +610,20 @@ async def test_yts_terminal_log_download(client):
     command_id = "cmd-terminal-log"
     state = api_mod._new_yts_live_state(command_id)
     state["command"] = "yts list"
-    state["logs"] = [{"stream": "stdout", "message": "loading"}]
+    state["logs"] = [
+        {"stream": "stdout", "message": "loading"},
+        {"stream": "ai", "message": "Gemini internal note", "operator_message": "AI note"},
+        {"stream": "stderr", "message": "raw warning"},
+    ]
     state["stdout"] = "loading\n"
     api_mod._yts_live_commands[command_id] = state
 
     resp = await client.get(f"/yts/command/live/{command_id}/terminal-log")
     assert resp.status_code == 200
     assert "loading" in resp.text
+    assert "raw warning" in resp.text
+    assert "Gemini internal note" not in resp.text
+    assert "AI note" not in resp.text
     assert resp.headers["content-type"].startswith("text/plain")
 
 
@@ -1360,6 +1367,41 @@ def test_prompt_ready_for_ai_response_waits_for_numeric_options():
     assert api_mod._prompt_ready_for_ai_response(prompt_entry) is True
 
 
+@pytest.mark.asyncio
+async def test_yts_stream_output_does_not_create_prompt_from_partial_instruction(monkeypatch):
+    command_id = "cmd-partial-instruction"
+    api_mod._yts_live_commands[command_id] = api_mod._new_yts_live_state(command_id, interactive_ai=True)
+
+    class FakeStream:
+        def __init__(self, lines):
+            self._lines = list(lines)
+
+        async def readline(self):
+            if self._lines:
+                return self._lines.pop(0)
+            return b""
+
+    async def fail_suggest(*_args, **_kwargs):
+        raise AssertionError("Gemini should not run for partial instruction text")
+
+    monkeypatch.setattr(api_mod, "_suggest_yts_prompt_response", fail_suggest)
+
+    await api_mod._append_yts_stream_output(
+        command_id,
+        "stdout",
+        FakeStream(
+            [
+                b"Confirm that the video is rendered correctly?\n",
+                b"Wait for the next instruction before selecting.\n",
+            ]
+        ),
+    )
+
+    state = api_mod._yts_live_commands[command_id]
+    assert state["prompts"] == []
+    assert state["responses"] == []
+
+
 def test_yts_prompt_requires_numeric_response_only_after_numeric_options_visible():
     assert api_mod._yts_prompt_requires_numeric_response(
         "Does the image on screen render correctly?",
@@ -1556,6 +1598,155 @@ async def test_yts_prompt_suggestion_pass_fail_guard_allows_pass_with_strong_evi
     )
 
     assert suggestion["response"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_yts_prompt_suggestion_activity_log_is_readable(monkeypatch):
+    command_id = "cmd-readable-ai-log"
+    state = api_mod._new_yts_live_state(command_id, interactive_ai=True)
+    state["logs"] = [{"stream": "stdout", "message": "Validate current playback."}]
+    api_mod._yts_live_commands[command_id] = state
+
+    async def fake_visual_context(_command_id, _prompt_text):
+        return {
+            "summary": "Continuous monitor saw YouTube playback.",
+            "source": "hdmi-capture",
+            "screenshot_b64": "img",
+            "observations": [],
+            "capture_status": {"configured_source": "hdmi-capture"},
+            "analysis": {
+                "summary": "YouTube video playback is visible.",
+                "detected_app_context": "YouTube",
+                "screen_type": "video_playback",
+                "youtube_active": True,
+                "video_playback_active": True,
+                "confidence": 0.92,
+                "requirement_seen": True,
+                "requirement_evidence": "Playback visible",
+                "recommended_result": "pass",
+            },
+            "timeline": [
+                {
+                    "summary": "YouTube video playback is visible.",
+                    "source": "hdmi-capture",
+                    "confidence": 0.92,
+                    "requirement_seen": True,
+                    "requirement_evidence": "Playback visible",
+                    "recommended_result": "pass",
+                    "detected_app_context": "YouTube",
+                    "screen_type": "video_playback",
+                    "youtube_active": True,
+                    "video_playback_active": True,
+                }
+            ],
+            "continuous_frame_count": 16,
+        }
+
+    class FakeVertexClient:
+        def __init__(self):
+            self.calls = 0
+
+        async def generate_content(self, prompt, screenshot_b64=None, session_id=None):
+            self.calls += 1
+            if self.calls == 1:
+                return json.dumps(
+                    {
+                        "test_title": "Playback validation",
+                        "test_type": "playback",
+                        "required_app_context": "YouTube",
+                        "required_state": "video_playback_active",
+                        "visual_requirements": [{"description": "video playback visible", "evidence_required": True}],
+                        "negative_conditions": ["wrong app"],
+                        "allowed_answers": [{"option": "1", "label": "Pass"}, {"option": "2", "label": "Fail"}],
+                        "minimum_evidence_policy": "Pass requires positive proof.",
+                    }
+                )
+            return json.dumps(
+                {
+                    "selected_option": "1",
+                    "selected_label": "Pass",
+                    "confidence": 0.91,
+                    "evidence_summary": "Playback visible",
+                    "missing_evidence": "Confirm playback remained active",
+                    "reason": "Current live feed confirms playback.",
+                    "safety_blocked_pass": False,
+                }
+            )
+
+    fake_client = FakeVertexClient()
+    monkeypatch.setattr(api_mod, "_ensure_yts_continuous_visual_context", fake_visual_context)
+    monkeypatch.setattr(api_mod, "get_vertex_text_client", lambda: fake_client)
+
+    suggestion = await api_mod._suggest_yts_prompt_response(
+        command_id,
+        "Validate current playback.\nPlease select from the following options:\n1: Pass\n2: Fail",
+        ["1", "2"],
+        prompt_id=1,
+    )
+
+    assert suggestion["response"] == "1"
+    ai_messages = [entry.get("operator_message", "") for entry in api_mod._yts_live_commands[command_id]["logs"] if entry.get("stream") == "ai"]
+    decision_log = "\n".join(ai_messages)
+    assert "Prompt title:" in decision_log
+    assert "Selected option: 1 (pass)" in decision_log
+    assert "- Confirm playback remained active" in decision_log
+    assert "C, o, n, f" not in decision_log
+
+
+@pytest.mark.asyncio
+async def test_yts_retry_prompt_skips_visual_validation(monkeypatch):
+    command_id = "cmd-retry-control"
+    state = api_mod._new_yts_live_state(command_id, interactive_ai=True)
+    state["logs"] = [{"stream": "stdout", "message": "FAILED - Marked by user"}]
+    api_mod._yts_live_commands[command_id] = state
+
+    async def fail_visual(*_args, **_kwargs):
+        raise AssertionError("Retry/result prompt should not run visual validation")
+
+    class FakeVertexClient:
+        def __init__(self):
+            self.calls = 0
+
+        async def generate_content(self, prompt, screenshot_b64=None, session_id=None):
+            self.calls += 1
+            if self.calls == 1:
+                return json.dumps(
+                    {
+                        "test_title": "Result retry prompt",
+                        "test_type": "control",
+                        "required_app_context": "unknown",
+                        "required_state": "unknown",
+                        "visual_requirements": [{"description": "result control prompt", "evidence_required": False}],
+                        "negative_conditions": [],
+                        "allowed_answers": [{"option": "1", "label": "Done"}, {"option": "2", "label": "Retry"}],
+                        "minimum_evidence_policy": "No visual evidence required for retry/control prompt.",
+                    }
+                )
+            return json.dumps(
+                {
+                    "selected_option": "1",
+                    "selected_label": "Done",
+                    "confidence": 0.9,
+                    "evidence_summary": "Console shows prior result and Done option.",
+                    "missing_evidence": [],
+                    "reason": "This is a result/retry control prompt.",
+                    "safety_blocked_pass": False,
+                }
+            )
+
+    fake_client = FakeVertexClient()
+    monkeypatch.setattr(api_mod, "_ensure_yts_continuous_visual_context", fail_visual)
+    monkeypatch.setattr(api_mod, "get_vertex_text_client", lambda: fake_client)
+
+    suggestion = await api_mod._suggest_yts_prompt_response(
+        command_id,
+        "FAILED - Marked by user\nPrevious Selection: 2\n1: Done\n2: Retry",
+        ["1", "2"],
+        prompt_id=1,
+    )
+
+    assert suggestion["response"] == "1"
+    assert suggestion["decision"]["selected_label"] == "Done"
 
 
 def test_heuristic_yts_prompt_response_prefers_numeric_option_for_numbered_prompt():

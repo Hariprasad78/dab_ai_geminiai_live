@@ -348,6 +348,35 @@ The current implementation does not self-train a local model yet. It first build
 
 This gives you the data pipeline needed before distilling a local navigation model.
 
+## Runtime YTS Validation Agent
+
+Interactive YTS guided prompts are handled by a runtime validation agent instead of a static "pick an option" Gemini prompt. For every YTS question, the backend now:
+
+- parses the full console prompt and answer options
+- extracts a structured expectation at runtime, including required app context, playback state, visual requirements, negative conditions, and allowed answers
+- continuously samples the live TV feed while YTS runs and stores timestamped visual observations
+- compares the extracted expectation with the current visual history before selecting an answer
+- blocks Pass when the live feed is outside the expected context, playback is missing, evidence is weak, evidence is stale, or the latest observation contradicts the prompt requirement
+
+The current live TV feed is always the source of truth. Previous runs can help the agent remember what a prompt usually asks, but memory never overrides current evidence.
+
+### YTS Memory
+
+Every interactive YTS run creates JSON memory under:
+
+```text
+artifacts/yts_memory/
+  tests/<test_key>.json
+  runs/<run_id>/memory.json
+  index.json
+```
+
+Test memory stores prompt hashes, extracted expectations, known evidence patterns, and previous decisions. Run memory stores prompt events, visual observations, agent decisions, and a final summary. If the same test appears again, the agent reloads previous expectations as context only. If the prompt text changes, a new prompt hash is stored and criteria are regenerated.
+
+### Anti-False-Pass Policy
+
+Pass is never selected by default. For visual or playback checks, Pass requires positive proof for every required condition from the live TV feed. If a prompt requires in-app YouTube playback and the feed shows launcher, home screen, system UI, another app, no active video, or unclear evidence, the validation gate rejects Pass and the agent selects Fail or Skip according to the available options and failure mode.
+
 ## Local Training And Detection
 
 The repo now includes a practical local-ML scaffold rather than a fake end-state:
