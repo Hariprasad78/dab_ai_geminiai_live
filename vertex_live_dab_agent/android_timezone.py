@@ -190,8 +190,9 @@ async def set_timezone_via_adb(device_id: str, timezone_id: str) -> Dict[str, An
     observed = str(readback.get("timezone") or "").strip()
     observed_persist = str(persist_readback.get("timezone") or "").strip()
     matched_settings = bool(readback.get("success")) and observed.lower() == tz.lower()
-    matched_persist = bool(persist_readback.get("success")) and observed_persist.lower() == tz.lower()
-    matched = matched_settings and matched_persist
+    persist_supported = bool(persist_readback.get("success"))
+    matched_persist = persist_supported and observed_persist.lower() == tz.lower()
+    matched = matched_settings and (matched_persist or not persist_supported)
     logger.info(
         "ADB timezone verification device_id=%s requested=%s observed=%s persist_observed=%s matched=%s",
         device_id,
