@@ -1467,29 +1467,11 @@
     const qsApi = new URLSearchParams(window.location.search).get('api');
     if (qsApi !== null) {
       setApiBase(qsApi);
-      checkHealth();
-      loadDabDevices();
-      loadIrStatus();
-      loadIrDevices(selectedIrDeviceId);
-      loadCaptureSource();
-      refreshCaptureDevices();
-      loadRuns();
-      loadTestCatalog();
-      loadAiModels();
       return;
     }
     const storedApi = (localStorage.getItem(API_STORAGE_KEY) || '').trim();
     const shouldPreferSameOrigin = isLocalOrigin() && !cfgApi;
-    setApiBase(shouldPreferSameOrigin ? '' : (storedApi || cfgApi || ''));
-    checkHealth();
-    loadDabDevices();
-    loadIrStatus();
-    loadIrDevices(selectedIrDeviceId);
-    loadCaptureSource();
-    refreshCaptureDevices();
-    loadRuns();
-    loadTestCatalog();
-    loadAiModels();
+    setApiBase(shouldPreferSameOrigin ? '' : (cfgApi || storedApi || ''));
   }
 
   function saveApiBase() {
@@ -2881,6 +2863,14 @@
         if (activeDeviceContext?.irDeviceId) selectedIrDeviceId = activeDeviceContext.irDeviceId;
         if (activeDeviceContext?.irDeviceId) localStorage.setItem(IR_DEVICE_STORAGE_KEY, selectedIrDeviceId);
         renderActiveDeviceContextPanel(data.validation);
+        await api('/capture/recover', 'POST', {}).catch(() => null);
+        if (hdmiStreamRunning) {
+          await startHdmiStream({
+            smooth: true,
+            overlayText: 'Reconnecting selected camera…',
+            forceRestart: true,
+          });
+        }
         await Promise.allSettled([loadIrDevices(selectedIrDeviceId), loadCaptureSource(), refreshCaptureDevices(), refreshStreamDiagnostics()]);
       }
     } catch (_) {
@@ -3299,6 +3289,7 @@
         device: requestedDevice,
         persist: true,
       });
+      await api('/capture/recover', 'POST', {}).catch(() => null);
       if (wasStreaming) {
         const ready = await waitForCaptureReady({
           source: requestedSource,
@@ -3689,8 +3680,15 @@
         window.clearTimeout(hdmiStreamStartupTimer);
         hdmiStreamStartupTimer = null;
       }
-      container.classList.remove('switching');
-      setHdmiStreamOverlay('Camera switch failed. Try again.');
+      container.classList.add('switching');
+      setHdmiStreamOverlay('Waiting for selected camera…');
+      void api('/capture/recover', 'POST', {}).finally(() => {
+        if (token !== hdmiStreamTransitionToken || !hdmiStreamRunning) return;
+        window.setTimeout(() => {
+          if (token !== hdmiStreamTransitionToken || !hdmiStreamRunning) return;
+          img.src = `${apiBase}/stream/hdmi?ts=${Date.now()}`;
+        }, 900);
+      });
     };
     if (forceRestart) img.src = '';
     img.src = url;
@@ -6484,12 +6482,12 @@
   // Init
   initializeDashboard();
   startCurrentSettingsRefreshLoop();
-  setInterval(checkHealth, 30000);
-  setInterval(loadRuns, 20000);
-  setInterval(loadCaptureSource, 60000);
-  setInterval(refreshCaptureDevices, 120000);
-  setInterval(refreshStreamDiagnostics, 60000);
-  setInterval(refreshSystemMetrics, 15000);
+  setInterval(checkHealth, 60000);
+  setInterval(loadRuns, 60000);
+  setInterval(loadCaptureSource, 120000);
+  setInterval(refreshCaptureDevices, 300000);
+  setInterval(refreshStreamDiagnostics, 120000);
+  setInterval(refreshSystemMetrics, 30000);
   window.addEventListener('resize', drawPerfGraph);
 </script>
 </body>

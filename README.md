@@ -540,7 +540,62 @@ export VERTEX_TEST_MODEL="gemini-2.5-flash"
 RUN_VERTEX_INTEGRATION_TESTS=1 pytest tests/test_vertex_integration.py -v -s
 ```
 
-## Frontend on GCP, harness local (recommended)
+## Raspberry Pi API-only backend + remote frontend (recommended)
+
+For Raspberry Pi deployments, run only the hardware/API backend on the Pi and
+serve the browser UI from another machine or GCP. This keeps the Pi focused on
+camera capture, audio, DAB/YTS, IR, and Gemini jobs instead of also serving the
+frontend page.
+
+On the Pi:
+
+```bash
+export CORS_ALLOW_ORIGINS=http://localhost:5173,http://YOUR_BUCKET.storage.googleapis.com,https://YOUR_UI_DOMAIN
+python -m vertex_live_dab_agent --api-only --host 0.0.0.0 --port 8081
+```
+
+With `SERVE_FRONTEND=false`, `/` returns a small API-only status JSON and the
+static UI files are not served by the Pi. API docs and hardware APIs still work:
+
+```text
+http://<pi-ip>:8081/health
+http://<pi-ip>:8081/docs
+```
+
+Host the UI anywhere that can reach the Pi API. Then set the UI API base to:
+
+```text
+http://<pi-ip>:8081
+```
+
+To serve only the frontend from another machine using this repo, run:
+
+```bash
+python -m vertex_live_dab_agent --frontend-only --backend-url http://<pi-ip>:8081 --host 0.0.0.0 --port 5173
+```
+
+Then open:
+
+```text
+http://<frontend-host>:5173/index.html
+```
+
+The frontend server generates `config.js` at runtime, so the UI, HDMI stream,
+YTS feed, Gemini visual feed, audio, and API calls all target `--backend-url`.
+Use `?api=http://other-backend:8081` only when you want to override that URL
+temporarily from the browser.
+
+For a GCP-hosted UI, either upload `static/index.html` and `static/config.js`
+with `window.__HARNESS_API_BASE__` pointing at the Pi API/tunnel URL, or open:
+
+```text
+http://<bucket>.storage.googleapis.com/index.html?api=http://<pi-ip>:8081
+```
+
+If the UI is outside your LAN, expose the Pi API with a secure tunnel or reverse
+proxy and put that public URL in `CORS_ALLOW_ORIGINS` and the UI API setting.
+
+## Frontend on GCP, harness local
 
 If you want **only the webpage** on GCP and keep all automation/harness logic
 on your local machine, use this pattern:

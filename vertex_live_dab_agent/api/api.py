@@ -125,6 +125,22 @@ _YTS_PROMPT_VISUAL_WAIT_SECONDS = float(os.environ.get("YTS_PROMPT_VISUAL_WAIT_S
 _YTS_PROMPT_MIN_VISUAL_FRAMES = int(os.environ.get("YTS_PROMPT_MIN_VISUAL_FRAMES", "12"))
 _last_cpu_times_snapshot: Optional[tuple[float, float]] = None
 
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = str(os.environ.get(name, "") or "").strip().lower()
+    if not value:
+        return bool(default)
+    return value in {"1", "true", "yes", "on"}
+
+
+def _env_csv(name: str) -> List[str]:
+    raw = str(os.environ.get(name, "") or "")
+    return [item.strip().rstrip("/") for item in raw.split(",") if item.strip()]
+
+
+_SERVE_FRONTEND = _env_bool("SERVE_FRONTEND", True)
+_CORS_ALLOW_ORIGINS = _env_csv("CORS_ALLOW_ORIGINS") or ["*"]
+
 app = FastAPI(
     title="Vertex Live DAB Agent",
     description="AI-driven Android TV testing tool using Vertex AI + LiveKit + DAB",
@@ -133,7 +149,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_CORS_ALLOW_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -448,7 +464,7 @@ def _resolve_active_capture_video_device() -> tuple[Optional[str], Dict[str, Any
                 preferred_kind="hdmi" if context.videoSource == "hdmi-capture" else "camera",
                 persist=True,
             )
-    capture.ensure_hdmi_session(force=True)
+    capture.ensure_hdmi_session(force=False)
     status = capture.capture_source_status(include_devices=False)
     device = str(status.get("hdmi_device") or status.get("selected_video_device") or "").strip()
     if context is not None and device != context.cameraPath:
@@ -457,6 +473,37 @@ def _resolve_active_capture_video_device() -> tuple[Optional[str], Dict[str, Any
         )
         return None, status
     return (device or None), status
+
+
+def _align_capture_preference_to_active_context(*, include_devices: bool = False) -> Dict[str, Any]:
+    """Keep preview/Gemini capture preference locked to the selected device context."""
+    capture = get_screen_capture()
+    context = _active_device_context()
+    if context is None:
+        return capture.capture_source_status(include_devices=include_devices)
+    if not context.cameraPath or not os.path.exists(context.cameraPath):
+        status = capture.capture_source_status(include_devices=include_devices)
+        status["context_alignment_error"] = (
+            f"Video mapping missing for selected device {context.displayName}. Please configure camera_devices.json."
+        )
+        return status
+
+    current = capture.capture_source_status(include_devices=False)
+    selected = str(current.get("selected_video_device") or "").strip()
+    active = str(current.get("hdmi_device") or "").strip()
+    configured_source = str(current.get("configured_source") or "").strip()
+    if (
+        selected != context.cameraPath
+        or (active and active != context.cameraPath)
+        or configured_source != context.videoSource
+    ):
+        capture.set_capture_preference(
+            source=context.videoSource,
+            device=context.cameraPath,
+            preferred_kind="hdmi" if context.videoSource == "hdmi-capture" else "camera",
+            persist=True,
+        )
+    return capture.capture_source_status(include_devices=include_devices)
 
 
 def _build_ffmpeg_video_input_args(
@@ -1975,7 +2022,7 @@ async def _apply_selected_device_context(device_id: Optional[str], persist: bool
 
             async def _warm_capture_session() -> None:
                 with contextlib.suppress(Exception):
-                    await asyncio.to_thread(capture.ensure_hdmi_session, True)
+                    await asyncio.to_thread(capture.ensure_hdmi_session, False)
 
             asyncio.create_task(_warm_capture_session())
         except Exception as exc:
@@ -7390,25 +7437,41 @@ def _legacy_status_payload() -> dict:
         "devices": devices,
     }
 
-@app.get("/", include_in_schema=False)
-async def serve_frontend() -> FileResponse:
+@app.get("/", include_in_schema=False, response_model=None)
+async def serve_frontend():
     """Serve the bundled browser demo."""
+    if not _SERVE_FRONTEND:
+        return JSONResponse(
+            {
+                "service": "vertex_live_dab_agent",
+                "mode": "api-only",
+                "message": "Frontend serving is disabled on this backend. Host static/index.html on another server and point it to this API.",
+                "health": "/health",
+                "docs": "/docs",
+            }
+        )
     return _frontend_file_response("index.html")
 
 
 @app.get("/app.js", include_in_schema=False)
 async def serve_frontend_app_js() -> FileResponse:
+    if not _SERVE_FRONTEND:
+        raise HTTPException(status_code=404, detail="Frontend serving is disabled")
     return _frontend_file_response("app.js", media_type="application/javascript")
 
 
 @app.get("/styles.css", include_in_schema=False)
 async def serve_frontend_styles() -> FileResponse:
+    if not _SERVE_FRONTEND:
+        raise HTTPException(status_code=404, detail="Frontend serving is disabled")
     return _frontend_file_response("styles.css", media_type="text/css")
 
 
 @app.get("/config.js", include_in_schema=False)
 async def serve_frontend_config() -> FileResponse:
     """Serve the frontend config bootstrap script."""
+    if not _SERVE_FRONTEND:
+        raise HTTPException(status_code=404, detail="Frontend serving is disabled")
     return _frontend_file_response("config.js", media_type="application/javascript")
 
 
@@ -7585,6 +7648,18 @@ async def config_summary() -> ConfigSummaryResponse:
         tts_voice_name=c.tts_voice_name,
         tts_language_code=c.tts_language_code,
     )
+
+
+@app.get("/config/deployment", response_model=dict)
+async def deployment_config() -> dict:
+    """Return non-sensitive deployment mode for remote frontend diagnostics."""
+    return {
+        "service": "vertex_live_dab_agent",
+        "serveFrontend": bool(_SERVE_FRONTEND),
+        "mode": "bundled-ui" if _SERVE_FRONTEND else "api-only",
+        "corsAllowOrigins": _CORS_ALLOW_ORIGINS,
+        "staticDir": str(_STATIC_DIR) if _SERVE_FRONTEND else "",
+    }
 
 
 @app.get("/config/runtime-model", response_model=RuntimeModelResponse)
@@ -8057,14 +8132,14 @@ async def _refresh_device_setting_values_snapshot_safe(device_id: Optional[str] 
 @app.get("/capture/source", response_model=CaptureSourceResponse)
 async def capture_source() -> CaptureSourceResponse:
     """Return capture source mode and HDMI availability diagnostics."""
-    status = get_screen_capture().capture_source_status(include_devices=False)
+    status = _align_capture_preference_to_active_context(include_devices=False)
     return CaptureSourceResponse(**status)
 
 
 @app.get("/capture/devices", response_model=dict)
 async def capture_devices() -> dict:
     """List available /dev/video* devices with kind/readability diagnostics."""
-    status = get_screen_capture().capture_source_status(include_devices=True)
+    status = _align_capture_preference_to_active_context(include_devices=True)
     return {
         "configured_source": status.get("configured_source"),
         "selected_video_device": status.get("selected_video_device"),
@@ -8121,9 +8196,17 @@ async def capture_select(request: CaptureSelectRequest) -> CaptureSourceResponse
     if selection_changed and bool(status.get("hdmi_configured")):
         async def _warm_capture_session() -> None:
             with contextlib.suppress(Exception):
-                await asyncio.to_thread(capture.ensure_hdmi_session, True)
+                await asyncio.to_thread(capture.ensure_hdmi_session, False)
 
         asyncio.create_task(_warm_capture_session())
+    return CaptureSourceResponse(**status)
+
+
+@app.post("/capture/recover", response_model=CaptureSourceResponse)
+async def capture_recover() -> CaptureSourceResponse:
+    """Recover the active context camera without forcing immediate reopen."""
+    _align_capture_preference_to_active_context(include_devices=False)
+    status = await asyncio.to_thread(get_screen_capture().recover_video_session, force=False)
     return CaptureSourceResponse(**status)
 
 
@@ -9049,14 +9132,18 @@ async def capture_screenshot() -> dict:
 async def stream_hdmi() -> StreamingResponse:
     """MJPEG stream from HDMI capture card for browser live preview."""
     config = get_config()
+    device, status = await asyncio.to_thread(_resolve_active_capture_video_device)
     capture = get_screen_capture()
-    status = capture.capture_source_status(include_devices=False)
 
     if not status.get("hdmi_configured"):
         raise HTTPException(
             status_code=400,
             detail="HDMI capture is disabled. Set IMAGE_SOURCE=auto or IMAGE_SOURCE=hdmi-capture.",
         )
+    if status.get("context_alignment_error"):
+        raise HTTPException(status_code=409, detail=str(status.get("context_alignment_error")))
+    if not device:
+        raise HTTPException(status_code=404, detail=str(status.get("hdmi_last_error") or "No selected camera stream available"))
 
     # Keep the stream endpoint tolerant of transient startup issues. The
     # capture helpers below already lazily retry session creation and emit
@@ -9065,6 +9152,8 @@ async def stream_hdmi() -> StreamingResponse:
     async def frame_generator():
         boundary = b"--frame\r\n"
         consecutive_errors = 0
+        consecutive_empty_frames = 0
+        last_recovery_ts = 0.0
         while True:
             try:
                 # Offload the blocking frame capture to a separate thread.
@@ -9080,9 +9169,25 @@ async def stream_hdmi() -> StreamingResponse:
                 await asyncio.sleep(0.12)
                 continue
             if frame is None:
-                await asyncio.sleep(0.02)
+                consecutive_empty_frames += 1
+                now = time.monotonic()
+                if consecutive_empty_frames == 1 or (
+                    consecutive_empty_frames % 30 == 0 and now - last_recovery_ts >= 5.0
+                ):
+                    last_recovery_ts = now
+                    status = await asyncio.to_thread(capture.recover_video_session, force=False)
+                    error = str(status.get("hdmi_last_error") or "waiting for selected camera")
+                    logger.warning(
+                        "HDMI stream waiting for camera (%s): selected=%s active=%s error=%s",
+                        consecutive_empty_frames,
+                        status.get("selected_video_device") or "",
+                        status.get("hdmi_device") or "",
+                        error,
+                    )
+                await asyncio.sleep(0.10)
                 continue
             consecutive_errors = 0
+            consecutive_empty_frames = 0
             headers = (
                 b"Content-Type: image/jpeg\r\n"
                 + f"Content-Length: {len(frame)}\r\n\r\n".encode("ascii")
@@ -9112,7 +9217,7 @@ async def stream_audio() -> StreamingResponse:
         raise HTTPException(status_code=500, detail="ffmpeg not found on host; required for /stream/audio")
 
     capture = get_screen_capture()
-    capture.ensure_hdmi_session(force=True)
+    capture.ensure_hdmi_session(force=False)
     capture_status = capture.capture_source_status(include_devices=False)
     strict_source_lock = bool(getattr(c, "hdmi_audio_follow_active_video", True)) and bool(
         str(capture_status.get("hdmi_device") or "").strip()
@@ -9655,6 +9760,9 @@ async def ir_devices() -> dict:
 
 @app.get("/ir/device/{device_id}/keys")
 async def ir_device_keys(device_id: str) -> dict:
+    context = find_device_context(str(device_id or "").strip())
+    if context is not None:
+        await _apply_selected_device_context(context.dabDeviceId, persist=True)
     service = _get_ir_service()
     keys = await asyncio.to_thread(service.list_keys, str(device_id or "").strip())
     return {
@@ -9679,11 +9787,15 @@ async def ir_train(request: IrTrainRequest) -> dict:
 
 @app.post("/ir/send")
 async def ir_send(request: IrSendRequest) -> dict:
-    active_context = _active_device_context()
     requested_device_id = str(request.device_id or "").strip()
+    requested_context = find_device_context(requested_device_id)
+    if requested_context is not None:
+        await _apply_selected_device_context(requested_context.dabDeviceId, persist=True)
+
+    active_context = _active_device_context()
     if active_context is not None:
         _log_active_context_for_job(active_context)
-        if requested_device_id and requested_device_id not in {active_context.irDeviceId, "samsung_tv_default"}:
+        if requested_device_id and requested_device_id != active_context.irDeviceId:
             raise HTTPException(
                 status_code=400,
                 detail=f"IR device {requested_device_id} is not mapped to active device context {active_context.displayName}.",

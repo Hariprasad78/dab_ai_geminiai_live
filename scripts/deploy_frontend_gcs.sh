@@ -20,7 +20,8 @@ if [[ -z "$PROJECT_ID" || -z "$BUCKET_NAME" ]]; then
 fi
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-INDEX_HTML="$ROOT_DIR/static/index.html"
+STATIC_DIR="$ROOT_DIR/static"
+INDEX_HTML="$STATIC_DIR/index.html"
 CONFIG_JS_TMP="$(mktemp)"
 
 cleanup() {
@@ -65,8 +66,10 @@ gcloud storage buckets add-iam-policy-binding "gs://$BUCKET_NAME" \
   --member=allUsers \
   --role=roles/storage.objectViewer >/dev/null
 
-echo "[6/7] Upload index.html"
-gcloud storage cp "$INDEX_HTML" "gs://$BUCKET_NAME/index.html" --cache-control="no-cache"
+echo "[6/7] Upload static frontend assets"
+gcloud storage cp "$STATIC_DIR" "gs://$BUCKET_NAME" \
+  --recursive \
+  --cache-control="no-cache"
 
 echo "[7/7] Upload config.js with static API base"
 gcloud storage cp "$CONFIG_JS_TMP" "gs://$BUCKET_NAME/config.js" --cache-control="no-cache"
