@@ -5,6 +5,12 @@ data class MetricPoint(
     val value: Float
 )
 
+data class DashboardDeviceContext(
+    val displayName: String,
+    val dabDeviceId: String,
+    val isActive: Boolean
+)
+
 data class DashboardUiState(
     val isLoading: Boolean = false,
     val autoRefreshEnabled: Boolean = true,
@@ -13,7 +19,9 @@ data class DashboardUiState(
     val mode: String = "--",
     val apiBaseUrl: String = "",
     val deviceIds: List<String> = emptyList(),
+    val deviceContexts: List<DashboardDeviceContext> = emptyList(),
     val selectedDeviceId: String = "",
+    val selectedDeviceName: String = "",
     val plannerModel: String = "",
     val liveModel: String = "",
     val availableModels: List<String> = emptyList(),

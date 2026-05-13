@@ -74,10 +74,17 @@ fun DeviceInfoScreen(
                         ) {
                             Text("Selected Device", style = MaterialTheme.typography.titleLarge)
                             Text(
-                                state.selectedDeviceId.ifBlank { "No device selected" },
+                                state.selectedDeviceName.ifBlank { state.selectedDeviceId.ifBlank { "No device selected" } },
                                 style = MaterialTheme.typography.bodyLarge,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
+                            if (state.selectedDeviceId.isNotBlank()) {
+                                Text(
+                                    "DAB ${state.selectedDeviceId} · YTS ${state.selectedYtsDeviceId.ifBlank { "--" }} · IR ${state.selectedIrDeviceId.ifBlank { "--" }}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                             Text(
                                 if (state.deviceIds.isEmpty()) {
                                     "Waiting for available devices from the backend."

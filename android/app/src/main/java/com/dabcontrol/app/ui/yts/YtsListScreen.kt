@@ -6,6 +6,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
@@ -380,6 +381,8 @@ private fun JobBlueprintCard(
     onStart: () -> Unit
 ) {
     SectionCard("Job Blueprint") {
+        val hasYtsRoute = state.ytsShortId.isNotBlank() || state.ytsDeviceId.isNotBlank()
+        val canStart = !state.isStarting && state.deviceId.isNotBlank() && hasYtsRoute
         Text(state.startStatus, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Surface(
             tonalElevation = 2.dp,
@@ -392,23 +395,40 @@ private fun JobBlueprintCard(
             ) {
                 Text("Shared device", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                 Text(
-                    state.deviceId.ifBlank { "Select the device from Dashboard first." },
+                    state.deviceDisplayName.ifBlank { state.deviceId.ifBlank { "Select the device from Dashboard or Live Control first." } },
                     color = if (state.deviceId.isBlank()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                 )
                 Text(
-                    "All YTS operations will run on this selected dashboard device.",
+                    "YTS now follows the unified device context from the updated backend mapping.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
+        OperatorSummaryStrip(
+            entries = listOf(
+                "Device" to state.deviceDisplayName.ifBlank { state.deviceId.ifBlank { "--" } },
+                "YTS Config" to state.ytsDeviceId.ifBlank { "--" },
+                "IR" to state.irDeviceId.ifBlank { "--" }
+            )
+        )
+        if (state.sharedDeviceIssues.isNotEmpty()) {
+            state.sharedDeviceIssues.take(2).forEach { issue ->
+                StatusLine(
+                    label = "Mapping issue",
+                    value = issue,
+                    tone = MaterialTheme.colorScheme.error
+                )
+            }
+        }
         OutlinedTextField(
-            value = state.deviceId,
-            onValueChange = onDeviceIdChanged,
-            label = { Text("Shared Device ID") },
+            value = state.deviceDisplayName.ifBlank { state.deviceId },
+            onValueChange = {},
+            label = { Text("Selected Device") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
-            supportingText = { Text("This stays synced with the dashboard device selection.") }
+            readOnly = true,
+            supportingText = { Text("Select by device name from Dashboard or Live Control. YTS runtime IDs are resolved automatically from that active device context.") }
         )
         OutlinedTextField(
             value = state.jsonOutputFile,
@@ -447,10 +467,10 @@ private fun JobBlueprintCard(
             )
         )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilledTonalButton(onClick = onStart, enabled = !state.isStarting) {
+            FilledTonalButton(onClick = onStart, enabled = canStart) {
                 Text(if (state.isStarting) "Starting..." else "Run Selected Tests")
             }
-            OutlinedButton(onClick = onStart, enabled = !state.isStarting && state.selectedTestIds.isEmpty()) {
+            OutlinedButton(onClick = onStart, enabled = canStart && state.selectedTestIds.isEmpty()) {
                 Text("Run Filtered Set")
             }
         }
@@ -1509,8 +1529,11 @@ private fun OperatorSummaryStrip(
 ) {
     val chipColor = if (dark) Color(0x33FFFFFF) else Color(0xFFF3F4F6)
     val textColor = if (dark) Color.White else Color(0xFF111827)
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        entries.take(3).forEach { (label, value) ->
+    Row(
+        modifier = Modifier.horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        entries.take(4).forEach { (label, value) ->
             Surface(
                 color = chipColor,
                 shape = RoundedCornerShape(14.dp),
@@ -1522,6 +1545,25 @@ private fun OperatorSummaryStrip(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun StatusLine(
+    label: String,
+    value: String,
+    tone: Color = MaterialTheme.colorScheme.primary
+) {
+    Surface(
+        color = tone.copy(alpha = 0.12f),
+        shape = RoundedCornerShape(14.dp)
+    ) {
+        Text(
+            "$label: $value",
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            style = MaterialTheme.typography.bodySmall,
+            color = tone
+        )
     }
 }
 

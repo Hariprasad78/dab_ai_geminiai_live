@@ -218,7 +218,7 @@ private fun DashboardCommandDeck(
             }
 
             DevicePickerCard(
-                deviceIds = state.deviceIds,
+                deviceContexts = state.deviceContexts,
                 selectedDeviceId = state.selectedDeviceId,
                 onSelect = onSelectDevice
             )
@@ -257,7 +257,7 @@ private fun KpiRow(state: DashboardUiState) {
         maxItemsInEachRow = 4
     ) {
         KpiCard("Backend", state.healthStatus, "Health signal", Modifier.fillMaxWidth())
-        KpiCard("Device", state.selectedDeviceId.ifBlank { "--" }, "Selected target", Modifier.fillMaxWidth())
+        KpiCard("Device", state.selectedDeviceName.ifBlank { state.selectedDeviceId.ifBlank { "--" } }, "Selected target", Modifier.fillMaxWidth())
         KpiCard("Cores", state.cpuCount?.toString() ?: "--", "CPU count", Modifier.fillMaxWidth())
         KpiCard("Sample", state.timestamp.substringAfter('T', state.timestamp).substringBefore('.'), "Last refresh", Modifier.fillMaxWidth())
     }
@@ -454,7 +454,7 @@ private fun UrlPresetPicker(
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun DevicePickerCard(
-    deviceIds: List<String>,
+    deviceContexts: List<DashboardDeviceContext>,
     selectedDeviceId: String,
     onSelect: (String) -> Unit
 ) {
@@ -464,22 +464,22 @@ private fun DevicePickerCard(
             "The selected device is reused across dashboard, live control, and YTS actions.",
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-        if (deviceIds.isEmpty()) {
+        if (deviceContexts.isEmpty()) {
             Text("No devices loaded yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else {
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                deviceIds.forEach { deviceId ->
-                    val selected = deviceId == selectedDeviceId
+                deviceContexts.forEach { context ->
+                    val selected = context.dabDeviceId == selectedDeviceId
                     Surface(
                         color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
                         shape = MaterialTheme.shapes.small,
-                        modifier = Modifier.clickable { onSelect(deviceId) }
+                        modifier = Modifier.clickable { onSelect(context.dabDeviceId) }
                     ) {
                         Text(
-                            text = deviceId,
+                            text = context.displayName,
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
                             color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
                         )

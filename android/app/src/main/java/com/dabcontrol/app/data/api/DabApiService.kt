@@ -15,6 +15,9 @@ interface DabApiService {
     @GET("system/metrics")
     suspend fun systemMetrics(): Response<JsonObject>
 
+    @GET("audio/source")
+    suspend fun audioSource(): Response<AudioSourceResponseDto>
+
     @GET("runs")
     suspend fun runs(): Response<List<RunSummaryItemDto>>
 
@@ -84,6 +87,15 @@ interface DabApiService {
     @GET("dab/devices")
     suspend fun dabDevices(): Response<DabDevicesResponseDto>
 
+    @GET("device/context")
+    suspend fun deviceContext(): Response<CurrentDeviceContextResponseDto>
+
+    @GET("device/contexts")
+    suspend fun deviceContexts(): Response<DeviceContextsResponseDto>
+
+    @POST("device/context/select")
+    suspend fun selectDeviceContext(@Body request: DeviceContextSelectRequestDto): Response<CurrentDeviceContextResponseDto>
+
     @GET("dab/device-info")
     suspend fun dabDeviceInfo(@Query("device_id") deviceId: String? = null): Response<JsonObject>
 
@@ -115,10 +127,10 @@ interface DabApiService {
     suspend fun irStatus(): Response<JsonObject>
 
     @GET("ir/devices")
-    suspend fun irDevices(): Response<JsonObject>
+    suspend fun irDevices(): Response<IrDevicesResponseDto>
 
     @GET("ir/device/{deviceId}/keys")
-    suspend fun irDeviceKeys(@Path("deviceId") deviceId: String): Response<JsonObject>
+    suspend fun irDeviceKeys(@Path("deviceId") deviceId: String): Response<IrDeviceKeysResponseDto>
 
     @POST("ir/send")
     suspend fun irSend(@Body request: IrSendRequestDto): Response<JsonObject>

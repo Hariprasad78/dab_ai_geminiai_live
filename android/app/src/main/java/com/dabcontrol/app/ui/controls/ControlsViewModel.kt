@@ -3,6 +3,12 @@ package com.dabcontrol.app.ui.controls
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.dabcontrol.app.data.api.ApiResult
+import com.dabcontrol.app.data.api.AudioSourceResponseDto
+import com.dabcontrol.app.data.api.CurrentDeviceContextResponseDto
+import com.dabcontrol.app.data.api.DeviceContextDto
+import com.dabcontrol.app.data.api.DeviceContextsResponseDto
+import com.dabcontrol.app.data.api.IrDeviceKeysResponseDto
+import com.dabcontrol.app.data.api.IrDevicesResponseDto
 import com.dabcontrol.app.data.api.IrSendRequestDto
 import com.dabcontrol.app.data.api.IrTrainRequestDto
 import com.dabcontrol.app.data.api.ManualActionBatchRequestDto
@@ -62,18 +68,36 @@ class ControlsViewModel @Inject constructor(
         }
         viewModelScope.launch {
             apiSettingsStore.selectedDeviceId.collectLatest { deviceId ->
-                if (deviceId.isNotBlank()) {
-                    _uiState.value = _uiState.value.copy(selectedDeviceId = deviceId)
-                }
+                _uiState.value = _uiState.value.copy(selectedDeviceId = deviceId)
             }
         }
         refreshAll(force = true)
     }
 
     fun onDeviceSelected(deviceId: String) {
-        _uiState.value = _uiState.value.copy(selectedDeviceId = deviceId)
         viewModelScope.launch {
-            apiSettingsStore.saveSelectedDeviceId(deviceId)
+            _uiState.value = _uiState.value.copy(refreshStatus = "Applying device context...")
+            when (val result = controlsRepository.selectDeviceContext(deviceId, persist = true)) {
+                is ApiResult.Success -> {
+                    val selected = applyContextState(
+                        currentContext = result,
+                        contexts = null
+                    )
+                    if (selected.isNotBlank()) {
+                        apiSettingsStore.saveSelectedDeviceId(selected)
+                    }
+                    refreshAll(force = true)
+                }
+                is ApiResult.HttpError -> {
+                    _uiState.value = _uiState.value.copy(error = "HTTP ${result.code}: ${result.message}")
+                }
+                is ApiResult.NetworkError -> {
+                    _uiState.value = _uiState.value.copy(error = "Network error: ${result.throwable.message}")
+                }
+                is ApiResult.UnknownError -> {
+                    _uiState.value = _uiState.value.copy(error = "Unknown error: ${result.throwable.message}")
+                }
+            }
         }
     }
 
@@ -102,7 +126,48 @@ class ControlsViewModel @Inject constructor(
         startStream()
     }
 
+    fun toggleAudioStream() {
+        val currentlyStreaming = _uiState.value.isAudioStreaming
+        _uiState.value = _uiState.value.copy(
+            isAudioStreaming = !currentlyStreaming,
+            audioStatus = if (currentlyStreaming) {
+                "Audio stream stopped."
+            } else {
+                "Starting HDMI audio stream..."
+            }
+        )
+    }
+
+    fun onAudioPlaybackReady() {
+        _uiState.value = _uiState.value.copy(audioStatus = "HDMI audio stream connected.")
+    }
+
+    fun onAudioPlaybackError(message: String) {
+        _uiState.value = _uiState.value.copy(
+            isAudioStreaming = false,
+            audioStatus = message.ifBlank { "Audio stream failed." }
+        )
+    }
+
+    fun onRemoteModeChanged(mode: ControlsRemoteMode) {
+        _uiState.value = _uiState.value.copy(
+            remoteMode = mode,
+            remoteStatus = if (mode == ControlsRemoteMode.DAB) {
+                "DAB remote ready."
+            } else {
+                "IR remote ready."
+            }
+        )
+        if (mode == ControlsRemoteMode.IR) {
+            fetchIrKeys(silent = true)
+        }
+    }
+
     fun sendRemoteAction(action: String) {
+        if (_uiState.value.remoteMode == ControlsRemoteMode.IR) {
+            sendIrRemoteAction(action)
+            return
+        }
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(remoteStatus = "Sending $action...")
             val request = ManualActionRequestDto(
@@ -129,6 +194,37 @@ class ControlsViewModel @Inject constructor(
                     remoteStatus = "$action failed",
                     lastActionResult = "Unknown error: ${res.throwable.message}"
                 )
+            }
+        }
+    }
+
+    private fun sendIrRemoteAction(action: String) {
+        viewModelScope.launch {
+            val keyName = resolveIrKeyName(action)
+            if (keyName == null) {
+                _uiState.value = _uiState.value.copy(
+                    remoteStatus = "No IR key mapping found for $action. Load IR keys first."
+                )
+                return@launch
+            }
+            _uiState.value = _uiState.value.copy(
+                remoteStatus = "Sending IR $keyName...",
+                irKeyName = keyName
+            )
+            val req = IrSendRequestDto(
+                device_id = _uiState.value.irDeviceId.trim(),
+                key_name = keyName
+            )
+            when (val result = controlsRepository.irSend(req)) {
+                is ApiResult.Success -> {
+                    _uiState.value = _uiState.value.copy(
+                        remoteStatus = "IR $keyName sent",
+                        irLastResult = result.data.toString().take(3500)
+                    )
+                }
+                is ApiResult.HttpError -> _uiState.value = _uiState.value.copy(remoteStatus = "IR failed: HTTP ${result.code}")
+                is ApiResult.NetworkError -> _uiState.value = _uiState.value.copy(remoteStatus = "IR failed: network")
+                is ApiResult.UnknownError -> _uiState.value = _uiState.value.copy(remoteStatus = "IR failed")
             }
         }
     }
@@ -236,30 +332,19 @@ class ControlsViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, error = null, refreshStatus = "Refreshing...")
             val devicesDef = async { controlsRepository.fetchDevices() }
-            val devicesRes = devicesDef.await()
+            val currentContextDef = async { controlsRepository.fetchCurrentDeviceContext() }
+            val contextsDef = async { controlsRepository.fetchDeviceContexts() }
 
-            val selected = when (devicesRes) {
-                is ApiResult.Success -> {
-                    val ids = devicesRes.data.devices.mapNotNull { it["device_id"]?.jsonPrimitive?.contentOrNull }.filter { it.isNotBlank() }
-                    val selectedFromApi = devicesRes.data.selected_device_id.orEmpty()
-                    val fallback = ids.firstOrNull().orEmpty()
-                    val resolved = if (selectedFromApi.isNotBlank()) selectedFromApi else fallback
-                    _uiState.value = _uiState.value.copy(
-                        deviceIds = ids,
-                        selectedDeviceId = if (_uiState.value.selectedDeviceId.isBlank()) resolved else _uiState.value.selectedDeviceId
-                    )
-                    if (_uiState.value.selectedDeviceId.isNotBlank()) {
-                        apiSettingsStore.saveSelectedDeviceId(_uiState.value.selectedDeviceId)
-                    }
-                    _uiState.value.selectedDeviceId
-                }
-                else -> _uiState.value.selectedDeviceId
-            }
+            val devicesRes = devicesDef.await()
+            val currentContextRes = currentContextDef.await()
+            val contextsRes = contextsDef.await()
+            val selected = applyContextState(currentContextRes, contextsRes)
 
             val infoDef = async { controlsRepository.fetchDeviceInfo(selected.ifBlank { null }) }
             val capsDef = async { controlsRepository.fetchCapabilityStatus(selected.ifBlank { null }, refresh = force) }
             val opsDef = async { controlsRepository.fetchOperationsGrid(selected.ifBlank { null }, refresh = force) }
             val curDef = async { controlsRepository.fetchCurrentSettings(selected.ifBlank { null }, refresh = force) }
+            val audioDef = async { controlsRepository.fetchAudioSource() }
             val irStatusDef = async { controlsRepository.irStatus() }
             val irDevicesDef = async { controlsRepository.irDevices() }
 
@@ -267,20 +352,27 @@ class ControlsViewModel @Inject constructor(
             val capsRes = capsDef.await()
             val opsRes = opsDef.await()
             val curRes = curDef.await()
+            val audioRes = audioDef.await()
             val irStatusRes = irStatusDef.await()
             val irDevicesRes = irDevicesDef.await()
 
             _uiState.value = _uiState.value.copy(
                 isLoading = false,
+                deviceIds = extractDeviceIds(devicesRes),
                 deviceInfoRows = buildDeviceInfoRows(infoRes),
                 capabilityRows = buildCapabilityRows(capsRes),
                 operationRows = buildOperationRows(opsRes),
                 settingRows = buildSettingRows(curRes),
-                irStatusPreview = preview(irStatusRes),
-                irDevicesPreview = preview(irDevicesRes),
+                audioSource = buildAudioSource(audioRes),
+                audioStatus = mergeAudioStatus(audioRes, _uiState.value.isAudioStreaming),
+                irStatusRows = buildIrStatusRows(irStatusRes),
+                irAvailableDevices = buildIrDeviceList(irDevicesRes),
                 refreshStatus = "Last refreshed at ${java.time.LocalTime.now().withNano(0)}",
-                error = firstError(devicesRes, infoRes, capsRes, opsRes, curRes, irStatusRes, irDevicesRes)
+                error = firstError(devicesRes, currentContextRes, contextsRes, infoRes, capsRes, opsRes, curRes, audioRes, irStatusRes, irDevicesRes)
             )
+            if (selected.isNotBlank()) {
+                apiSettingsStore.saveSelectedDeviceId(selected)
+            }
         }
     }
 
@@ -333,22 +425,140 @@ class ControlsViewModel @Inject constructor(
     }
 
     fun onIrDeviceChanged(value: String) {
-        _uiState.value = _uiState.value.copy(irDeviceId = value)
+        _uiState.value = _uiState.value.copy(irDeviceId = value, irAvailableKeys = emptyList())
     }
 
     fun onIrKeyChanged(value: String) {
         _uiState.value = _uiState.value.copy(irKeyName = value)
     }
 
-    fun fetchIrKeys() {
+    private fun resolveIrKeyName(action: String): String? {
+        val preferred = when (action) {
+            "PRESS_UP" -> listOf("UP", "KEY_UP", "CURSOR_UP")
+            "PRESS_DOWN" -> listOf("DOWN", "KEY_DOWN", "CURSOR_DOWN")
+            "PRESS_LEFT" -> listOf("LEFT", "KEY_LEFT", "CURSOR_LEFT")
+            "PRESS_RIGHT" -> listOf("RIGHT", "KEY_RIGHT", "CURSOR_RIGHT")
+            "PRESS_OK" -> listOf("ENTER", "OK", "SELECT", "KEY_ENTER")
+            "PRESS_BACK" -> listOf("BACK", "RETURN", "EXIT")
+            "PRESS_HOME" -> listOf("HOME")
+            "PRESS_MENU" -> listOf("MENU", "SETTINGS")
+            "PRESS_INFO" -> listOf("INFO", "GUIDE")
+            "PRESS_PLAY_PAUSE" -> listOf("PLAYPAUSE", "PLAY_PAUSE", "PLAY", "PAUSE")
+            "PRESS_POWER" -> listOf("POWER")
+            "PRESS_VOLUME_UP" -> listOf("VOLUMEUP", "VOLUP", "VOLUME_UP")
+            "PRESS_VOLUME_DOWN" -> listOf("VOLUMEDOWN", "VOLDOWN", "VOLUME_DOWN")
+            "PRESS_MUTE" -> listOf("MUTE")
+            else -> listOf(action.removePrefix("PRESS_"))
+        }
+        val available = _uiState.value.irAvailableKeys
+        if (available.isEmpty()) {
+            return preferred.firstOrNull()
+        }
+        preferred.forEach { candidate ->
+            available.firstOrNull { it.equals(candidate, ignoreCase = true) }?.let { return it }
+        }
+        val normalizedAvailable = available.associateBy { normalizeIrToken(it) }
+        preferred.firstNotNullOfOrNull { candidate ->
+            normalizedAvailable[normalizeIrToken(candidate)]
+        }?.let { return it }
+        return available.firstOrNull { normalizeIrToken(it).contains(normalizeIrToken(action.removePrefix("PRESS_"))) }
+    }
+
+    private fun normalizeIrToken(value: String): String = value.lowercase().replace(Regex("[^a-z0-9]"), "")
+
+    private fun applyContextState(
+        currentContext: ApiResult<CurrentDeviceContextResponseDto>,
+        contexts: ApiResult<DeviceContextsResponseDto>?
+    ): String {
+        val currentPayload = (currentContext as? ApiResult.Success)?.data
+        val mappedContexts = buildDeviceContexts(contexts, currentPayload)
+        val active = mappedContexts.firstOrNull { it.isActive }
+            ?: mappedContexts.firstOrNull { it.dabDeviceId == currentPayload?.selected_device_id.orEmpty() }
+        val resolvedSelected = active?.dabDeviceId
+            ?: currentPayload?.selected_device_id.orEmpty()
+            ?: _uiState.value.selectedDeviceId
+        val resolvedIrDeviceId = active?.irDeviceId
+            ?: currentPayload?.context?.irDeviceId.orEmpty()
+            ?: _uiState.value.irDeviceId
+        _uiState.value = _uiState.value.copy(
+            deviceContexts = mappedContexts,
+            selectedDeviceId = resolvedSelected,
+            selectedDeviceName = active?.displayName.orEmpty(),
+            selectedYtsDeviceId = active?.ytsDeviceId.orEmpty(),
+            selectedYtsShortId = active?.ytsShortId.orEmpty(),
+            selectedIrDeviceId = active?.irDeviceId.orEmpty(),
+            selectedVideoSource = active?.videoSource.orEmpty(),
+            selectedContextIssues = active?.issues ?: currentPayload?.validation?.issues.orEmpty(),
+            irDeviceId = if (resolvedIrDeviceId.isBlank()) _uiState.value.irDeviceId else resolvedIrDeviceId
+        )
+        return resolvedSelected
+    }
+
+    private fun buildDeviceContexts(
+        contexts: ApiResult<DeviceContextsResponseDto>?,
+        currentPayload: CurrentDeviceContextResponseDto?
+    ): List<ControlsDeviceContext> {
+        val payload = (contexts as? ApiResult.Success)?.data?.contexts.orEmpty()
+        if (payload.isNotEmpty()) {
+            return payload.map { dto ->
+                val readiness = dto.readiness
+                ControlsDeviceContext(
+                    contextId = dto.contextId,
+                    displayName = dto.displayName.ifBlank { dto.dabDeviceId },
+                    dabDeviceId = dto.dabDeviceId,
+                    ytsDeviceId = dto.ytsDeviceId,
+                    ytsShortId = readiness?.ytsShortId.orEmpty(),
+                    irDeviceId = dto.irDeviceId,
+                    videoSource = dto.videoSource.ifBlank { readiness?.videoSource.orEmpty() },
+                    isActive = dto.active,
+                    isReady = readiness?.valid ?: false,
+                    issues = readiness?.issues.orEmpty()
+                )
+            }
+        }
+
+        val current = currentPayload?.context ?: return emptyList()
+        return listOf(
+            ControlsDeviceContext(
+                contextId = current.contextId,
+                displayName = current.displayName.ifBlank { current.dabDeviceId },
+                dabDeviceId = current.dabDeviceId,
+                ytsDeviceId = current.ytsDeviceId,
+                ytsShortId = currentPayload.validation?.ytsShortId.orEmpty(),
+                irDeviceId = current.irDeviceId,
+                videoSource = current.videoSource.ifBlank { currentPayload.validation?.videoSource.orEmpty() },
+                isActive = true,
+                isReady = currentPayload.validation?.valid ?: false,
+                issues = currentPayload.validation?.issues.orEmpty()
+            )
+        )
+    }
+
+    fun fetchIrKeys() = fetchIrKeys(silent = false)
+
+    private fun fetchIrKeys(silent: Boolean) {
         viewModelScope.launch {
             val deviceId = _uiState.value.irDeviceId.trim()
             if (deviceId.isEmpty()) {
-                _uiState.value = _uiState.value.copy(irKeysPreview = "IR device id required")
+                if (!silent) {
+                    _uiState.value = _uiState.value.copy(error = "IR device id required")
+                }
                 return@launch
             }
-            _uiState.value = _uiState.value.copy(irKeysPreview = "Loading IR keys...")
-            _uiState.value = _uiState.value.copy(irKeysPreview = preview(controlsRepository.irDeviceKeys(deviceId)))
+            if (!silent) {
+                _uiState.value = _uiState.value.copy(refreshStatus = "Loading IR keys...")
+            }
+            when (val result = controlsRepository.irDeviceKeys(deviceId)) {
+                is ApiResult.Success -> {
+                    _uiState.value = _uiState.value.copy(
+                        irAvailableKeys = result.data.keys,
+                        refreshStatus = if (silent) _uiState.value.refreshStatus else "Loaded ${result.data.keys.size} IR keys."
+                    )
+                }
+                is ApiResult.HttpError -> if (!silent) _uiState.value = _uiState.value.copy(error = "HTTP ${result.code}: ${result.message}")
+                is ApiResult.NetworkError -> if (!silent) _uiState.value = _uiState.value.copy(error = "Network error: ${result.throwable.message}")
+                is ApiResult.UnknownError -> if (!silent) _uiState.value = _uiState.value.copy(error = "Unknown error: ${result.throwable.message}")
+            }
         }
     }
 
@@ -443,6 +653,8 @@ class ControlsViewModel @Inject constructor(
                 val data = result.data
                 when (data) {
                     is JsonObject -> data.toString().take(3500)
+                    is IrDevicesResponseDto -> data.devices.joinToString()
+                    is IrDeviceKeysResponseDto -> data.keys.joinToString()
                     else -> data.toString().take(3500)
                 }
             }
@@ -450,6 +662,65 @@ class ControlsViewModel @Inject constructor(
             is ApiResult.NetworkError -> "Network error: ${result.throwable.message}"
             is ApiResult.UnknownError -> "Unknown error: ${result.throwable.message}"
         }
+    }
+
+    private fun buildIrStatusRows(result: ApiResult<*>): List<ControlsInfoRow> {
+        val payload = (result as? ApiResult.Success<*>)?.data as? JsonObject ?: return emptyList()
+        return buildList {
+            payload.stringValue("service")?.takeIf { it.isNotBlank() }?.let { add(ControlsInfoRow("Service", it)) }
+            payload.stringValue("brand")?.takeIf { it.isNotBlank() }?.let { add(ControlsInfoRow("Brand", it)) }
+            payload.stringValue("active_device_id")?.takeIf { it.isNotBlank() }?.let { add(ControlsInfoRow("Active IR Profile", it)) }
+            payload.stringValue("status")?.takeIf { it.isNotBlank() }?.let { add(ControlsInfoRow("Status", it)) }
+        }
+    }
+
+    private fun buildAudioSource(result: ApiResult<AudioSourceResponseDto>): ControlsAudioSource? {
+        val payload = (result as? ApiResult.Success)?.data ?: return null
+        return ControlsAudioSource(
+            enabled = payload.enabled,
+            ffmpegAvailable = payload.ffmpeg_available,
+            device = payload.device.orEmpty(),
+            inputFormat = payload.input_format.orEmpty(),
+            sampleRate = payload.sample_rate?.toString().orEmpty(),
+            channels = payload.channels?.toString().orEmpty()
+        )
+    }
+
+    private fun mergeAudioStatus(
+        result: ApiResult<AudioSourceResponseDto>,
+        isPlaying: Boolean
+    ): String {
+        return when (result) {
+            is ApiResult.Success -> {
+                val data = result.data
+                when {
+                    !data.enabled -> "Audio streaming is disabled on the backend."
+                    !data.ffmpeg_available -> "Audio backend is missing ffmpeg."
+                    isPlaying -> "HDMI audio stream running."
+                    else -> "Audio stream ready for the selected device."
+                }
+            }
+            is ApiResult.HttpError -> "Audio failed: HTTP ${result.code}"
+            is ApiResult.NetworkError -> "Audio failed: network"
+            is ApiResult.UnknownError -> "Audio failed"
+        }
+    }
+
+    private fun buildIrDeviceList(result: ApiResult<IrDevicesResponseDto>): List<String> {
+        val payload = (result as? ApiResult.Success)?.data ?: return emptyList()
+        val devices = payload.devices.filter { it.isNotBlank() }
+        val activeIr = payload.active_device_id.orEmpty()
+        if (activeIr.isNotBlank() && _uiState.value.irDeviceId.isBlank()) {
+            _uiState.value = _uiState.value.copy(irDeviceId = activeIr)
+        }
+        return devices
+    }
+
+    private fun extractDeviceIds(result: ApiResult<com.dabcontrol.app.data.api.DabDevicesResponseDto>): List<String> {
+        val payload = (result as? ApiResult.Success)?.data ?: return emptyList()
+        return payload.devices
+            .mapNotNull { it["device_id"]?.jsonPrimitive?.contentOrNull }
+            .filter { it.isNotBlank() }
     }
 
     private fun buildDeviceInfoRows(result: ApiResult<*>): List<ControlsInfoRow> {
