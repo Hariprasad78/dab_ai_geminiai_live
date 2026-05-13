@@ -2,7 +2,13 @@ package com.dabcontrol.app.data.repo
 
 import com.dabcontrol.app.data.api.ApiClientFactory
 import com.dabcontrol.app.data.api.ApiResult
+import com.dabcontrol.app.data.api.AudioSourceResponseDto
+import com.dabcontrol.app.data.api.CurrentDeviceContextResponseDto
 import com.dabcontrol.app.data.api.DabDevicesResponseDto
+import com.dabcontrol.app.data.api.DeviceContextsResponseDto
+import com.dabcontrol.app.data.api.DeviceContextSelectRequestDto
+import com.dabcontrol.app.data.api.IrDeviceKeysResponseDto
+import com.dabcontrol.app.data.api.IrDevicesResponseDto
 import com.dabcontrol.app.data.api.IrSendRequestDto
 import com.dabcontrol.app.data.api.IrTrainRequestDto
 import com.dabcontrol.app.data.api.ManualActionBatchRequestDto
@@ -27,6 +33,24 @@ class ControlsRepository @Inject constructor(
 
     suspend fun fetchDevices(): ApiResult<DabDevicesResponseDto> = safeApiCall { service().dabDevices() }
 
+    suspend fun fetchAudioSource(): ApiResult<AudioSourceResponseDto> = safeApiCall { service().audioSource() }
+
+    suspend fun fetchCurrentDeviceContext(): ApiResult<CurrentDeviceContextResponseDto> =
+        safeApiCall { service().deviceContext() }
+
+    suspend fun fetchDeviceContexts(): ApiResult<DeviceContextsResponseDto> =
+        safeApiCall { service().deviceContexts() }
+
+    suspend fun selectDeviceContext(deviceId: String, persist: Boolean = true): ApiResult<CurrentDeviceContextResponseDto> =
+        safeApiCall {
+            service().selectDeviceContext(
+                DeviceContextSelectRequestDto(
+                    device_id = deviceId,
+                    persist = persist
+                )
+            )
+        }
+
     suspend fun fetchDeviceInfo(deviceId: String?): ApiResult<JsonObject> =
         safeApiCall { service().dabDeviceInfo(deviceId) }
 
@@ -47,9 +71,10 @@ class ControlsRepository @Inject constructor(
 
     suspend fun irStatus(): ApiResult<JsonObject> = safeApiCall { service().irStatus() }
 
-    suspend fun irDevices(): ApiResult<JsonObject> = safeApiCall { service().irDevices() }
+    suspend fun irDevices(): ApiResult<IrDevicesResponseDto> = safeApiCall { service().irDevices() }
 
-    suspend fun irDeviceKeys(deviceId: String): ApiResult<JsonObject> = safeApiCall { service().irDeviceKeys(deviceId) }
+    suspend fun irDeviceKeys(deviceId: String): ApiResult<IrDeviceKeysResponseDto> =
+        safeApiCall { service().irDeviceKeys(deviceId) }
 
     suspend fun irSend(request: IrSendRequestDto): ApiResult<JsonObject> = safeApiCall { service().irSend(request) }
 

@@ -9,6 +9,9 @@ data class DeviceInfoRow(
 data class DeviceInfoUiState(
     val isLoading: Boolean = false,
     val selectedDeviceId: String = "",
+    val selectedDeviceName: String = "",
+    val selectedYtsDeviceId: String = "",
+    val selectedIrDeviceId: String = "",
     val deviceIds: List<String> = emptyList(),
     val rows: List<DeviceInfoRow> = emptyList(),
     val error: String? = null

@@ -1,6 +1,7 @@
 package com.dabcontrol.app.ui.controls
 
 import android.graphics.BitmapFactory
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -45,6 +46,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
@@ -56,6 +59,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.compose.ui.platform.LocalContext
 import com.dabcontrol.app.ui.common.PremiumBackdrop
 import com.dabcontrol.app.ui.common.SectionLabel
 
@@ -107,45 +114,38 @@ fun ControlsScreen(
 
                 DeviceSelectionCard(
                     selectedDeviceId = state.selectedDeviceId,
+                    selectedDeviceName = state.selectedDeviceName,
+                    selectedYtsDeviceId = state.selectedYtsDeviceId,
+                    selectedYtsShortId = state.selectedYtsShortId,
+                    selectedIrDeviceId = state.selectedIrDeviceId,
+                    selectedVideoSource = state.selectedVideoSource,
+                    selectedContextIssues = state.selectedContextIssues,
+                    deviceContexts = state.deviceContexts,
                     deviceIds = state.deviceIds,
                     onDeviceSelected = viewModel::onDeviceSelected
                 )
 
                 LiveControlCard(
+                    apiBaseUrl = state.apiBaseUrl,
+                    selectedDeviceName = state.selectedDeviceName,
+                    selectedDeviceId = state.selectedDeviceId,
+                    selectedIrDeviceId = state.selectedIrDeviceId,
+                    isAudioStreaming = state.isAudioStreaming,
+                    audioStatus = state.audioStatus,
+                    audioSource = state.audioSource,
+                    remoteMode = state.remoteMode,
                     isStreaming = state.isStreaming,
                     streamFrameBytes = state.streamFrameBytes,
                     streamStatus = state.streamStatus,
                     remoteStatus = state.remoteStatus,
+                    irAvailableKeys = state.irAvailableKeys,
+                    onToggleAudioStream = viewModel::toggleAudioStream,
+                    onAudioPlaybackReady = viewModel::onAudioPlaybackReady,
+                    onAudioPlaybackError = viewModel::onAudioPlaybackError,
+                    onRemoteModeChanged = viewModel::onRemoteModeChanged,
                     onToggleStream = viewModel::toggleStream,
                     onRefreshStream = viewModel::refreshStream,
                     onSendRemoteAction = viewModel::sendRemoteAction
-                )
-
-                ActionWorkbenchCard(
-                    actionName = state.actionName,
-                    actionParamsJson = state.actionParamsJson,
-                    batchActionsJson = state.batchActionsJson,
-                    lastActionResult = state.lastActionResult,
-                    lastBatchResult = state.lastBatchResult,
-                    onActionChanged = viewModel::onActionChanged,
-                    onActionParamsChanged = viewModel::onActionParamsChanged,
-                    onBatchActionsChanged = viewModel::onBatchActionsChanged,
-                    onExecuteAction = viewModel::executeAction,
-                    onExecuteBatch = viewModel::executeBatch
-                )
-
-                IrControlsCard(
-                    irDeviceId = state.irDeviceId,
-                    irKeyName = state.irKeyName,
-                    irStatusPreview = state.irStatusPreview,
-                    irDevicesPreview = state.irDevicesPreview,
-                    irKeysPreview = state.irKeysPreview,
-                    irLastResult = state.irLastResult,
-                    onIrDeviceChanged = viewModel::onIrDeviceChanged,
-                    onIrKeyChanged = viewModel::onIrKeyChanged,
-                    onFetchIrKeys = viewModel::fetchIrKeys,
-                    onIrSend = viewModel::irSend,
-                    onIrTrain = viewModel::irTrain
                 )
 
                 AutomationLabCard(
@@ -235,6 +235,13 @@ fun DeviceInfoScreen(
 
             DeviceSelectionCard(
                 selectedDeviceId = state.selectedDeviceId,
+                selectedDeviceName = state.selectedDeviceName,
+                selectedYtsDeviceId = state.selectedYtsDeviceId,
+                selectedYtsShortId = state.selectedYtsShortId,
+                selectedIrDeviceId = state.selectedIrDeviceId,
+                selectedVideoSource = state.selectedVideoSource,
+                selectedContextIssues = state.selectedContextIssues,
+                deviceContexts = state.deviceContexts,
                 deviceIds = state.deviceIds,
                 onDeviceSelected = viewModel::onDeviceSelected
             )
@@ -397,27 +404,82 @@ private fun HeaderCard(
 @Composable
 private fun DeviceSelectionCard(
     selectedDeviceId: String,
+    selectedDeviceName: String,
+    selectedYtsDeviceId: String,
+    selectedYtsShortId: String,
+    selectedIrDeviceId: String,
+    selectedVideoSource: String,
+    selectedContextIssues: List<String>,
+    deviceContexts: List<ControlsDeviceContext>,
     deviceIds: List<String>,
     onDeviceSelected: (String) -> Unit
 ) {
     SectionCard(
         title = "Target Device",
-        subtitle = "Choose the active device before sending DAB or IR actions."
+        subtitle = "Choose one unified device context so DAB, YTS, IR, and video all stay routed together."
     ) {
-        OutlinedTextField(
-            value = selectedDeviceId,
-            onValueChange = onDeviceSelected,
-            label = { Text("Selected Device ID") },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true
-        )
-        if (deviceIds.isNotEmpty()) {
+        if (selectedDeviceId.isNotBlank()) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                tonalElevation = 2.dp,
+                shape = MaterialTheme.shapes.medium
+            ) {
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        selectedDeviceName.ifBlank { selectedDeviceId },
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    CompactTable(
+                        rows = listOf(
+                            ControlsInfoRow("DAB", selectedDeviceId),
+                            ControlsInfoRow("YTS Config", selectedYtsDeviceId.ifBlank { "--" }),
+                            ControlsInfoRow("IR", selectedIrDeviceId.ifBlank { "--" }),
+                            ControlsInfoRow("Video", selectedVideoSource.ifBlank { "--" })
+                        )
+                    )
+                }
+            }
+        }
+        if (deviceContexts.isNotEmpty()) {
+            Text("Available contexts", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium)
             ActionRow {
-                deviceIds.forEach { id ->
-                    OutlinedButton(onClick = { onDeviceSelected(id) }) {
-                        Text(id)
+                deviceContexts.forEach { context ->
+                    val selected = context.dabDeviceId == selectedDeviceId
+                    FilledTonalButton(
+                        onClick = { onDeviceSelected(context.dabDeviceId) },
+                        enabled = !selected
+                    ) {
+                        Text(context.displayName)
                     }
                 }
+            }
+            deviceContexts.firstOrNull { it.dabDeviceId == selectedDeviceId }?.let { context ->
+                StatusStrip(
+                    label = "Context readiness",
+                    value = if (context.isReady) "Mapped for DAB, YTS, IR, and capture" else "Needs attention"
+                )
+            }
+            if (selectedYtsShortId.isNotBlank()) {
+                Text(
+                    "YTS runtime mapping is resolved automatically in the background.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        } else if (deviceIds.isNotEmpty()) {
+            ActionRow {
+                deviceIds.forEach { id ->
+                    OutlinedButton(onClick = { onDeviceSelected(id) }) { Text(id) }
+                }
+            }
+        }
+        if (selectedContextIssues.isNotEmpty()) {
+            selectedContextIssues.forEach { issue ->
+                StatusStrip(label = "Context issue", value = issue, emphasized = true)
             }
         }
     }
@@ -425,25 +487,106 @@ private fun DeviceSelectionCard(
 
 @Composable
 private fun LiveControlCard(
+    apiBaseUrl: String,
+    selectedDeviceName: String,
+    selectedDeviceId: String,
+    selectedIrDeviceId: String,
+    isAudioStreaming: Boolean,
+    audioStatus: String,
+    audioSource: ControlsAudioSource?,
+    remoteMode: ControlsRemoteMode,
     isStreaming: Boolean,
     streamFrameBytes: ByteArray?,
     streamStatus: String,
     remoteStatus: String,
+    irAvailableKeys: List<String>,
+    onToggleAudioStream: () -> Unit,
+    onAudioPlaybackReady: () -> Unit,
+    onAudioPlaybackError: (String) -> Unit,
+    onRemoteModeChanged: (ControlsRemoteMode) -> Unit,
     onToggleStream: () -> Unit,
     onRefreshStream: () -> Unit,
     onSendRemoteAction: (String) -> Unit
 ) {
+    val context = LocalContext.current
     val frameBitmap = streamFrameBytes?.let { bytes ->
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+    }
+    val audioUrl = rememberAudioStreamUrl(apiBaseUrl)
+    val audioPlayer = remember(audioUrl) {
+        ExoPlayer.Builder(context).build().apply {
+            setMediaItem(MediaItem.fromUri(audioUrl))
+            prepare()
+        }
+    }
+
+    DisposableEffect(audioPlayer) {
+        val listener = object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_READY && audioPlayer.playWhenReady) {
+                    onAudioPlaybackReady()
+                }
+            }
+
+            override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                onAudioPlaybackError(error.message ?: "Audio stream failed.")
+            }
+        }
+        audioPlayer.addListener(listener)
+        onDispose {
+            audioPlayer.removeListener(listener)
+            audioPlayer.release()
+        }
+    }
+
+    LaunchedEffect(isAudioStreaming, audioUrl) {
+        if (isAudioStreaming) {
+            audioPlayer.setMediaItem(MediaItem.fromUri(audioUrl))
+            audioPlayer.prepare()
+            audioPlayer.playWhenReady = true
+        } else {
+            audioPlayer.playWhenReady = false
+            audioPlayer.stop()
+        }
     }
 
     SectionCard(
         title = "Live Stream & Remote",
-        subtitle = "Operate the device while keeping the HDMI feed visible."
+        subtitle = "Operate the device while keeping the HDMI video and audio streams available for the selected device."
     ) {
+        if (selectedDeviceId.isNotBlank()) {
+            StatusStrip(
+                label = if (remoteMode == ControlsRemoteMode.DAB) "DAB Route" else "IR Route",
+                value = if (remoteMode == ControlsRemoteMode.DAB) {
+                    "${selectedDeviceName.ifBlank { selectedDeviceId }} · ${selectedDeviceId}"
+                } else {
+                    "${selectedDeviceName.ifBlank { selectedDeviceId }} · ${selectedIrDeviceId.ifBlank { "auto IR profile" }}"
+                }
+            )
+        }
+        ActionRow {
+            FilledTonalButton(
+                onClick = { onRemoteModeChanged(ControlsRemoteMode.DAB) },
+                enabled = remoteMode != ControlsRemoteMode.DAB
+            ) {
+                Text("DAB Remote")
+            }
+            FilledTonalButton(
+                onClick = { onRemoteModeChanged(ControlsRemoteMode.IR) },
+                enabled = remoteMode != ControlsRemoteMode.IR
+            ) {
+                Text("IR Remote")
+            }
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             FilledTonalButton(onClick = onToggleStream) {
                 Text(if (isStreaming) "Stop Stream" else "Start Stream")
+            }
+            FilledTonalButton(
+                onClick = onToggleAudioStream,
+                enabled = audioSource?.enabled != false && audioSource?.ffmpegAvailable != false
+            ) {
+                Text(if (isAudioStreaming) "Stop Audio" else "Start Audio")
             }
             OutlinedButton(onClick = onRefreshStream) {
                 Text("Reconnect")
@@ -476,9 +619,44 @@ private fun LiveControlCard(
         }
 
         StatusStrip(label = "Stream", value = streamStatus)
+        StatusStrip(label = "Audio", value = audioStatus)
+        audioSource?.let { source ->
+            CompactTable(
+                rows = listOf(
+                    ControlsInfoRow("Input", source.inputFormat.ifBlank { "--" }),
+                    ControlsInfoRow("Device", source.device.ifBlank { "Auto-selected" }),
+                    ControlsInfoRow("Sample Rate", source.sampleRate.ifBlank { "--" }),
+                    ControlsInfoRow("Channels", source.channels.ifBlank { "--" })
+                )
+            )
+        }
+        StatusStrip(
+            label = "Remote Mode",
+            value = if (remoteMode == ControlsRemoteMode.DAB) {
+                "Direct DAB control for the selected device"
+            } else {
+                "IR control auto-configured from the selected device context"
+            }
+        )
+        if (remoteMode == ControlsRemoteMode.IR && irAvailableKeys.isNotEmpty()) {
+            StatusStrip(
+                label = "IR Profile",
+                value = "${irAvailableKeys.size} mapped keys loaded for ${selectedIrDeviceId.ifBlank { "current profile" }}"
+            )
+        }
         HorizontalDivider()
-        RemotePad(onSendRemoteAction = onSendRemoteAction)
+        RemotePad(
+            remoteMode = remoteMode,
+            onSendRemoteAction = onSendRemoteAction
+        )
         StatusStrip(label = "Remote", value = remoteStatus)
+    }
+}
+
+@Composable
+private fun rememberAudioStreamUrl(apiBaseUrl: String): String {
+    return remember(apiBaseUrl) {
+        "${apiBaseUrl.trimEnd('/')}/stream/audio?ts=${System.currentTimeMillis()}"
     }
 }
 
@@ -549,28 +727,34 @@ private fun FloatingStreamOverlay(
 
 @Composable
 private fun RemotePad(
+    remoteMode: ControlsRemoteMode,
     onSendRemoteAction: (String) -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text(
+            if (remoteMode == ControlsRemoteMode.DAB) "Precision D-pad for direct DAB input" else "IR remote mode uses the same pad with IR key routing",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.Center
         ) {
-            FilledTonalButton(onClick = { onSendRemoteAction("PRESS_UP") }) { Text("Up") }
+            RemoteDirectionalButton(label = "Up", onClick = { onSendRemoteAction("PRESS_UP") })
         }
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.Center
         ) {
-            OutlinedButton(onClick = { onSendRemoteAction("PRESS_LEFT") }) { Text("Left") }
-            FilledTonalButton(onClick = { onSendRemoteAction("PRESS_OK") }) { Text("OK") }
-            OutlinedButton(onClick = { onSendRemoteAction("PRESS_RIGHT") }) { Text("Right") }
+            RemoteDirectionalButton(label = "Left", onClick = { onSendRemoteAction("PRESS_LEFT") })
+            RemoteCenterButton(label = "OK", onClick = { onSendRemoteAction("PRESS_OK") })
+            RemoteDirectionalButton(label = "Right", onClick = { onSendRemoteAction("PRESS_RIGHT") })
         }
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.Center
         ) {
-            FilledTonalButton(onClick = { onSendRemoteAction("PRESS_DOWN") }) { Text("Down") }
+            RemoteDirectionalButton(label = "Down", onClick = { onSendRemoteAction("PRESS_DOWN") })
         }
         ActionRow {
             listOf(
@@ -579,6 +763,8 @@ private fun RemotePad(
                 "Menu" to "PRESS_MENU",
                 "Info" to "PRESS_INFO",
                 "Play/Pause" to "PRESS_PLAY_PAUSE",
+                "Vol +" to "PRESS_VOLUME_UP",
+                "Vol -" to "PRESS_VOLUME_DOWN",
                 "Power" to "PRESS_POWER"
             ).forEach { (label, action) ->
                 OutlinedButton(onClick = { onSendRemoteAction(action) }) {
@@ -590,52 +776,32 @@ private fun RemotePad(
 }
 
 @Composable
-private fun ActionWorkbenchCard(
-    actionName: String,
-    actionParamsJson: String,
-    batchActionsJson: String,
-    lastActionResult: String,
-    lastBatchResult: String,
-    onActionChanged: (String) -> Unit,
-    onActionParamsChanged: (String) -> Unit,
-    onBatchActionsChanged: (String) -> Unit,
-    onExecuteAction: () -> Unit,
-    onExecuteBatch: () -> Unit
+private fun RemoteDirectionalButton(
+    label: String,
+    onClick: () -> Unit
 ) {
-    SectionCard(
-        title = "Action Workbench",
-        subtitle = "Send direct manual actions or stage multi-step batches for advanced control."
+    FilledTonalButton(
+        onClick = onClick,
+        modifier = Modifier
+            .width(96.dp)
+            .height(52.dp)
     ) {
-        Text("Single Action", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Medium)
-        OutlinedTextField(
-            value = actionName,
-            onValueChange = onActionChanged,
-            label = { Text("Action") },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true
-        )
-        OutlinedTextField(
-            value = actionParamsJson,
-            onValueChange = onActionParamsChanged,
-            label = { Text("Action Params JSON") },
-            modifier = Modifier.fillMaxWidth(),
-            minLines = 3
-        )
-        FilledTonalButton(onClick = onExecuteAction) { Text("Run Action") }
-        PreviewBlock(title = "Last Action Result", value = lastActionResult)
+        Text(label)
+    }
+}
 
-        HorizontalDivider()
-
-        Text("Batch Actions", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Medium)
-        OutlinedTextField(
-            value = batchActionsJson,
-            onValueChange = onBatchActionsChanged,
-            label = { Text("Batch JSON Array") },
-            modifier = Modifier.fillMaxWidth(),
-            minLines = 5
-        )
-        FilledTonalButton(onClick = onExecuteBatch) { Text("Run Batch") }
-        PreviewBlock(title = "Last Batch Result", value = lastBatchResult)
+@Composable
+private fun RemoteCenterButton(
+    label: String,
+    onClick: () -> Unit
+) {
+    Button(
+        onClick = onClick,
+        modifier = Modifier
+            .width(104.dp)
+            .height(56.dp)
+    ) {
+        Text(label)
     }
 }
 
@@ -701,50 +867,6 @@ private fun TableHeaderRow(columns: List<String>) {
                 )
             }
         }
-    }
-}
-
-@Composable
-private fun IrControlsCard(
-    irDeviceId: String,
-    irKeyName: String,
-    irStatusPreview: String,
-    irDevicesPreview: String,
-    irKeysPreview: String,
-    irLastResult: String,
-    onIrDeviceChanged: (String) -> Unit,
-    onIrKeyChanged: (String) -> Unit,
-    onFetchIrKeys: () -> Unit,
-    onIrSend: () -> Unit,
-    onIrTrain: () -> Unit
-) {
-    SectionCard(
-        title = "IR Tools",
-        subtitle = "Fallback infrared controls for devices or commands not covered by DAB."
-    ) {
-        OutlinedTextField(
-            value = irDeviceId,
-            onValueChange = onIrDeviceChanged,
-            label = { Text("IR Device ID") },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true
-        )
-        OutlinedTextField(
-            value = irKeyName,
-            onValueChange = onIrKeyChanged,
-            label = { Text("IR Key Name") },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true
-        )
-        ActionRow {
-            FilledTonalButton(onClick = onFetchIrKeys) { Text("Load Keys") }
-            OutlinedButton(onClick = onIrSend) { Text("Send Key") }
-            OutlinedButton(onClick = onIrTrain) { Text("Train Key") }
-        }
-        PreviewBlock(title = "IR Status", value = irStatusPreview)
-        PreviewBlock(title = "IR Devices", value = irDevicesPreview)
-        PreviewBlock(title = "IR Keys", value = irKeysPreview)
-        PreviewBlock(title = "IR Last Result", value = irLastResult)
     }
 }
 
