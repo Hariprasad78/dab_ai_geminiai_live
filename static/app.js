@@ -127,7 +127,7 @@
     const configured = String(window.__HARNESS_API_BASE__ || '').trim();
     const stored = String(localStorage.getItem(API_STORAGE_KEY) || '').trim();
     const sameOrigin = ['127.0.0.1', 'localhost'].includes(window.location.hostname);
-    state.apiBase = sameOrigin && !configured ? '' : (stored || configured || '');
+    state.apiBase = sameOrigin && !configured ? '' : (configured || stored || '');
     $('api-summary').textContent = `API: ${state.apiBase || `same-origin (${window.location.origin})`}`;
   }
 
@@ -222,6 +222,11 @@
       renderActiveContext(selected.validation);
       syncTestDeviceFromTarget(true);
       renderTargetStatus(`Routing applied for ${state.activeContext?.displayName || deviceId}.`);
+      await api('/capture/recover', 'POST', {}).catch(() => null);
+      if (state.streamRunning) {
+        const frame = $('stream-frame');
+        if (frame) frame.innerHTML = `<img src="${apiOrigin()}/stream/hdmi?ts=${Date.now()}" alt="Live stream" />`;
+      }
       await Promise.allSettled([loadCaptureSource(), loadCaptureDevices(), refreshStreamStatus()]);
     } catch (error) {
       renderTargetStatus(`Failed to apply routing: ${error.message}`, true);
@@ -308,6 +313,7 @@
         device: state.activeContext?.cameraPath || $('capture-device-select').value,
         persist: true,
       });
+      await api('/capture/recover', 'POST', {}).catch(() => null);
       if (wasStreaming) {
         // Rebind MJPEG element to force a fresh stream request after source switch.
         const frame = $('stream-frame');
@@ -401,7 +407,19 @@
     state.floatingStreamUrl = `${apiOrigin()}/stream/hdmi?ts=${Date.now()}`;
     button.textContent = 'Stop Stream';
     button.classList.remove('secondary');
-    frame.innerHTML = `<img src="${state.floatingStreamUrl}" alt="Live stream" />`;
+    frame.innerHTML = `<img id="main-stream-img" src="${state.floatingStreamUrl}" alt="Live stream" />`;
+    const img = $('main-stream-img');
+    if (img) {
+      img.onerror = () => {
+        if (!state.streamRunning) return;
+        void api('/capture/recover', 'POST', {}).finally(() => {
+          if (!state.streamRunning) return;
+          state.floatingStreamUrl = `${apiOrigin()}/stream/hdmi?ts=${Date.now()}`;
+          img.src = state.floatingStreamUrl;
+          syncFloatingStream();
+        });
+      };
+    }
     setFloatingStreamControls();
     syncFloatingStream();
   }
@@ -1195,12 +1213,12 @@
     ]);
     await resumeLastCommand();
 
-    window.setInterval(loadHealth, 30000);
-    window.setInterval(loadDeviceContexts, 60000);
-    window.setInterval(refreshStreamStatus, 60000);
-    window.setInterval(loadCaptureSource, 60000);
-    window.setInterval(loadCaptureDevices, 120000);
-    window.setInterval(() => loadHistory(true), 30000);
+    window.setInterval(loadHealth, 60000);
+    window.setInterval(loadDeviceContexts, 300000);
+    window.setInterval(refreshStreamStatus, 120000);
+    window.setInterval(loadCaptureSource, 120000);
+    window.setInterval(loadCaptureDevices, 300000);
+    window.setInterval(() => loadHistory(true), 60000);
   }
 
   window.addEventListener('error', (event) => showBanner('error', `Frontend error: ${event.message}`));

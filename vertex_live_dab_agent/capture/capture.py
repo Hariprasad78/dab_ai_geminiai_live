@@ -90,6 +90,12 @@ class ScreenCapture:
         self._last_hdmi_error: Optional[str] = None
         self._hdmi_stream_miss_count = 0
         self._hdmi_stream_reset_after_misses = 20
+        self._last_hdmi_reset_ts = 0.0
+        self._hdmi_reset_cooldown_s = 5.0
+        self._hdmi_release_grace_s = 0.75
+        self._last_stream_jpeg: Optional[bytes] = None
+        self._last_stream_jpeg_quality = 0
+        self._last_stream_jpeg_ts = 0.0
         self._hdmi = hdmi_session
 
     def _normalize_rotation_degrees(self, rotation_degrees: Optional[int]) -> int:
@@ -346,7 +352,7 @@ class ScreenCapture:
 
             if selection_changed:
                 self.close()
-                self._next_hdmi_probe_ts = 0.0
+                self._next_hdmi_probe_ts = time.monotonic() + self._hdmi_release_grace_s
                 self._warned_no_hdmi = False
 
                 # Make camera switching return quickly; stream endpoints will lazily
@@ -362,6 +368,74 @@ class ScreenCapture:
             if persist:
                 self._save_capture_preference()
 
+            return self.capture_source_status(include_devices=False)
+
+    def _drop_stale_session_locked(self) -> None:
+        selected = str(self._selected_video_device or "").strip()
+        active = self._hdmi
+        if active is None or not selected:
+            return
+        if str(active.device or "").strip() == selected:
+            return
+        logger.info(
+            "Closing stale capture session after source switch: active=%s selected=%s",
+            active.device,
+            selected,
+        )
+        active.close()
+        self._hdmi = None
+        self._last_stream_jpeg = None
+        self._last_stream_jpeg_quality = 0
+        self._last_stream_jpeg_ts = 0.0
+        self._next_hdmi_probe_ts = time.monotonic() + self._hdmi_release_grace_s
+
+    def _mark_hdmi_frame_failure_locked(self, error: str) -> None:
+        self._last_hdmi_error = error
+        self._hdmi_stream_miss_count += 1
+
+        if self._hdmi_stream_miss_count < self._hdmi_stream_reset_after_misses:
+            return
+
+        now = time.monotonic()
+        if now - self._last_hdmi_reset_ts < self._hdmi_reset_cooldown_s:
+            return
+
+        if self._hdmi is not None:
+            logger.warning(
+                "Resetting HDMI/camera capture after %s missed frames: device=%s error=%s",
+                self._hdmi_stream_miss_count,
+                self._hdmi.device,
+                error,
+            )
+            self._hdmi.close()
+            self._hdmi = None
+        self._last_stream_jpeg = None
+        self._last_stream_jpeg_quality = 0
+        self._last_stream_jpeg_ts = 0.0
+        self._hdmi_stream_miss_count = 0
+        self._last_hdmi_reset_ts = now
+        self._next_hdmi_probe_ts = now + self._hdmi_reprobe_interval_s
+        self._warned_no_hdmi = False
+
+    def recover_video_session(self, *, force: bool = True) -> Dict[str, Any]:
+        """Recover the selected HDMI/camera source without fighting active users.
+
+        The stream endpoint and browser health checks can call this repeatedly.
+        If the selected camera is already open, keep that session instead of
+        closing/reopening it, because v4l devices often report "busy" for a
+        short time after release.
+        """
+        with self._session_lock:
+            self._drop_stale_session_locked()
+            if self._hdmi is not None:
+                return self.capture_source_status(include_devices=False)
+
+            now = time.monotonic()
+            if force and now < self._next_hdmi_probe_ts:
+                return self.capture_source_status(include_devices=False)
+            if force:
+                self._warned_no_hdmi = False
+            self.ensure_hdmi_session(force=force)
             return self.capture_source_status(include_devices=False)
 
     def _init_hdmi_session(self) -> Optional[HdmiCaptureSession]:
@@ -438,6 +512,8 @@ class ScreenCapture:
                 logger.info("[INFO] Opening %s camera from %s", camera_label("adt4"), device)
             elif device == get_camera_path("sonytv"):
                 logger.info("[INFO] Opening %s camera from %s", camera_label("sonytv"), device)
+            elif device == get_camera_path("samsung"):
+                logger.info("[INFO] Opening %s camera from %s", camera_label("samsung"), device)
             elif device == get_camera_path("kirkwood"):
                 logger.info("[INFO] Opening %s camera from %s", camera_label("kirkwood"), device)
 
@@ -558,27 +634,17 @@ class ScreenCapture:
 
             image_b64 = self._hdmi.capture_png_base64()
             if image_b64 is None and self._hdmi.last_error:
-                self._last_hdmi_error = self._hdmi.last_error
                 logger.warning("HDMI capture failed: %s", self._hdmi.last_error)
-                # A transient read miss should not immediately tear down the
-                # shared session for every consumer. Retry once with a fresh
-                # open before giving up.
-                failed_session = self._hdmi
-                failed_session.close()
-                self._hdmi = self._init_hdmi_session()
-                if self._hdmi is not None:
-                    image_b64 = self._hdmi.capture_png_base64()
-                if image_b64 is None:
-                    if self._hdmi is not None:
-                        self._hdmi.close()
-                    self._hdmi = None
+                self._mark_hdmi_frame_failure_locked(self._hdmi.last_error)
             elif image_b64 is not None:
                 self._last_hdmi_error = None
+                self._hdmi_stream_miss_count = 0
             return image_b64
 
     def ensure_hdmi_session(self, force: bool = False) -> bool:
         """Best-effort ensure the shared HDMI/camera session is open."""
         with self._session_lock:
+            self._drop_stale_session_locked()
             if self._hdmi is not None:
                 return True
             now = time.monotonic()
@@ -632,6 +698,7 @@ class ScreenCapture:
     def get_hdmi_stream_frame_jpeg(self, quality: Optional[int] = None) -> Optional[bytes]:
         """Capture one HDMI frame encoded as JPEG for MJPEG web streaming."""
         with self._session_lock:
+            self._drop_stale_session_locked()
             if self._hdmi is None:
                 now = time.monotonic()
                 if now < self._next_hdmi_probe_ts:
@@ -646,27 +713,33 @@ class ScreenCapture:
                 if quality is not None
                 else int(getattr(self._config, "hdmi_stream_jpeg_quality", 80))
             )
+            now = time.monotonic()
+            fps = max(1.0, float(getattr(self._config, "hdmi_capture_fps", 30.0) or 30.0))
+            min_frame_interval = max(0.01, min(0.10, 1.0 / fps))
+            if (
+                self._last_stream_jpeg is not None
+                and self._last_stream_jpeg_quality == jpeg_quality
+                and now - self._last_stream_jpeg_ts < min_frame_interval
+            ):
+                return self._last_stream_jpeg
+
             frame = self._hdmi.capture_jpeg_bytes(quality=jpeg_quality)
             if frame is None:
                 if not self._hdmi.last_error:
                     return None
-                self._last_hdmi_error = self._hdmi.last_error
-                failed_session = self._hdmi
-                failed_session.close()
-                self._hdmi = self._init_hdmi_session()
-                if self._hdmi is not None:
-                    frame = self._hdmi.capture_jpeg_bytes(quality=jpeg_quality)
-                if frame is None:
-                    if self._hdmi is not None:
-                        self._hdmi.close()
-                    self._hdmi = None
+                self._mark_hdmi_frame_failure_locked(self._hdmi.last_error)
             else:
                 self._hdmi_stream_miss_count = 0
+                self._last_hdmi_error = None
+                self._last_stream_jpeg = frame
+                self._last_stream_jpeg_quality = jpeg_quality
+                self._last_stream_jpeg_ts = now
             return frame
 
     def get_hdmi_stream_frame_raw(self) -> Optional[Any]:
         """Capture one HDMI frame as a raw ndarray for server-side WebRTC tracks."""
         with self._session_lock:
+            self._drop_stale_session_locked()
             if self._hdmi is None:
                 now = time.monotonic()
                 if now < self._next_hdmi_probe_ts:
@@ -680,18 +753,10 @@ class ScreenCapture:
             if frame is None:
                 if not self._hdmi.last_error:
                     return None
-                self._last_hdmi_error = self._hdmi.last_error
-                failed_session = self._hdmi
-                failed_session.close()
-                self._hdmi = self._init_hdmi_session()
-                if self._hdmi is not None:
-                    frame = self._hdmi.read_frame()
-                if frame is None:
-                    if self._hdmi is not None:
-                        self._hdmi.close()
-                    self._hdmi = None
+                self._mark_hdmi_frame_failure_locked(self._hdmi.last_error)
             else:
                 self._hdmi_stream_miss_count = 0
+                self._last_hdmi_error = None
             return frame
 
     def close(self) -> None:
@@ -701,3 +766,7 @@ class ScreenCapture:
                 logger.info("Closing active HDMI/camera capture session: device=%s", self._hdmi.device)
                 self._hdmi.close()
                 self._hdmi = None
+                self._last_stream_jpeg = None
+                self._last_stream_jpeg_quality = 0
+                self._last_stream_jpeg_ts = 0.0
+                self._next_hdmi_probe_ts = time.monotonic() + self._hdmi_release_grace_s
