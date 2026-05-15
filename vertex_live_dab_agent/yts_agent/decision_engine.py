@@ -80,11 +80,14 @@ def decide_yts_response(expectation: Dict[str, Any], evidence: Dict[str, Any], m
             missing.append("Live TV evidence did not positively satisfy every Pass requirement.")
         else:
             missing.append("No live TV evidence was available.")
+        evidence_summary = latest.get("visual_summary") or evidence.get("summary") or "Evidence is insufficient for Pass."
+        if latest.get("ad_or_interstitial_visible"):
+            evidence_summary = "Ad/interstitial is visible instead of the current YTS target."
         return {
             "selected_option": fail_option["option"],
             "selected_label": fail_option["label"],
             "confidence": max(0.55, coerce_confidence(latest.get("confidence"))),
-            "evidence_summary": latest.get("visual_summary") or evidence.get("summary") or "Evidence is insufficient for Pass.",
+            "evidence_summary": str(evidence_summary).splitlines()[0][:220],
             "missing_evidence": list(dict.fromkeys(str(item) for item in missing if str(item).strip())),
             "reason": "Pass was not positively proven by current live TV evidence.",
             "safety_blocked_pass": bool(normalized_model),

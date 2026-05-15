@@ -8,6 +8,18 @@ from typing import Any, Dict, List
 
 from vertex_live_dab_agent.yts_agent.utils import coerce_confidence, dedupe_strings, normalize_missing_evidence, resolve_option_label
 
+_AD_SIGNAL_RE = re.compile(
+    r"\bads?\b|\bad\s+\d+\s+of\s+\d+\b|\badvert(?:isement|ising)?\b|"
+    r"\bcommercial\s+break\b|\bsponsored\b|\bsponsor\b|\bpromo(?:tion)?\b|"
+    r"\bskip\s+ads?\b|\bvisit\s+advertiser\b",
+    re.IGNORECASE,
+)
+
+
+def _contains_ad_signal(*values: Any) -> bool:
+    return any(_AD_SIGNAL_RE.search(str(value or "")) for value in values)
+
+
 def _label_for_option(option: str, expectation: Dict[str, Any]) -> str:
     return resolve_option_label(option, expectation.get("allowed_answers") or []).lower()
 
@@ -29,6 +41,15 @@ def _requires_playback(expectation: Dict[str, Any]) -> bool:
     test_type = str(expectation.get("test_type") or "").lower()
     text = " ".join(str(req.get("description") or "") for req in expectation.get("visual_requirements") or [] if isinstance(req, dict)).lower()
     return "video_playback_active" in state or test_type == "playback" or bool(re.search(r"\b(playback|playing|video|player|pause|resume|seek|buffer)\b", text))
+
+
+def _requires_visual_validation(expectation: Dict[str, Any]) -> bool:
+    test_type = str(expectation.get("test_type") or "").strip().lower()
+    if expectation.get("expected_visual_target") or expectation.get("visual_requirements"):
+        return True
+    if _requires_youtube(expectation) or _requires_playback(expectation):
+        return True
+    return bool(re.search(r"\b(render|visual|image|video|playback|subtitle|caption|quality|thumbnail|player|youtube)\b", test_type))
 
 
 def _is_pass_like_label(label: str) -> bool:
@@ -79,6 +100,33 @@ def validate_decision_gate(expectation: Dict[str, Any], evidence: Dict[str, Any]
     confidence = coerce_confidence(latest.get("confidence"), coerce_confidence(decision.get("confidence")))
     current_context = str(latest.get("detected_app_context") or "").lower()
     screen_type = str(latest.get("screen_type") or "").lower()
+    visual_summary = str(latest.get("visual_summary") or latest.get("requirement_evidence") or evidence.get("summary") or "")
+    detected_text = str(latest.get("detected_text") or "")
+    observed_target = str(latest.get("observed_visual_target") or "").strip()
+    target_match: bool | None = None
+    visual_required = _requires_visual_validation(expectation)
+    ad_detected = bool(latest.get("ad_or_interstitial_visible")) or _contains_ad_signal(
+        visual_summary,
+        detected_text,
+        current_context,
+        screen_type,
+        observed_target,
+    )
+    if not ad_detected:
+        for item in list(evidence.get("observations") or [])[-5:]:
+            if bool(item.get("ad_or_interstitial_visible")) or _contains_ad_signal(
+                item.get("visual_summary"),
+                item.get("detected_text"),
+                item.get("detected_app_context"),
+                item.get("screen_type"),
+                item.get("observed_visual_target"),
+            ):
+                ad_detected = True
+                break
+    if visual_required and ad_detected:
+        blocked = True
+        missing.append("Live TV feed shows an ad, sponsored screen, or interstitial instead of the required YTS target.")
+
     frame_ts = _parse_timestamp(latest.get("timestamp"))
     prompt_ts = _parse_timestamp(latest.get("prompt_timestamp") or evidence.get("prompt_timestamp"))
     if prompt_ts is not None:
@@ -90,7 +138,6 @@ def validate_decision_gate(expectation: Dict[str, Any], evidence: Dict[str, Any]
         missing.append("Latest TV frame is not explicitly bound to the current prompt.")
 
     expected_target = str(expectation.get("expected_visual_target") or evidence.get("expected_visual_target") or latest.get("expected_visual_target") or "").strip()
-    observed_target = str(latest.get("observed_visual_target") or "").strip()
     target_match_raw = latest.get("target_match")
     prompt_match = str(latest.get("prompt_requirement_match") or "").strip().lower()
     if expected_target:
@@ -108,6 +155,15 @@ def validate_decision_gate(expectation: Dict[str, Any], evidence: Dict[str, Any]
         elif not target_match or prompt_match in {"mismatch", "no", "false", "different"}:
             blocked = True
             missing.append(f"Expected asset '{expected_target}' did not match observed asset '{observed_target}'.")
+    elif isinstance(target_match_raw, bool):
+        target_match = target_match_raw
+    elif str(target_match_raw).strip().lower() in {"true", "yes", "match", "matched"}:
+        target_match = True
+    elif str(target_match_raw).strip().lower() in {"false", "no", "mismatch", "different"}:
+        target_match = False
+    if visual_required and (target_match is False or prompt_match in {"mismatch", "no", "false", "different"}):
+        blocked = True
+        missing.append("Fresh frame does not match the current YTS prompt requirement.")
     if _requires_youtube(expectation):
         youtube_active = latest.get("youtube_active")
         if youtube_active is not True or "launcher" in current_context or "launcher" in screen_type or "system" in current_context:
@@ -117,10 +173,19 @@ def validate_decision_gate(expectation: Dict[str, Any], evidence: Dict[str, Any]
         blocked = True
         missing.append("Video playback is not positively verified as active in the live TV feed.")
     requirements = [req for req in expectation.get("visual_requirements") or [] if isinstance(req, dict) and req.get("evidence_required", True)]
-    if requirements and not evidence.get("positive_observations"):
+    positive_observations = [
+        item for item in (evidence.get("positive_observations") or []) if not item.get("ad_or_interstitial_visible")
+    ]
+    if requirements and not positive_observations:
         blocked = True
         missing.append("No continuous visual observation positively confirmed the prompt requirement.")
-    if confidence < min_confidence and not evidence.get("positive_observations"):
+    if visual_required and not positive_observations and not (latest.get("requirement_seen") and not ad_detected) and not (expected_target and target_match is True):
+        blocked = True
+        missing.append("No positive live evidence confirmed the current YTS requirement.")
+    if visual_required and str(latest.get("recommended_result") or "").strip().lower() == "fail":
+        blocked = True
+        missing.append("Latest visual analysis recommends Fail for the current YTS requirement.")
+    if confidence < min_confidence and not positive_observations:
         blocked = True
         missing.append(f"Latest visual confidence {confidence:.2f} is below the Pass threshold.")
     if evidence.get("negative_observations"):

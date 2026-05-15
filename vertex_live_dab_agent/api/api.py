@@ -125,6 +125,7 @@ _YTS_LIVE_VISUAL_HISTORY_LIMIT = 60
 _YTS_LIVE_VISUAL_EVENT_LIMIT = 180
 _YTS_PROMPT_VISUAL_WAIT_SECONDS = float(os.environ.get("YTS_PROMPT_VISUAL_WAIT_SECONDS", "20.0"))
 _YTS_PROMPT_MIN_VISUAL_FRAMES = int(os.environ.get("YTS_PROMPT_MIN_VISUAL_FRAMES", "12"))
+_YTS_PLAYBACK_PROMPT_SETTLE_SECONDS = float(os.environ.get("YTS_PLAYBACK_PROMPT_SETTLE_SECONDS", "2.5"))
 _last_cpu_times_snapshot: Optional[tuple[float, float]] = None
 
 
@@ -1323,6 +1324,7 @@ async def _safe_dab_call(label: str, callable_obj) -> Dict[str, Any]:
 async def _refresh_device_dab_catalog(device_id: str) -> Dict[str, Any]:
     logger.info("DAB catalog refresh start: device=%s", device_id)
     dab = get_dab_client()
+    captured_at = _utc_now_iso()
     operations_result = await _safe_dab_call("operations/list", dab.list_operations)
     operations = operations_result["data"].get("operations")
     if not isinstance(operations, list):
@@ -1382,7 +1384,7 @@ async def _refresh_device_dab_catalog(device_id: str) -> Dict[str, Any]:
 
     payload = {
         "device_id": device_id,
-        "captured_at": _utc_now_iso(),
+        "captured_at": captured_at,
         "operations": {
             "status": operations_result["status"],
             "success": operations_result["success"],
@@ -1424,7 +1426,6 @@ async def _refresh_device_dab_catalog(device_id: str) -> Dict[str, Any]:
             "raw_payload": dict(raw_settings_payload),
             "unsupported": bool(settings_result.get("unsupported")),
         },
-        "captured_at": captured_at,
     }
 
     _device_dab_catalog_cache[device_id] = {
@@ -2467,6 +2468,7 @@ async def _refresh_discovered_device_capabilities_cache(
 
     devices, warning = await _discover_dab_devices(max_age_seconds=0.0 if force else 30.0)
     selected_before = _resolve_selected_device_id()
+    captured_at = _utc_now_iso()
 
     by_device: Dict[str, Any] = {}
     for item in devices:
@@ -2495,7 +2497,7 @@ async def _refresh_discovered_device_capabilities_cache(
             pass
 
     payload: Dict[str, Any] = {
-        "captured_at": _utc_now_iso(),
+        "captured_at": captured_at,
         "warning": warning,
         "devices": by_device,
         "device_ids": sorted(by_device.keys()),
@@ -2818,6 +2820,14 @@ def _parse_yts_live_visual_analysis(response_text: str) -> Dict[str, Any]:
         "youtube_active": parsed.get("youtube_active"),
         "detected_text": str(parsed.get("detected_text") or "").strip(),
         "prompt_requirement_match": str(parsed.get("prompt_requirement_match") or "").strip().lower(),
+        "ad_or_interstitial_visible": bool(
+            parsed.get("ad_or_interstitial_visible")
+            or parsed.get("ad_visible")
+            or parsed.get("advertisement_visible")
+            or parsed.get("sponsored_visible")
+            or parsed.get("blocking_overlay_visible")
+        ),
+        "blocking_overlay_reason": str(parsed.get("blocking_overlay_reason") or "").strip(),
     }
 
 
@@ -2843,6 +2853,8 @@ def _append_yts_visual_event(state: Dict[str, Any], entry: Dict[str, Any]) -> No
         "youtube_active": analysis.get("youtube_active"),
         "detected_text": analysis.get("detected_text") or "",
         "prompt_requirement_match": analysis.get("prompt_requirement_match") or "",
+        "ad_or_interstitial_visible": bool(analysis.get("ad_or_interstitial_visible")),
+        "blocking_overlay_reason": analysis.get("blocking_overlay_reason") or "",
     }
     state.setdefault("visual_event_timeline", []).append(event)
     state["visual_event_timeline"] = state["visual_event_timeline"][-_YTS_LIVE_VISUAL_EVENT_LIMIT:]
@@ -4679,9 +4691,10 @@ def _extract_prompt_options(text: str) -> List[str]:
     numbered_option = _parse_yts_prompt_option(line)
     if numbered_option:
         options.append(numbered_option)
-    for digit in ["1", "2", "3", "4"]:
-        if re.search(rf"(^|\D){digit}(\D|$)", line):
-            options.append(digit)
+    if any(marker in lowered for marker in ("press", "option", "choose", "select", "enter choice", "enter selection")):
+        for digit in ["1", "2", "3", "4"]:
+            if re.search(rf"(^|\D){digit}(\D|$)", line):
+                options.append(digit)
     deduped: List[str] = []
     for option in options:
         if option not in deduped:
@@ -4979,9 +4992,34 @@ def _is_yts_prompt_context_signal_line(text: str) -> bool:
         return False
     if lowered.startswith("launching guided test") or lowered.startswith("attempting relaunch"):
         return False
+    if "deprecationwarning" in lowered or "node --trace-deprecation" in lowered:
+        return False
+    if lowered.startswith("(node:") or lowered.startswith("use `node "):
+        return False
     if re.fullmatch(r"[A-Z0-9\s]+", line) and len(line.split()) <= 4:
         return False
     return True
+
+
+def _is_yts_playback_validation_prompt(prompt_text: str) -> bool:
+    decision_text = " ".join(_prompt_decision_lines({"text": prompt_text}))
+    lowered = decision_text.lower()
+    return bool(
+        re.search(r"\b(video|playback|plays?|playing|aspect\s*ratio|bar\s+width|letterbox|pillarbox|frame)\b", lowered)
+        and re.search(r"\b(pass|fail|correct|otherwise|validate|render|visible|shown)\b", lowered)
+    )
+
+
+def _yts_prompt_age_seconds(prompt_entry: Dict[str, Any]) -> Optional[float]:
+    detected_at = str(prompt_entry.get("detected_at") or "").strip()
+    if not detected_at:
+        return None
+    try:
+        dt = datetime.fromisoformat(detected_at.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    now = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
+    return max(0.0, (now - dt).total_seconds())
 
 
 def _seed_yts_prompt_with_recent_context(
@@ -5193,8 +5231,15 @@ def _apply_yts_validation_response_guard(
 
     blocked_patterns = (
         r"\bads?\b",
+        r"\bad\s+\d+\s+of\s+\d+\b",
         r"\badvert(?:isement|ising)?\b",
+        r"\bcommercial\s+break\b",
+        r"\bsponsored\b",
+        r"\bsponsor\b",
+        r"\bpromo(?:tion)?\b",
         r"\bskip\s+ad\b",
+        r"\bskip\s+ads\b",
+        r"\bvisit\s+advertiser\b",
         r"\breference\s+image\b",
         r"\breference\s+frame\b",
         r"\bloading\b",
@@ -5204,7 +5249,31 @@ def _apply_yts_validation_response_guard(
         r"\bno\s+screenshot\b",
         r"\bcould\s+not\s+capture\b",
     )
-    blocked = any(re.search(pattern, summary) for pattern in blocked_patterns)
+    blocked_text = " ".join(
+        [
+            summary,
+            str(analysis.get("detected_text") or "").lower(),
+            str(analysis.get("screen_type") or "").lower(),
+            str(analysis.get("detected_app_context") or "").lower(),
+            str(analysis.get("blocking_overlay_reason") or "").lower(),
+        ]
+    )
+    timeline_text = " ".join(
+        " ".join(
+            [
+                str(item.get("summary") or ""),
+                str(item.get("detected_text") or ""),
+                str(item.get("screen_type") or ""),
+                str(item.get("detected_app_context") or ""),
+                str(item.get("blocking_overlay_reason") or ""),
+            ]
+        ).lower()
+        for item in timeline[-5:]
+    )
+    blocked = bool(analysis.get("ad_or_interstitial_visible")) or any(
+        re.search(pattern, blocked_text) or re.search(pattern, timeline_text)
+        for pattern in blocked_patterns
+    )
 
     insufficient_evidence = bool(blocked) or bool(
         analysis_has_signal
@@ -5456,8 +5525,11 @@ def _build_yts_runtime_decision_prompt(
             _shared_ai_prompt_preamble(),
             "Task: make an evidence-first YTS guided-test decision for the current runtime prompt.",
             "Return strict JSON only with keys: selected_option, selected_label, confidence, evidence_summary, missing_evidence, reason, safety_blocked_pass.",
+            "evidence_summary must be one short line tied to the current YTS log prompt and the fresh TV frame. Do not write generic filler, long activity logs, or previous-prompt evidence.",
             "If the terminal expects numbered choices, selected_option must be one numeric option token. Return only one numeric option token in selected_option such as 1, 2, 3, or 4. Do not return yes or no as selected_option when numbered options exist.",
             "Core policy: never choose Pass/Yes by default. Pass/Yes requires positive proof from a frame captured after the current prompt timestamp. If the expected visual target and observed visual target differ, or if evidence is missing/weak/stale/contradictory, do not choose Pass/Yes.",
+            "Ad/interstitial rule: if the live frame or prompt-scoped visual evidence shows an ad, sponsored screen, promo, commercial break, Skip Ad button, countdown, or unrelated interstitial, do not choose Pass/Yes for render/playback/visual validation. Choose Fail/No when available.",
+            "YTS log binding rule: the active terminal context identifies the exact current prompt and expected asset/state. Validate only that current requirement; do not pass because a previous prompt, reference text, or unrelated on-screen content looked correct.",
             "Use Skip only for setup limitations, unavailable feed, unsupported device, or blocked execution. Otherwise choose Fail when the test is running but the required condition is not visible.",
             f"Runtime YTS prompt:\n{prompt_text}",
             f"Parsed prompt:\n{json.dumps(prompt_record, ensure_ascii=False)}",
@@ -6007,8 +6079,9 @@ async def _analyze_yts_prompt_frame(
         [
             _shared_ai_prompt_preamble(),
             "Task: analyze only the attached fresh TV frame for the current YTS prompt.",
-            "Return strict JSON with keys: summary, detected_app_context, screen_type, video_playback_active, youtube_active, observed_visual_target, expected_visual_target, target_match, prompt_requirement_match, requirement_seen, requirement_evidence, recommended_result, confidence.",
+            "Return strict JSON with keys: summary, detected_app_context, screen_type, video_playback_active, youtube_active, observed_visual_target, expected_visual_target, target_match, prompt_requirement_match, requirement_seen, requirement_evidence, recommended_result, confidence, detected_text, ad_or_interstitial_visible, blocking_overlay_reason.",
             "Source-of-truth rules: use only the attached frame for visual facts. Do not use previous visual history to identify the visible asset. If the frame shows a different target than expected, set target_match=false, prompt_requirement_match='mismatch', and recommended_result='fail'. If the frame is stale, unclear, blank, or not enough to identify the current expected target, do not recommend pass.",
+            "Ad/interstitial rule: if the frame shows an ad, sponsored screen, promo, commercial break, Skip Ad button, countdown, or unrelated interstitial, set ad_or_interstitial_visible=true, screen_type='ad_interstitial', requirement_seen=false, target_match=false, recommended_result='fail', and explain the ad signal in blocking_overlay_reason.",
             f"prompt_id: {prompt_id}",
             f"prompt_sequence_id: {prompt_sequence_id}",
             f"prompt_timestamp: {prompt_timestamp or '(unknown)'}",
@@ -6049,11 +6122,14 @@ def _build_yts_fast_visual_decision_prompt(
             _shared_ai_prompt_preamble(),
             "Task: answer the current YTS prompt from one fresh attached TV frame.",
             "Return strict JSON only with keys: analysis, decision.",
-            "analysis keys: summary, detected_app_context, screen_type, video_playback_active, youtube_active, observed_visual_target, expected_visual_target, target_match, prompt_requirement_match, requirement_seen, requirement_evidence, recommended_result, confidence.",
+            "analysis keys: summary, detected_app_context, screen_type, video_playback_active, youtube_active, observed_visual_target, expected_visual_target, target_match, prompt_requirement_match, requirement_seen, requirement_evidence, recommended_result, confidence, detected_text, ad_or_interstitial_visible, blocking_overlay_reason.",
             "decision keys: selected_option, selected_label, confidence, evidence_summary, missing_evidence, reason, safety_blocked_pass.",
+            "decision.evidence_summary must be one short line tied to the current YTS log prompt and the attached frame. Do not write generic filler or previous-prompt evidence.",
             "If numbered choices exist, decision.selected_option must be exactly one numeric option token from the prompt.",
             "Freshness rule: use only the attached frame for visual facts. Do not use previous visual history to identify the visible target.",
             "Pass/Yes rule: choose Pass/Yes only when this fresh frame positively satisfies the extracted expectation. If expected_visual_target is present and observed_visual_target is different, unclear, or missing, do not choose Pass/Yes.",
+            "Ad/interstitial rule: if the attached frame shows an ad, sponsored screen, promo, commercial break, Skip Ad button, countdown, or unrelated interstitial, set analysis.ad_or_interstitial_visible=true and choose Fail/No for visual validation prompts.",
+            "YTS log binding rule: use the active terminal context to identify the exact current expected asset/state. Answer only this prompt, not earlier prompts or visible reference text from another test step.",
             "Otherwise choose Fail/No when available; choose Skip only for unavailable feed, unsupported setup, or blocked execution.",
             f"Prompt/frame binding:\n{json.dumps({'prompt_id': visual_context.get('prompt_id'), 'prompt_sequence_id': visual_context.get('prompt_sequence_id'), 'prompt_timestamp': visual_context.get('prompt_timestamp'), 'frame_timestamp': visual_context.get('captured_at'), 'fresh_after_prompt': visual_context.get('fresh_after_prompt')}, ensure_ascii=False)}",
             f"Runtime YTS prompt:\n{prompt_text}",
@@ -6120,6 +6196,9 @@ async def _generate_yts_fast_visual_decision(
                 "requirement_evidence",
                 "recommended_result",
                 "confidence",
+                "detected_text",
+                "ad_or_interstitial_visible",
+                "blocking_overlay_reason",
             )
             if key in parsed
         }
@@ -6620,7 +6699,12 @@ async def _append_yts_stream_output(command_id: str, stream_name: str, stream) -
         })
         stripped = cleaned_text.strip()
         option_value = _parse_yts_prompt_option(stripped)
-        if _is_interactive_yts_prompt(stripped) or option_value:
+        interactive_line = _is_interactive_yts_prompt(stripped)
+        if option_value and not interactive_line and not state.get("awaiting_input"):
+            previous_prompt = state.get("prompts", [])[-1] if state.get("prompts") else None
+            if isinstance(previous_prompt, dict) and previous_prompt.get("answered"):
+                continue
+        if interactive_line or option_value:
             prompt_entry = None
             pending_prompt = state.get("pending_prompt")
             if state.get("awaiting_input") and isinstance(pending_prompt, dict) and not pending_prompt.get("answered"):
@@ -6651,7 +6735,19 @@ async def _append_yts_stream_output(command_id: str, stream_name: str, stream) -
             _merge_yts_prompt_entry(prompt_entry, stripped, stream_name)
             _persist_yts_live_state(state)
 
-            if state.get("interactive_ai") and _prompt_ready_for_ai_response(prompt_entry) and not prompt_entry.get("answered") and not prompt_entry.get("ai_suggestion"):
+            prompt_age = _yts_prompt_age_seconds(prompt_entry)
+            playback_prompt_settled = (
+                not _is_yts_playback_validation_prompt(str(prompt_entry.get("text") or ""))
+                or prompt_age is None
+                or prompt_age >= _YTS_PLAYBACK_PROMPT_SETTLE_SECONDS
+            )
+            prompt_ready = _prompt_ready_for_ai_response(prompt_entry)
+            if state.get("interactive_ai") and prompt_ready and not playback_prompt_settled and not prompt_entry.get("answered") and not prompt_entry.get("ai_suggestion"):
+                remaining = _YTS_PLAYBACK_PROMPT_SETTLE_SECONDS - float(prompt_age or 0.0)
+                await asyncio.sleep(max(0.2, min(remaining, _YTS_PLAYBACK_PROMPT_SETTLE_SECONDS)))
+                prompt_entry = (_get_yts_live_state(command_id) or state).get("pending_prompt") or prompt_entry
+                playback_prompt_settled = True
+            if state.get("interactive_ai") and prompt_ready and playback_prompt_settled and not prompt_entry.get("answered") and not prompt_entry.get("ai_suggestion"):
                 prompt_id = int(prompt_entry["id"])
                 try:
                     prompt_visual = await _capture_fresh_prompt_visual_context(command_id, prompt_entry, prompt_entry.get("text", ""))

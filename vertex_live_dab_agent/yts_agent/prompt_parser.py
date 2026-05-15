@@ -8,7 +8,8 @@ from typing import Any, Dict, Iterable, List
 
 
 _OPTION_RE = re.compile(r"^\s*(?:option\s*)?([0-9A-Za-z]+)\s*[:.)-]\s*(.+?)\s*$", re.IGNORECASE)
-_CONTROL_RE = re.compile(r"\b(failed|marked\s+by\s+user|retry|done|previous\s+selection)\b", re.IGNORECASE)
+_CONTROL_RE = re.compile(r"\b(marked\s+by\s+user|previous\s+selection)\b|^\s*(failed|passed)\s*-", re.IGNORECASE | re.MULTILINE)
+_NOISE_RE = re.compile(r"(deprecationwarning|node --trace-deprecation|^\(node:\d+\)|punycode module)", re.IGNORECASE)
 
 
 def _normalize_text(value: str) -> str:
@@ -32,6 +33,29 @@ def _option_labels_from_prompt(prompt_text: str) -> Dict[str, str]:
         if option and label:
             labels[option] = label
     return labels
+
+
+def _semantic_prompt_lines(prompt_text: str) -> List[str]:
+    lines: List[str] = []
+    for raw_line in str(prompt_text or "").splitlines():
+        line = _normalize_text(raw_line)
+        if not line or _NOISE_RE.search(line):
+            continue
+        if _OPTION_RE.match(line):
+            continue
+        lowered = line.lower()
+        if any(
+            marker in lowered
+            for marker in (
+                "please select from the following options",
+                "select from the following options",
+                "available options",
+                "options:",
+            )
+        ):
+            continue
+        lines.append(line)
+    return lines
 
 
 def parse_yts_prompt(prompt_text: str, options: Iterable[Any] | None = None) -> Dict[str, Any]:
@@ -58,14 +82,18 @@ def parse_yts_prompt(prompt_text: str, options: Iterable[Any] | None = None) -> 
         seen.add(option)
         deduped.append({"option": option, "label": str(item.get("label") or option).strip().lower()})
 
-    hash_value = prompt_hash(prompt_text, [item["option"] for item in deduped] or provided)
-    test_title = _normalize_text(str(prompt_text or "").splitlines()[0] if str(prompt_text or "").splitlines() else "")
+    semantic_lines = _semantic_prompt_lines(prompt_text)
+    semantic_prompt = "\n".join(semantic_lines) or str(prompt_text or "")
+    hash_value = prompt_hash(semantic_prompt, [item["option"] for item in deduped] or provided)
+    test_title = semantic_lines[0] if semantic_lines else ""
     return {
-        "prompt_text": str(prompt_text or ""),
+        "prompt_text": semantic_prompt,
+        "raw_prompt_text": str(prompt_text or ""),
         "prompt_hash": hash_value,
         "test_key": hash_value,
         "test_title": test_title or "YTS guided prompt",
-        "prompt_kind": classify_yts_prompt_kind(prompt_text),
+        "yts_requirement": semantic_prompt,
+        "prompt_kind": classify_yts_prompt_kind(semantic_prompt),
         "allowed_answers": deduped,
     }
 
@@ -77,7 +105,7 @@ def classify_yts_prompt_kind(prompt_text: str) -> str:
     lowered = text.lower()
     if _CONTROL_RE.search(text):
         return "result_retry_control"
-    if re.search(r"\b(pass|fail|expected|actual|visible|shown|render|match|validate|validation|playback|video)\b", lowered):
+    if re.search(r"\b(pass|fail|expected|actual|visible|shown|render|match|validate|validation|playback|video|audio|sound|overlay|screen|display|playing|resolution|format|color|icon|logo|text|ui|image|picture|visual|correctly)\b", lowered):
         return "visual_validation"
     if re.search(r"\b(choose|select|enter choice|enter selection|yes/no|continue|proceed)\b", lowered):
         return "control"
