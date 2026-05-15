@@ -21,11 +21,37 @@ _CAPTURE_WIDTH_720P = 1280
 _CAPTURE_HEIGHT_720P = 720
 _DEVICE_OPERATION_LOCKS: Dict[str, threading.RLock] = {}
 _DEVICE_OPERATION_LOCKS_GUARD = threading.Lock()
+_JPEG_STDERR_SUPPRESSION_LOCK = threading.Lock()
 _DEFAULT_HOLDER_PRIORITIES = {
     "ffmpeg": 10,
     "python": 40,
     "python3": 40,
 }
+
+
+@contextlib.contextmanager
+def _suppress_native_jpeg_stderr():
+    """Hide noisy libjpeg warnings emitted by camera MJPEG decode paths."""
+    if os.environ.get("SUPPRESS_NATIVE_JPEG_WARNINGS", "true").strip().lower() in {"0", "false", "no", "off"}:
+        yield
+        return
+    with _JPEG_STDERR_SUPPRESSION_LOCK:
+        saved_stderr = None
+        devnull = None
+        try:
+            saved_stderr = os.dup(2)
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull, 2)
+            yield
+        finally:
+            if saved_stderr is not None:
+                with contextlib.suppress(Exception):
+                    os.dup2(saved_stderr, 2)
+                with contextlib.suppress(Exception):
+                    os.close(saved_stderr)
+            if devnull is not None:
+                with contextlib.suppress(Exception):
+                    os.close(devnull)
 
 
 def _device_operation_lock(device: str) -> threading.RLock:
@@ -292,6 +318,7 @@ class HdmiCaptureSession:
         self._last_error: Optional[str] = None
         self._last_frame: Optional[Any] = None
         self._last_frame_ts: float = 0.0
+        self._max_cached_frame_age_s: float = 2.0
         self._opened_at: float = 0.0
         self._reader_stop = threading.Event()
         self._frame_ready = threading.Event()
@@ -586,7 +613,8 @@ class HdmiCaptureSession:
             with self._capture_io_lock:
                 if self._reader_stop.is_set():
                     break
-                ok, frame = cap.read()
+                with _suppress_native_jpeg_stderr():
+                    ok, frame = cap.read()
             if ok and frame is not None:
                 try:
                     rotated = self._rotate_frame(frame)
@@ -604,7 +632,10 @@ class HdmiCaptureSession:
 
             consecutive_failures += 1
             if consecutive_failures >= 12:
-                self._last_error = "Failed to read frame"
+                with self._lock:
+                    self._last_frame = None
+                    self._last_frame_ts = 0.0
+                    self._last_error = "Failed to read frame"
             time.sleep(0.04 if cv2 is not None else 0.08)
 
     def read_frame(self) -> Optional[Any]:
@@ -633,8 +664,13 @@ class HdmiCaptureSession:
             self._frame_ready.wait(timeout=0.45)
         frame: Optional[Any] = None
         with self._lock:
-            if self._last_frame is not None:
+            frame_age = time.monotonic() - self._last_frame_ts if self._last_frame_ts else 999.0
+            if self._last_frame is not None and frame_age <= self._max_cached_frame_age_s:
                 frame = self._copy_frame(self._last_frame)
+            elif self._last_frame is not None:
+                self._last_frame = None
+                self._last_frame_ts = 0.0
+                self._last_error = "Capture frame is stale"
             elif (time.monotonic() - self._opened_at) > 1.5:
                 self._last_error = self._last_error or "Failed to read frame"
         return frame

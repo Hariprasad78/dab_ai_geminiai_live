@@ -84,6 +84,10 @@ class Orchestrator:
         self._hybrid_policy = HybridPolicyEngine()
         self._local_ranker = LocalActionRanker(ranker_model_path)
 
+    def _ai_planner_active(self) -> bool:
+        """Return true when a Gemini-backed planner is available for decisions."""
+        return getattr(self._planner, "_vertex_client", None) is not None
+
     async def run(self, state: RunState) -> RunState:
         """Execute the full run loop, saving artifacts throughout."""
         state.start()
@@ -236,7 +240,9 @@ class Orchestrator:
         nav_need_screenshot = False
         nav_action_batch = []
         diagnosis_batch = await self._run_stuck_diagnosis_if_needed(state, step)
-        preflight_batch = diagnosis_batch or await self._select_execution_strategy(state)
+        preflight_batch = diagnosis_batch
+        if not preflight_batch and not self._ai_planner_active():
+            preflight_batch = await self._select_execution_strategy(state)
         if preflight_batch and not self._strategy_matches_task_semantics(state):
             state.record_ai_event(
                 {
@@ -1803,26 +1809,6 @@ class Orchestrator:
                 state.device_detection_error,
             )
 
-    def _is_direct_setting_unavailable_for_fallback(self, state: RunState, resp: Any, operation: str, setting_key: Optional[str]) -> bool:
-        if self._is_direct_setting_op_unavailable(state, operation, setting_key):
-            return True
-        if not any("system/settings/set" in str(o).lower() for o in (state.supported_operations or [])):
-            return True
-
-        status = int(getattr(resp, "status", 0) or 0)
-        if status in {404, 405, 501}:
-            return True
-        lowered = self._extract_resp_error_text(resp).lower()
-        unavailable_markers = (
-            "not supported",
-            "unsupported",
-            "not implemented",
-            "unavailable",
-            "no shell command implementation",
-            "operation not found",
-        )
-        return any(marker in lowered for marker in unavailable_markers)
-
     def _can_attempt_android_timezone_adb_fallback(self, state: RunState) -> bool:
         is_android = bool(state.is_android_device)
         adb_device_id = str(state.android_adb_device_id or "").strip()
@@ -1970,18 +1956,6 @@ class Orchestrator:
                 category="RECOVERY",
                 priority=75,
             )
-
-    def _build_settings_ui_fallback_batch(self, state: RunState) -> list[dict]:
-        keys = {str(k).upper() for k in (state.supported_keys or [])}
-        batch: list[dict] = []
-        if "KEY_HOME" in keys:
-            batch.append({"action": ActionType.PRESS_HOME.value, "params": {}})
-            batch.append({"action": ActionType.WAIT.value, "params": {"seconds": 0.8}})
-        elif "KEY_BACK" in keys:
-            batch.append({"action": ActionType.PRESS_BACK.value, "params": {}})
-            batch.append({"action": ActionType.WAIT.value, "params": {"seconds": 0.6}})
-        batch.append({"action": ActionType.CAPTURE_SCREENSHOT.value, "params": {}})
-        return batch
 
     def _build_task_preplan(self, state: RunState) -> TaskPrePlan:
         g = (state.goal or "").strip()

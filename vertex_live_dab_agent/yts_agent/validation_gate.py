@@ -6,7 +6,7 @@ import re
 from datetime import datetime
 from typing import Any, Dict, List
 
-from vertex_live_dab_agent.yts_agent.utils import dedupe_strings, normalize_missing_evidence, resolve_option_label
+from vertex_live_dab_agent.yts_agent.utils import coerce_confidence, dedupe_strings, normalize_missing_evidence, resolve_option_label
 
 def _label_for_option(option: str, expectation: Dict[str, Any]) -> str:
     return resolve_option_label(option, expectation.get("allowed_answers") or []).lower()
@@ -76,7 +76,7 @@ def validate_decision_gate(expectation: Dict[str, Any], evidence: Dict[str, Any]
             "reason": f"Selected label '{label or selected}' is not a Pass label for this prompt, so Pass safety blocking was not needed.",
         }
 
-    confidence = float(latest.get("confidence") or decision.get("confidence") or 0.0)
+    confidence = coerce_confidence(latest.get("confidence"), coerce_confidence(decision.get("confidence")))
     current_context = str(latest.get("detected_app_context") or "").lower()
     screen_type = str(latest.get("screen_type") or "").lower()
     frame_ts = _parse_timestamp(latest.get("timestamp"))

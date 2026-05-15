@@ -70,6 +70,7 @@ from vertex_live_dab_agent.capture.camera_devices import (
     DeviceContext,
     find_device_context,
     load_device_contexts,
+    resolve_context_camera_path,
     validate_camera_devices,
 )
 from vertex_live_dab_agent.capture.hdmi_audio import (
@@ -86,7 +87,7 @@ from vertex_live_dab_agent.dab.topics import KEY_MAP
 from vertex_live_dab_agent.orchestrator.orchestrator import Orchestrator
 from vertex_live_dab_agent.orchestrator.run_state import RunState, RunStatus
 from vertex_live_dab_agent.planner.planner import Planner
-from vertex_live_dab_agent.planner.vertex_client import VertexPlannerClient
+from vertex_live_dab_agent.planner.vertex_client import GEMINI_LIVE_MODEL, VertexPlannerClient
 from vertex_live_dab_agent.ir.service import SamsungIrService
 from vertex_live_dab_agent.system_ops.routing import (
     has_android_adb_fallback,
@@ -98,6 +99,7 @@ from vertex_live_dab_agent.yts_agent import (
     YtsMemoryStore,
     build_expectation_extraction_prompt,
     build_visual_evidence,
+    coerce_confidence,
     decide_yts_response,
     extract_expectation_from_model_response,
     heuristic_extract_expectation,
@@ -178,6 +180,17 @@ _vertex_live_visual_client: Optional[VertexPlannerClient] = None
 _ir_service: Optional[SamsungIrService] = None
 _runtime_vertex_planner_model_override: Optional[str] = None
 _runtime_vertex_live_model_override: Optional[str] = None
+
+_IR_ROUTABLE_ACTIONS = set(KEY_MAP.keys()) | {"KEY_PRESS_CODE", "LONG_KEY_PRESS"}
+_DAB_ONLY_ACTIONS = {
+    "GET_SETTING",
+    "SET_SETTING",
+    "LAUNCH_APP",
+    "EXIT_APP",
+    "OPEN_CONTENT",
+    "GET_STATE",
+    "CAPTURE_SCREENSHOT",
+}
 _yts_live_commands: Dict[str, Dict[str, Any]] = {}
 _yts_live_tasks: Dict[str, asyncio.Task] = {}
 _yts_live_visual_tasks: Dict[str, asyncio.Task] = {}
@@ -452,7 +465,8 @@ def _resolve_active_capture_video_device() -> tuple[Optional[str], Dict[str, Any
     capture = get_screen_capture()
     context = _active_device_context()
     if context is not None:
-        if not context.cameraPath or not os.path.exists(context.cameraPath):
+        camera_path = resolve_context_camera_path(context)
+        if not camera_path or not os.path.exists(camera_path):
             status = capture.capture_source_status(include_devices=False)
             status["context_alignment_error"] = (
                 f"Video mapping missing for selected device {context.displayName}. Please configure camera_devices.json."
@@ -461,19 +475,19 @@ def _resolve_active_capture_video_device() -> tuple[Optional[str], Dict[str, Any
         current = capture.capture_source_status(include_devices=False)
         selected = str(current.get("selected_video_device") or "").strip()
         active = str(current.get("hdmi_device") or "").strip()
-        if selected != context.cameraPath or (active and active != context.cameraPath):
+        if selected != camera_path or (active and active != camera_path):
             capture.set_capture_preference(
                 source=context.videoSource,
-                device=context.cameraPath,
+                device=camera_path,
                 preferred_kind="hdmi" if context.videoSource == "hdmi-capture" else "camera",
                 persist=True,
             )
     capture.ensure_hdmi_session(force=False)
     status = capture.capture_source_status(include_devices=False)
     device = str(status.get("hdmi_device") or status.get("selected_video_device") or "").strip()
-    if context is not None and device != context.cameraPath:
+    if context is not None and device != resolve_context_camera_path(context):
         status["context_alignment_error"] = (
-            f"Active capture source {device or '(none)'} does not match selected camera {context.cameraPath}."
+            f"Active capture source {device or '(none)'} does not match selected camera {resolve_context_camera_path(context)}."
         )
         return None, status
     return (device or None), status
@@ -485,7 +499,8 @@ def _align_capture_preference_to_active_context(*, include_devices: bool = False
     context = _active_device_context()
     if context is None:
         return capture.capture_source_status(include_devices=include_devices)
-    if not context.cameraPath or not os.path.exists(context.cameraPath):
+    camera_path = resolve_context_camera_path(context)
+    if not camera_path or not os.path.exists(camera_path):
         status = capture.capture_source_status(include_devices=include_devices)
         status["context_alignment_error"] = (
             f"Video mapping missing for selected device {context.displayName}. Please configure camera_devices.json."
@@ -497,17 +512,32 @@ def _align_capture_preference_to_active_context(*, include_devices: bool = False
     active = str(current.get("hdmi_device") or "").strip()
     configured_source = str(current.get("configured_source") or "").strip()
     if (
-        selected != context.cameraPath
-        or (active and active != context.cameraPath)
+        selected != camera_path
+        or (active and active != camera_path)
         or configured_source != context.videoSource
     ):
         capture.set_capture_preference(
             source=context.videoSource,
-            device=context.cameraPath,
+            device=camera_path,
             preferred_kind="hdmi" if context.videoSource == "hdmi-capture" else "camera",
             persist=True,
         )
     return capture.capture_source_status(include_devices=include_devices)
+
+
+def _ensure_active_context_capture_session(*, force: bool = False) -> Dict[str, Any]:
+    """Lock capture to the selected context and try to open that exact feed."""
+    capture = get_screen_capture()
+    status = _align_capture_preference_to_active_context(include_devices=False)
+    if status.get("context_alignment_error"):
+        return status
+    try:
+        capture.ensure_hdmi_session(force=force)
+    except Exception as exc:
+        status = capture.capture_source_status(include_devices=False)
+        status["hdmi_last_error"] = str(exc)
+        return status
+    return capture.capture_source_status(include_devices=False)
 
 
 def _build_ffmpeg_video_input_args(
@@ -765,9 +795,15 @@ class LiveAVStreamManager:
     async def _ensure_running_locked(self) -> None:
         if not ffmpeg_available():
             raise RuntimeError("ffmpeg not found on host")
-        video_device, video_status = _resolve_active_capture_video_device()
+        video_status = _align_capture_preference_to_active_context(include_devices=False)
+        video_device = str(video_status.get("selected_video_device") or video_status.get("hdmi_device") or "").strip()
         if not video_device:
             raise RuntimeError("No active capture video device is available")
+        # The fMP4 websocket path opens V4L2 directly through ffmpeg. Release
+        # the shared OpenCV capture session first so both stream paths do not
+        # fight over the same USB camera.
+        with contextlib.suppress(Exception):
+            get_screen_capture().close()
         audio_format: Optional[str] = None
         audio_device: Optional[str] = None
         if get_config().hdmi_audio_enabled:
@@ -1038,11 +1074,38 @@ def _ir_dataset_path() -> Path:
     return _artifacts_root_path() / "ir_samsung_dataset.json"
 
 
+def _resolve_ir_serial_port() -> str:
+    explicit = str(os.getenv("IR_SERIAL_PORT", "") or "").strip()
+    if explicit:
+        return explicit
+
+    for pattern in (
+        "/dev/serial/by-id/*CP210*",
+        "/dev/serial/by-id/*CH340*",
+        "/dev/serial/by-id/*USB*UART*",
+        "/dev/serial/by-id/*NodeMCU*",
+        "/dev/ttyUSB*",
+        "/dev/ttyACM*",
+    ):
+        for candidate in sorted(glob.glob(pattern)):
+            if os.path.exists(candidate):
+                return candidate
+    return "/dev/ttyUSB0"
+
+
 def _get_ir_service() -> SamsungIrService:
     global _ir_service
+    serial_port = _resolve_ir_serial_port()
+    if _ir_service is not None:
+        current_port = str(getattr(_ir_service, "serial_port", "") or "").strip()
+        if current_port and current_port != serial_port:
+            logger.info("IR serial port changed from %s to %s; recreating NodeMCU service", current_port, serial_port)
+            _ir_service = None
+        elif current_port and current_port.startswith("/dev/") and not os.path.exists(current_port):
+            logger.info("IR serial port disappeared (%s); recreating NodeMCU service", current_port)
+            _ir_service = None
     if _ir_service is None:
         cfg = get_config()
-        serial_port = str(os.getenv("IR_SERIAL_PORT", "/dev/ttyUSB0") or "").strip()
         baudrate = int(os.getenv("IR_SERIAL_BAUDRATE", "115200"))
         timeout_seconds = float(os.getenv("IR_SERIAL_TIMEOUT_SECONDS", "3.0"))
         sender_channel = str(os.getenv("IR_SAMSUNG_SENDER_CHANNEL", "D2") or "D2").strip() or "D2"
@@ -2017,10 +2080,11 @@ async def _apply_selected_device_context(device_id: Optional[str], persist: bool
     if context is not None:
         try:
             capture = get_screen_capture()
-            if context.cameraPath:
+            camera_path = resolve_context_camera_path(context)
+            if camera_path:
                 capture.set_capture_preference(
                     source=context.videoSource,
-                    device=context.cameraPath,
+                    device=camera_path,
                     preferred_kind="hdmi" if context.videoSource == "hdmi-capture" else "camera",
                     persist=True,
                 )
@@ -2070,6 +2134,13 @@ def _context_payload(context: Optional[DeviceContext], *, active: bool = False) 
     if context is None:
         return {}
     payload = context.to_dict()
+    resolved_camera_path = resolve_context_camera_path(context)
+    if resolved_camera_path:
+        payload["cameraPath"] = resolved_camera_path
+        payload["geminiFeedSource"] = resolved_camera_path
+        payload["videoDevicePath"] = resolved_camera_path
+        payload["configuredCameraPath"] = context.cameraPath
+        payload["cameraAutoDetected"] = resolved_camera_path != str(context.cameraPath or "").strip()
     payload["active"] = bool(active)
     return payload
 
@@ -2081,7 +2152,7 @@ def _resolve_gemini_feed_source(context: DeviceContext, capture_status: Dict[str
         return active_stream
     if selected_stream:
         return selected_stream
-    return str(context.cameraPath or "").strip()
+    return str(resolve_context_camera_path(context) or context.cameraPath or "").strip()
 
 
 async def _validate_active_device_context(*, require_ready: bool = False) -> Dict[str, Any]:
@@ -2113,17 +2184,18 @@ async def _validate_active_device_context(*, require_ready: bool = False) -> Dic
     dab_ready = bool(context.dabDeviceId)
     yts_ready = bool(context.ytsDeviceId)
     ir_ready = bool(context.irDeviceId)
-    camera_ready = bool(context.cameraPath and os.path.exists(context.cameraPath))
+    camera_path = resolve_context_camera_path(context)
+    camera_ready = bool(camera_path and os.path.exists(camera_path))
     if not dab_ready:
         issues.append(f"DAB device mapping missing for selected device {context.displayName}.")
     if not yts_ready:
         issues.append(f"YTS device mapping missing for selected device {context.displayName}.")
     if not ir_ready:
         issues.append(f"IR device mapping missing for selected device {context.displayName}.")
-    if not context.cameraPath:
+    if not camera_path:
         issues.append(f"Video mapping missing for selected device {context.displayName}. Please configure camera_devices.json.")
-    elif not os.path.exists(context.cameraPath):
-        issues.append(f"Video path for selected device {context.displayName} does not exist: {context.cameraPath}")
+    elif not os.path.exists(camera_path):
+        issues.append(f"Video path for selected device {context.displayName} does not exist: {camera_path}")
 
     capture_status: Dict[str, Any] = {}
     try:
@@ -2136,13 +2208,13 @@ async def _validate_active_device_context(*, require_ready: bool = False) -> Dic
     gemini_feed_source = _resolve_gemini_feed_source(context, capture_status)
     if configured_source and configured_source != context.videoSource:
         issues.append(f"Capture video source {configured_source} does not match selected context source {context.videoSource}.")
-    if context.cameraPath and selected_stream and selected_stream != context.cameraPath:
-        issues.append(f"Stream preview source {selected_stream} does not match selected camera {context.cameraPath}.")
-    if context.cameraPath and active_stream and active_stream != context.cameraPath:
-        issues.append(f"Active capture source {active_stream} does not match selected camera {context.cameraPath}.")
-    if context.cameraPath and gemini_feed_source and gemini_feed_source != context.cameraPath:
+    if camera_path and selected_stream and selected_stream != camera_path:
+        issues.append(f"Stream preview source {selected_stream} does not match selected camera {camera_path}.")
+    if camera_path and active_stream and active_stream != camera_path:
+        issues.append(f"Active capture source {active_stream} does not match selected camera {camera_path}.")
+    if camera_path and gemini_feed_source and gemini_feed_source != camera_path:
         issues.append(
-            f"Gemini feed source {gemini_feed_source} does not match selected camera {context.cameraPath}."
+            f"Gemini feed source {gemini_feed_source} does not match selected camera {camera_path}."
         )
 
     yts_discovery: Optional[Dict[str, Any]] = None
@@ -2183,7 +2255,9 @@ async def _validate_active_device_context(*, require_ready: bool = False) -> Dic
         "ytsCheck": {},
         "irReady": bool(ir_ready),
         "cameraReady": bool(camera_ready),
-        "cameraPath": context.cameraPath,
+        "cameraPath": camera_path,
+        "configuredCameraPath": context.cameraPath,
+        "cameraAutoDetected": camera_path != str(context.cameraPath or "").strip(),
         "videoSource": context.videoSource,
         "geminiFeedSource": gemini_feed_source,
         "streamPreviewSource": active_stream or selected_stream,
@@ -2914,7 +2988,7 @@ def _is_hdmi_capture_device_mismatch(status: Dict[str, Any]) -> bool:
     active = _normalize_video_device_path(status.get("hdmi_device"))
     context = _active_device_context()
     if context is not None:
-        expected = _normalize_video_device_path(context.cameraPath)
+        expected = _normalize_video_device_path(resolve_context_camera_path(context) or context.cameraPath)
         if expected and selected and selected != expected:
             return True
         if expected and active and active != expected:
@@ -3687,10 +3761,7 @@ async def _run_yts_post_revalidation(state: Dict[str, Any]) -> None:
                 continue
             parsed = _extract_json_object(str(response or "")) or {}
             verdict = str(parsed.get("verdict") or "UNCERTAIN").strip().upper()
-            try:
-                conf = float(parsed.get("confidence") or 0.0)
-            except Exception:
-                conf = 0.0
+            conf = coerce_confidence(parsed.get("confidence"))
             candidate = {
                 "condition_id": idx,
                 "condition": condition,
@@ -3701,9 +3772,9 @@ async def _run_yts_post_revalidation(state: Dict[str, Any]) -> None:
                 "evidence_image_name": frame.name,
                 "evidence_image_path": str(frame),
             }
-            if best is None or float(candidate["confidence"]) > float(best.get("confidence") or 0.0):
+            if best is None or coerce_confidence(candidate["confidence"]) > coerce_confidence(best.get("confidence")):
                 best = candidate
-            if candidate["verdict"] == "PASS" and float(candidate["confidence"]) >= 0.85:
+            if candidate["verdict"] == "PASS" and coerce_confidence(candidate["confidence"]) >= 0.85:
                 best = candidate
                 break
         if best is None:
@@ -5112,7 +5183,7 @@ def _apply_yts_validation_response_guard(
 
     analysis = dict(visual_context.get("analysis") or {})
     summary = str(analysis.get("summary") or visual_context.get("summary") or "").strip().lower()
-    confidence = float(analysis.get("confidence") or 0.0)
+    confidence = coerce_confidence(analysis.get("confidence"))
     playback_visible = bool(analysis.get("playback_visible"))
     analysis_has_signal = bool(analysis)
     timeline = list(visual_context.get("timeline") or [])
@@ -5466,14 +5537,13 @@ async def _capture_yts_visual_context(command_id: str, force_fresh: bool = False
     mismatch_detected = False
 
     try:
+        with contextlib.suppress(Exception):
+            await _live_av_stream_manager.stop()
         capture = get_screen_capture()
-        
-        try:
-            capture_status = capture.capture_source_status(include_devices=False)
-        except TypeError:
-            capture_status = capture.capture_source_status()
+
+        capture_status = await asyncio.to_thread(_ensure_active_context_capture_session, force=force_fresh)
         mismatch_detected = _is_hdmi_capture_device_mismatch(capture_status)
-        live_stream_available = bool(capture_status.get("hdmi_available")) and hasattr(capture, "capture_live_stream_frame")
+        live_stream_available = bool(capture_status.get("hdmi_configured")) and hasattr(capture, "capture_live_stream_frame")
         for attempt in range(_YTS_INTERACTIVE_CAPTURE_ATTEMPTS):
             if live_stream_available:
                 result = await capture.capture_live_stream_frame()
@@ -5495,6 +5565,8 @@ async def _capture_yts_visual_context(command_id: str, force_fresh: bool = False
                 latest_status = capture.capture_source_status(include_devices=False)
             except TypeError:
                 latest_status = capture.capture_source_status()
+            if not latest_status.get("hdmi_available") and attempt < (_YTS_INTERACTIVE_CAPTURE_ATTEMPTS - 1):
+                latest_status = await asyncio.to_thread(_ensure_active_context_capture_session, force=force_fresh)
             mismatch_now = _is_hdmi_capture_device_mismatch(latest_status)
             mismatch_detected = mismatch_detected or mismatch_now
             if mismatch_now:
@@ -5617,11 +5689,7 @@ def _is_live_preview_vertex_model(model_name: Optional[str]) -> bool:
 
 
 def _select_vertex_visual_model() -> str:
-    live_model = _get_active_vertex_live_model()
-    planner_model = _get_active_vertex_planner_model()
-    if live_model and not _is_live_preview_vertex_model(live_model):
-        return live_model
-    return planner_model or live_model
+    return GEMINI_LIVE_MODEL
 
 
 def get_vertex_live_visual_client() -> Optional[VertexPlannerClient]:
@@ -5653,16 +5721,10 @@ def get_vertex_live_visual_client() -> Optional[VertexPlannerClient]:
 
 
 async def _capture_yts_live_monitor_frame(command_id: str) -> Dict[str, Any]:
-    capture = get_screen_capture()
     with contextlib.suppress(Exception):
-        await asyncio.to_thread(_align_capture_preference_to_active_context, include_devices=False)
-    if hasattr(capture, "ensure_hdmi_session"):
-        with contextlib.suppress(Exception):
-            await asyncio.to_thread(capture.ensure_hdmi_session, True)
-    try:
-        capture_status = capture.capture_source_status(include_devices=False)
-    except TypeError:
-        capture_status = capture.capture_source_status()
+        await _live_av_stream_manager.stop()
+    capture = get_screen_capture()
+    capture_status = await asyncio.to_thread(_ensure_active_context_capture_session, force=True)
     if _is_hdmi_capture_device_mismatch(capture_status):
         return {
             "source": "capture-mismatch",
@@ -5677,7 +5739,7 @@ async def _capture_yts_live_monitor_frame(command_id: str) -> Dict[str, Any]:
                 "device_mismatch": True,
             },
         }
-    use_live_stream_only = bool(capture_status.get("hdmi_available") or capture_status.get("hdmi_configured")) and hasattr(capture, "capture_live_stream_frame")
+    use_live_stream_only = bool(capture_status.get("hdmi_configured")) and hasattr(capture, "capture_live_stream_frame")
     if use_live_stream_only:
         result = await capture.capture_live_stream_frame()
         try:
@@ -5772,20 +5834,9 @@ async def _refresh_yts_live_visual_monitor(command_id: str) -> Optional[Dict[str
                 session_id=f"yts-live-visual-{command_id}",
             )
         except Exception as exc:
-            fallback_client = get_vertex_text_client()
-            live_model = str(get_config().vertex_live_model or "").strip()
-            if fallback_client is None or fallback_client is client:
-                raise
-            logger.warning(
-                "YTS live visual monitor falling back to planner model after visual model failure (%s): %s",
-                live_model or "unknown-model",
-                exc,
-            )
-            response = await fallback_client.generate_content(
-                prompt,
-                screenshot_b64=screenshot_b64,
-                session_id=f"yts-live-visual-{command_id}",
-            )
+            live_model = _get_active_vertex_live_model() or "unknown-model"
+            logger.warning("YTS live visual monitor failed with Gemini Live model %s: %s", live_model, exc)
+            raise
         analysis = _parse_yts_live_visual_analysis(response)
 
     captured_at = _utc_now_iso()
@@ -6136,59 +6187,32 @@ async def _suggest_yts_prompt_response(
 
         lowered_message = str(message or "").strip().lower()
         if "suggestion decision" in lowered_message and final:
-            frame_count = payload.get("continuous_frame_count")
-            frame_text = f" across {frame_count} analyzed frame(s)" if frame_count else ""
-            reason = str(decision_payload.get("reason") or "").strip()
-            missing = normalize_missing_evidence(decision_payload.get("missing_evidence") or payload.get("missing_evidence"))
             selected_text = f"{final} ({final_label})" if final_label and final_label != final else final
-            expectation_summary = []
-            if expectation_payload:
-                if expectation_payload.get("test_type"):
-                    expectation_summary.append(f"type={expectation_payload.get('test_type')}")
-                if expectation_payload.get("required_app_context"):
-                    expectation_summary.append(f"app={expectation_payload.get('required_app_context')}")
-                if expectation_payload.get("required_state"):
-                    expectation_summary.append(f"state={expectation_payload.get('required_state')}")
-            safety_text = "blocked Pass" if payload.get("safety_blocked_pass") else "allowed selected option"
-            lines = [
-                f"{prompt_label}YTS guided AI decision",
-                f"Prompt title: {payload.get('prompt_title') or expectation_payload.get('test_title') or 'YTS prompt'}",
-                f"Extracted expectation: {', '.join(expectation_summary) if expectation_summary else 'control/result prompt'}",
-                f"Latest visual observation: {observed or 'not required for this prompt'}{frame_text}",
-                f"Prompt/frame binding: prompt_sequence_id={payload.get('prompt_sequence_id') or 'n/a'}, prompt_timestamp={payload.get('prompt_timestamp') or 'n/a'}, frame_timestamp={payload.get('frame_timestamp') or 'n/a'}",
-                f"Target check: expected={payload.get('expected_visual_target') or 'n/a'}, observed={payload.get('observed_visual_target') or 'n/a'}, match={payload.get('target_match') if payload.get('target_match') is not None else 'n/a'}",
-                f"Gemini interaction: mode={payload.get('gemini_call_mode') or 'n/a'}, latency_ms={payload.get('latency_ms') if payload.get('latency_ms') is not None else 'n/a'}",
-                f"Selected option: {selected_text}",
-                f"Evidence used: {decision_payload.get('evidence_summary') or observed or 'console prompt/options'}",
-            ]
-            if missing:
-                lines.append("Missing evidence:")
-                lines.extend(f"- {item}" for item in missing)
-            else:
-                lines.append("Missing evidence: none")
-            lines.append(f"Safety gate result: {safety_text}. {reason}".strip())
-            lines.append(f"Final sent option: {selected_text}")
-            return "\n".join(lines)
-        if "captured visual context" in lowered_message:
-            if payload.get("visual_validation_skipped"):
-                return f"{prompt_label}Gemini treated this as a YTS result/retry control prompt, so visual validation was skipped."
-            frame_count = payload.get("continuous_frame_count")
-            frame_text = f" after analyzing {frame_count} frame(s)" if frame_count else ""
-            source_text = f" from {visual_source}" if visual_source else ""
+            expected = str(payload.get("expected_visual_target") or expectation_payload.get("test_title") or "").strip()
+            evidence_line = str(decision_payload.get("evidence_summary") or observed or "YTS prompt/options").strip()
+            target_match = payload.get("target_match")
+            match_text = ""
+            if target_match is not None:
+                match_text = " match=yes" if bool(target_match) else " match=no"
+            prefix = f"{prompt_label}" if prompt_label else ""
             return (
-                f"{prompt_label}Gemini captured prompt-scoped live TV evidence{source_text}{frame_text}"
-                " as the source of truth for this prompt."
+                f"{prefix}Answer: {selected_text} | "
+                f"Evidence: expected '{expected or 'YTS requirement'}'; {evidence_line}.{match_text}"
             )
+        if "captured visual context" in lowered_message:
+            return ""
+        if "extracted runtime yts expectation" in lowered_message:
+            return ""
+        if "continuous gemini visual monitor" in lowered_message:
+            return ""
         if "missing screenshot" in lowered_message:
-            return f"{prompt_label}Gemini did not answer because no fresh TV frame was available."
+            return f"{prompt_label}No answer: no fresh TV frame available."
         if "client is unavailable" in lowered_message:
-            return f"{prompt_label}Gemini did not answer because the model client is unavailable."
+            return f"{prompt_label}No answer: Gemini client unavailable."
         if "gemini exception" in lowered_message:
             error = str(payload.get("error") or "").strip()
-            if error:
-                return f"{prompt_label}Gemini could not answer this attempt because the model service returned an error: {error}"
-            return f"{prompt_label}Gemini could not answer this attempt because the model service returned an error."
-        return f"{prompt_label}{str(message or '').strip()}"
+            return f"{prompt_label}No answer: Gemini error{': ' + error if error else ''}."
+        return ""
 
     def _log_ai(message: str, payload: Optional[Dict[str, Any]] = None) -> None:
         if not state:
@@ -6230,11 +6254,14 @@ async def _suggest_yts_prompt_response(
         human_message = str(message or "")
         if details:
             human_message = f"{human_message} - {'; '.join(str(item) for item in details)}"
+        operator_message = _operator_ai_message(message, payload)
+        if not operator_message:
+            return
         state.setdefault("logs", []).append(
             {
                 "stream": "ai",
                 "message": human_message,
-                "operator_message": _operator_ai_message(message, payload),
+                "operator_message": operator_message,
                 "raw_message": raw,
             }
         )
@@ -6742,7 +6769,13 @@ async def _run_yts_command_live(command_id: str, request: "YtsCommandRequest") -
         state["status"] = "completed" if returncode == 0 else "failed"
         state["awaiting_input"] = False
         state["pending_prompt"] = None
+        state["visual_monitor_active"] = False
         state["logs"].append({"stream": "system", "message": f"YTS process finished with exit code {returncode}"})
+        # Unlock the UI/backend guard as soon as the YTS process exits. Video
+        # stopping, reports, and post-run validation can take longer, but they
+        # should not keep the next YTS job blocked.
+        await asyncio.to_thread(_write_yts_terminal_log_artifact, state)
+        _persist_yts_live_state(state)
 
         if request.output_file and Path(request.output_file).exists():
             try:
@@ -7567,31 +7600,15 @@ def _vertex_planner_requested() -> bool:
 
 
 def _get_active_vertex_planner_model() -> str:
-    override = str(_runtime_vertex_planner_model_override or "").strip()
-    if override:
-        return override
-    return str(get_config().vertex_planner_model or "").strip()
+    return GEMINI_LIVE_MODEL
 
 
 def _get_active_vertex_live_model() -> str:
-    override = str(_runtime_vertex_live_model_override or "").strip()
-    if override:
-        return override
-    return str(get_config().vertex_live_model or "").strip()
+    return GEMINI_LIVE_MODEL
 
 
 def _get_available_vertex_models() -> List[str]:
-    c = get_config()
-    models = {
-        str(m).strip()
-        for m in [
-            *_COMMON_VERTEX_MODELS,
-            str(c.vertex_planner_model or "").strip(),
-            str(c.vertex_live_model or "").strip(),
-        ]
-        if str(m).strip()
-    }
-    return sorted(models)
+    return [GEMINI_LIVE_MODEL]
 
 
 def _reset_runtime_model_clients() -> None:
@@ -8095,40 +8112,9 @@ async def runtime_model_summary() -> RuntimeModelResponse:
 
 @app.post("/config/runtime-model", response_model=RuntimeModelResponse)
 async def runtime_model_update(request: RuntimeModelUpdateRequest) -> RuntimeModelResponse:
-    global _runtime_vertex_planner_model_override, _runtime_vertex_live_model_override
-    requested = str(request.model or "").strip()
-    target = str(request.target or "planner").strip().lower()
     c = get_config()
     configured_planner = str(c.vertex_planner_model or "").strip()
     configured_live = str(c.vertex_live_model or "").strip()
-
-    if not requested:
-        raise HTTPException(status_code=400, detail="model is required")
-    if target not in {"planner", "live"}:
-        raise HTTPException(status_code=400, detail="target must be 'planner' or 'live'")
-
-    if requested.lower() in {"default", "configured", "reset"}:
-        if target == "live":
-            _runtime_vertex_live_model_override = None
-        else:
-            _runtime_vertex_planner_model_override = None
-        _reset_runtime_model_clients()
-        active_planner = _get_active_vertex_planner_model()
-        active_live = _get_active_vertex_live_model()
-        return RuntimeModelResponse(
-            success=True,
-            active_vertex_planner_model=active_planner,
-            configured_vertex_planner_model=configured_planner,
-            active_vertex_live_model=active_live,
-            configured_vertex_live_model=configured_live,
-            available_models=_get_available_vertex_models(),
-            message=f"{target} runtime override cleared; using configured model",
-        )
-
-    if target == "live":
-        _runtime_vertex_live_model_override = requested
-    else:
-        _runtime_vertex_planner_model_override = requested
     _reset_runtime_model_clients()
     active_planner = _get_active_vertex_planner_model()
     active_live = _get_active_vertex_live_model()
@@ -8139,7 +8125,7 @@ async def runtime_model_update(request: RuntimeModelUpdateRequest) -> RuntimeMod
         active_vertex_live_model=active_live,
         configured_vertex_live_model=configured_live,
         available_models=_get_available_vertex_models(),
-        message=f"{target} runtime model updated",
+        message="model selection is disabled; Gemini Live model is fixed",
     )
 
 
@@ -8279,16 +8265,20 @@ async def device_contexts() -> dict:
         else:
             yts_discovery = await _get_yts_discovery_for_context(context)
             yts_short_id = str((yts_discovery or {}).get("short_id") or "")
+            camera_path = resolve_context_camera_path(context)
             readiness = {
-                "valid": bool(context.dabDeviceId and context.ytsDeviceId and yts_discovery and context.irDeviceId and context.cameraPath and os.path.exists(context.cameraPath)),
+                "valid": bool(context.dabDeviceId and context.ytsDeviceId and yts_discovery and context.irDeviceId and camera_path and os.path.exists(camera_path)),
                 "dabReady": bool(context.dabDeviceId),
                 "ytsReady": bool(context.ytsDeviceId and yts_discovery),
                 "ytsShortId": yts_short_id,
                 "ytsDiscoveredDevice": yts_discovery or {},
                 "irReady": bool(context.irDeviceId),
-                "cameraReady": bool(context.cameraPath and os.path.exists(context.cameraPath)),
+                "cameraReady": bool(camera_path and os.path.exists(camera_path)),
+                "cameraPath": camera_path,
+                "configuredCameraPath": context.cameraPath,
+                "cameraAutoDetected": camera_path != str(context.cameraPath or "").strip(),
                 "videoSource": context.videoSource,
-                "issues": ([] if context.cameraPath and os.path.exists(context.cameraPath) else [f"Video path for selected device {context.displayName} does not exist: {context.cameraPath or '(missing)'}"]),
+                "issues": ([] if camera_path and os.path.exists(camera_path) else [f"Video path for selected device {context.displayName} does not exist: {camera_path or context.cameraPath or '(missing)'}"]),
             }
         contexts.append({**_context_payload(context, active=is_active), "readiness": readiness})
     return {
@@ -8564,19 +8554,20 @@ async def capture_select(request: CaptureSelectRequest) -> CaptureSourceResponse
     try:
         context = _active_device_context()
         if context is not None:
+            context_camera_path = resolve_context_camera_path(context)
             requested_device = str(request.device or "").strip()
             requested_source = str(request.source or "").strip().lower()
-            if requested_device and requested_device != context.cameraPath:
+            if requested_device and requested_device != context_camera_path:
                 raise ValueError(
                     f"Capture device {requested_device} is not mapped to active device context {context.displayName}."
                 )
             if requested_source in {"camera", "camera-capture", "hdmi", "hdmi-capture", "capture-card", "auto", ""}:
-                if not context.cameraPath:
+                if not context_camera_path:
                     raise ValueError(
                         f"Video mapping missing for selected device {context.displayName}. Please configure camera_devices.json."
                     )
                 request.source = context.videoSource
-                request.device = context.cameraPath
+                request.device = context_camera_path
                 request.preferred_kind = "hdmi" if context.videoSource == "hdmi-capture" else "camera"
         capture = get_screen_capture()
         previous_status = capture.capture_source_status(include_devices=False)
@@ -8851,6 +8842,7 @@ class YtsCommandRequest(BaseModel):
 
 class YtsInteractiveResponseRequest(BaseModel):
     response: str
+    prompt_id: Optional[int] = None
 
 
 class YtsInteractiveSuggestRequest(BaseModel):
@@ -8970,9 +8962,8 @@ async def yts_live_command(request: YtsCommandRequest) -> dict:
     if request.interactive_ai:
         state["logs"].append(
             {
-                "stream": "ai",
+                "stream": "system",
                 "message": "Continuous Gemini visual monitor started for this YTS job.",
-                "operator_message": "Gemini is continuously watching the live TV feed while YTS runs and will use the visual event history plus console logs for prompts.",
                 "raw_message": json.dumps({"mode": state.get("visual_monitor_mode"), "interval_seconds": _YTS_LIVE_VISUAL_MONITOR_INTERVAL_SECONDS}),
             }
         )
@@ -9091,6 +9082,7 @@ async def download_yts_result_file(command_id: str) -> Response:
 
 @app.get("/yts/command/live/{command_id}")
 async def get_yts_live_command(command_id: str) -> dict:
+    await asyncio.to_thread(_clear_detached_active_yts_jobs)
     state = _get_yts_live_state(command_id)
     if not state:
         raise HTTPException(status_code=404, detail=f"YTS command {command_id!r} not found")
@@ -9138,19 +9130,72 @@ async def stop_yts_live_command(command_id: str) -> dict:
 async def respond_yts_live_command(command_id: str, request: YtsInteractiveResponseRequest) -> dict:
     await asyncio.to_thread(_clear_detached_active_yts_jobs)
     state = _get_yts_live_state(command_id)
+    if not state:
+        raise HTTPException(status_code=404, detail=f"YTS command {command_id!r} not found")
+
+    payload = str(request.response or "").strip()
+    if not payload:
+        raise HTTPException(status_code=400, detail="Response text is required")
+
     prompt_entry = None
-    if state:
+    requested_prompt_id = request.prompt_id
+    if requested_prompt_id is not None:
+        for prompt in state.get("prompts") or []:
+            if prompt.get("id") == requested_prompt_id:
+                prompt_entry = prompt
+                break
+        if prompt_entry is None:
+            logger.info(
+                "YTS manual response prompt id is no longer tracked; sending to live stdin anyway: command_id=%s prompt_id=%s",
+                command_id,
+                requested_prompt_id,
+            )
+    else:
         prompt_entry = state.get("pending_prompt") or (state.get("prompts")[-1] if state.get("prompts") else None)
-    result = await _send_yts_command_input(command_id, request.response, source="manual")
+
+    if isinstance(prompt_entry, dict) and prompt_entry.get("answered"):
+        return {
+            "command_id": command_id,
+            "response": str(prompt_entry.get("response") or payload),
+            "source": str(prompt_entry.get("response_source") or "manual"),
+            "sent": False,
+            "already_answered": True,
+        }
+
+    if not state.get("awaiting_input") or not isinstance(state.get("pending_prompt"), dict):
+        result = await _send_yts_command_input(command_id, payload, source="manual")
+        result["sent"] = True
+        result["already_answered"] = False
+        result["prompt_attached"] = False
+        result["warning"] = "No parsed pending prompt was attached; response was sent to the live YTS process stdin"
+        return result
+
+    pending_prompt = state.get("pending_prompt")
+    if (
+        isinstance(prompt_entry, dict)
+        and isinstance(pending_prompt, dict)
+        and prompt_entry.get("id") != pending_prompt.get("id")
+    ):
+        result = await _send_yts_command_input(command_id, payload, source="manual")
+        result["sent"] = True
+        result["already_answered"] = False
+        result["prompt_attached"] = False
+        result["warning"] = "Prompt changed before response was sent; response was sent to the live YTS process stdin"
+        return result
+
+    result = await _send_yts_command_input(command_id, payload, source="manual")
     if prompt_entry and prompt_entry.get("id") is not None:
         _update_yts_prompt_entry(
             command_id,
             int(prompt_entry["id"]),
             answered=True,
-            response=request.response,
+            response=payload,
             response_source="manual",
             ai_error=None,
         )
+    result["sent"] = True
+    result["already_answered"] = False
+    result["prompt_attached"] = True
     return result
 
 
@@ -9165,6 +9210,33 @@ async def suggest_yts_live_command_response(command_id: str, request: YtsInterac
     if not _prompt_ready_for_ai_response(prompt_entry):
         raise HTTPException(status_code=409, detail="YTS prompt is still collecting the full question/options")
     prompt_id = int(prompt_entry["id"])
+    existing_suggestion = str(prompt_entry.get("ai_suggestion") or "").strip()
+
+    if request.send_response and existing_suggestion:
+        await _send_yts_command_input(
+            command_id,
+            existing_suggestion,
+            source=str(prompt_entry.get("ai_source") or "gemini"),
+        )
+        _update_yts_prompt_entry(
+            command_id,
+            prompt_id,
+            answered=True,
+            response=existing_suggestion,
+            response_source=str(prompt_entry.get("ai_source") or "gemini"),
+            ai_error=None,
+        )
+        return {
+            "command_id": command_id,
+            "suggestion": existing_suggestion,
+            "source": str(prompt_entry.get("ai_source") or "gemini"),
+            "deferred_reason": None,
+            "expectation": prompt_entry.get("ai_expectation"),
+            "decision": prompt_entry.get("ai_decision"),
+            "missing_evidence": prompt_entry.get("ai_missing_evidence") or [],
+            "safety_blocked_pass": prompt_entry.get("ai_safety_blocked_pass"),
+            "sent": True,
+        }
 
     try:
         suggestion = await _suggest_yts_prompt_response(
@@ -9547,7 +9619,9 @@ async def capture_screenshot() -> dict:
 async def stream_hdmi() -> StreamingResponse:
     """MJPEG stream from HDMI capture card for browser live preview."""
     config = get_config()
-    device, status = await asyncio.to_thread(_resolve_active_capture_video_device)
+    with contextlib.suppress(Exception):
+        await _live_av_stream_manager.stop()
+    status = await asyncio.to_thread(_ensure_active_context_capture_session, force=True)
     capture = get_screen_capture()
 
     if not status.get("hdmi_configured"):
@@ -9557,7 +9631,9 @@ async def stream_hdmi() -> StreamingResponse:
         )
     if status.get("context_alignment_error"):
         raise HTTPException(status_code=409, detail=str(status.get("context_alignment_error")))
-    if not device:
+    selected_device = str(status.get("selected_video_device") or "").strip()
+    active_device = str(status.get("hdmi_device") or "").strip()
+    if not selected_device and not active_device:
         raise HTTPException(status_code=404, detail=str(status.get("hdmi_last_error") or "No selected camera stream available"))
 
     # Keep the stream endpoint tolerant of transient startup issues. The
@@ -9590,13 +9666,15 @@ async def stream_hdmi() -> StreamingResponse:
                     consecutive_empty_frames % 30 == 0 and now - last_recovery_ts >= 5.0
                 ):
                     last_recovery_ts = now
-                    status = await asyncio.to_thread(capture.recover_video_session, force=False)
+                    force_recover = consecutive_empty_frames >= 30
+                    status = await asyncio.to_thread(capture.recover_video_session, force=force_recover)
                     error = str(status.get("hdmi_last_error") or "waiting for selected camera")
                     logger.warning(
-                        "HDMI stream waiting for camera (%s): selected=%s active=%s error=%s",
+                        "HDMI stream waiting for camera (%s): selected=%s active=%s force_recover=%s error=%s",
                         consecutive_empty_frames,
                         status.get("selected_video_device") or "",
                         status.get("hdmi_device") or "",
+                        force_recover,
                         error,
                     )
                 await asyncio.sleep(0.10)
@@ -9770,6 +9848,17 @@ async def manual_action(request: ManualActionRequest) -> ManualActionResponse:
         # here so key presses are sent immediately.
         active_context = _active_device_context()
 
+        if control_mode == "IR" and action in _DAB_ONLY_ACTIONS:
+            logger.info("Routing %s through DAB/ADB despite IR control mode", action)
+            control_mode = "DAB"
+
+        if control_mode == "IR" and action not in _IR_ROUTABLE_ACTIONS:
+            return ManualActionResponse(
+                success=False,
+                action=action,
+                error=f"Action {action} is not an IR key action; use DAB/ADB for this operation",
+            )
+
         if control_mode == "IR":
             ir_service = _get_ir_service()
             provided_ir_id = str(
@@ -9917,8 +10006,7 @@ async def manual_action(request: ManualActionRequest) -> ManualActionResponse:
                 raise HTTPException(status_code=400, detail="key is required for GET_SETTING")
 
             selected_device_id = _resolve_selected_device_id(request.device_id)
-            ops_resp = await dab.list_operations()
-            supported_ops = [str(o) for o in ((ops_resp.data or {}).get("operations", []) if isinstance(getattr(ops_resp, "data", None), dict) else [])]
+            supported_ops = ["system/settings/get"]
 
             device_info_payload: Dict[str, Any] = {}
             try:
@@ -10012,8 +10100,7 @@ async def manual_action(request: ManualActionRequest) -> ManualActionResponse:
             if requested_value is None:
                 raise HTTPException(status_code=400, detail="value is required for SET_SETTING")
             selected_device_id = _resolve_selected_device_id(request.device_id)
-            ops_resp = await dab.list_operations()
-            supported_ops = [str(o) for o in ((ops_resp.data or {}).get("operations", []) if isinstance(getattr(ops_resp, "data", None), dict) else [])]
+            supported_ops = ["system/settings/set"]
 
             device_info_payload: Dict[str, Any] = {}
             try:
@@ -10229,7 +10316,7 @@ async def ir_send(request: IrSendRequest) -> dict:
         str(request.key_name or "").strip(),
     )
     if not bool(result.get("success")):
-        raise HTTPException(status_code=400, detail=str(result.get("error") or "IR send failed"))
+        raise HTTPException(status_code=400, detail=result)
     return result
 
 
@@ -10281,13 +10368,18 @@ async def task_macro(request: TaskMacroRequest) -> TaskMacroResponse:
         if direct_actions:
             routed_actions: List[ManualActionRequest] = []
             for item in direct_actions:
+                routed_control_mode = "IR" if str(item.action or "").strip().upper() in _IR_ROUTABLE_ACTIONS else None
                 routed_actions.append(
                     ManualActionRequest(
                         action=item.action,
                         params=item.params,
                         device_id=device_id or item.device_id,
-                        control_mode="IR",
-                        ir_device_id=ir_device_id or item.ir_device_id or "samsung_tv_default",
+                        control_mode=routed_control_mode,
+                        ir_device_id=(
+                            ir_device_id or item.ir_device_id or "samsung_tv_default"
+                            if routed_control_mode == "IR"
+                            else None
+                        ),
                     )
                 )
 
@@ -10380,8 +10472,12 @@ async def task_macro(request: TaskMacroRequest) -> TaskMacroResponse:
             action=action_name,
             params=planned.params or None,
             device_id=device_id,
-            control_mode=control_mode,
-            ir_device_id=ir_device_id,
+            control_mode=(
+                control_mode
+                if not (control_mode == "IR" and action_name in _DAB_ONLY_ACTIONS)
+                else None
+            ),
+            ir_device_id=ir_device_id if control_mode == "IR" and action_name in _IR_ROUTABLE_ACTIONS else None,
         )
         planned_actions.append(action_req)
         last_actions.append(action_name)

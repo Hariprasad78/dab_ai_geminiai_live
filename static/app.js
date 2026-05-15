@@ -21,6 +21,9 @@
     activeContext: null,
     contexts: [],
     ytsJobRunning: false,
+    promptDraft: '',
+    promptDraftId: null,
+    promptResponding: false,
   };
 
   const commandDefs = {
@@ -41,6 +44,7 @@
 
   const $ = (id) => document.getElementById(id);
   const esc = (value) => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const escAttr = (value) => esc(value).replace(/"/g, '&quot;');
   const AV_MIME = 'video/mp4; codecs="avc1.42E01F, mp4a.40.2"';
   let avSocket = null;
   let avMediaSource = null;
@@ -786,6 +790,8 @@
     if (!device) throw new Error('Device ID is required to run YTS tests.');
     syncTestDeviceFromTarget();
 
+    addSelectedTests(parseTokens($('test-manual-ids-input').value));
+    $('test-manual-ids-input').value = '';
     const dropdownSelections = [...$('test-name-select').selectedOptions].map((option) => option.value);
     addSelectedTests(dropdownSelections);
     const selectedIds = [...state.selectedTests];
@@ -814,6 +820,7 @@
       output_file: jsonOutput || null,
       interactive_ai,
       record_video,
+      device_id: device,
     };
   }
 
@@ -839,15 +846,17 @@
     const def = commandDefs[command];
     if (!def) throw new Error('Choose an advanced command first.');
     const params = [];
+    let deviceId = '';
     (def.args || []).forEach((arg) => {
       const input = document.querySelector(`[data-advanced-arg="${CSS.escape(arg.name)}"]`);
       let value = input ? String(input.value || '').trim() : '';
       if (arg.name === 'device' && !value) value = state.activeContext?.validation?.ytsShortId || state.activeContext?.ytsShortId || state.activeContext?.ytsDeviceId || $('target-device-id').value.trim();
       if (!value) return;
+      if (arg.name === 'device') deviceId = value;
       if (arg.multiple) params.push(...parseTokens(value));
       else params.push(value);
     });
-    return { command, params, global_options: globalOptions(), interactive_ai: false, record_video: false };
+    return { command, params, global_options: globalOptions(), interactive_ai: false, record_video: false, device_id: deviceId || null };
   }
 
   function renderHistory() {
@@ -924,8 +933,22 @@
     if (!prompt || !data.awaiting_input) {
       container.classList.add('hidden');
       container.innerHTML = '';
+      state.promptDraft = '';
+      state.promptDraftId = null;
       return;
     }
+    const promptId = prompt.id || null;
+    const existingInput = $('prompt-custom-input');
+    if (existingInput && state.promptDraftId === promptId) {
+      state.promptDraft = existingInput.value || '';
+    }
+    if (state.promptDraftId !== promptId) {
+      state.promptDraft = '';
+      state.promptDraftId = promptId;
+    }
+    const shouldRestoreFocus = document.activeElement === existingInput;
+    const restoreStart = shouldRestoreFocus ? existingInput.selectionStart : null;
+    const restoreEnd = shouldRestoreFocus ? existingInput.selectionEnd : null;
     const options = Array.isArray(prompt.options) && prompt.options.length ? prompt.options : ['yes', 'no', '1', '2', '3', '4'];
     container.classList.remove('hidden');
     container.innerHTML = `
@@ -935,18 +958,25 @@
       ${prompt.ai_visual_summary ? `<div class="status-line muted">TV visual context: ${esc(prompt.ai_visual_summary)}</div>` : ''}
       <div class="prompt-actions">${options.map((option) => `<button type="button" data-prompt-response="${esc(option)}" class="secondary">${esc(option)}</button>`).join('')}</div>
       <div class="prompt-actions">
-        <input id="prompt-custom-input" placeholder="Custom response" />
+        <input id="prompt-custom-input" placeholder="Custom response" value="${escAttr(state.promptDraft)}" />
         <button type="button" id="prompt-send-custom-btn" class="secondary">Send</button>
         <button type="button" id="prompt-suggest-btn" class="secondary">Suggest with Gemini</button>
         <button type="button" id="prompt-send-suggestion-btn">Send Gemini Suggestion</button>
       </div>`;
+    const restoredInput = $('prompt-custom-input');
+    if (restoredInput && shouldRestoreFocus) {
+      restoredInput.focus();
+      if (restoreStart !== null && restoreEnd !== null) {
+        restoredInput.setSelectionRange(restoreStart, restoreEnd);
+      }
+    }
   }
 
   function renderInteractionLog(data) {
     const prompts = Array.isArray(data.prompts) ? data.prompts : [];
     const responses = Array.isArray(data.responses) ? data.responses : [];
     const aiTraceLogs = Array.isArray(data.logs)
-      ? data.logs.filter((entry) => String(entry?.stream || '').toLowerCase() === 'ai')
+      ? data.logs.filter((entry) => String(entry?.stream || '').toLowerCase() === 'ai' && String(entry?.operator_message || entry?.message || '').trim())
       : [];
     if (!prompts.length && !responses.length && !aiTraceLogs.length) {
       $('interaction-log').textContent = 'No interactive prompts or Gemini responses recorded for this job yet.';
@@ -954,10 +984,14 @@
     }
     const lines = [];
     prompts.forEach((prompt, index) => {
-      lines.push(`Prompt ${index + 1}: ${prompt.text || '(empty prompt)'}`);
-      if (prompt.options?.length) lines.push(`  Options: ${prompt.options.join(', ')}`);
-      if (prompt.ai_suggestion) lines.push(`  Gemini: ${prompt.ai_suggestion}`);
-      if (prompt.response) lines.push(`  Sent: ${prompt.response}`);
+      const promptText = String(prompt.text || '').split('\n').map((line) => line.trim()).filter(Boolean);
+      const question = [...promptText].reverse().find((line) => line.includes('?')) || promptText[promptText.length - 1] || '(empty prompt)';
+      const answer = prompt.response || prompt.ai_suggestion || '';
+      const evidence = prompt.ai_decision?.evidence_summary || prompt.ai_visual_summary || '';
+      const compact = [`Prompt ${index + 1}: ${question}`];
+      if (answer) compact.push(`Answer: ${answer}`);
+      if (evidence) compact.push(`Evidence: ${evidence}`);
+      lines.push(compact.join(' | '));
     });
     if (responses.length) {
       lines.push('', 'Responses:');
@@ -966,7 +1000,7 @@
       });
     }
     if (aiTraceLogs.length) {
-      lines.push('', 'Gemini Activity:');
+      lines.push('', 'Gemini Evidence:');
       aiTraceLogs.forEach((entry, index) => {
         lines.push(`  ${index + 1}. ${entry.operator_message || entry.message || ''}`);
       });
@@ -1018,9 +1052,15 @@
       try {
         const data = await api(`/yts/command/live/${commandId}`);
         renderCommandDetail(data);
-        if (data.status !== 'running') stopCommandPolling();
+        if (data.status !== 'running') {
+          stopCommandPolling();
+          setYtsButtonsLocked(false);
+          void loadHistory(true);
+        }
       } catch (_) {
         stopCommandPolling();
+        setYtsButtonsLocked(false);
+        void loadHistory(true);
       }
     }, 500);
   }
@@ -1079,13 +1119,17 @@
   async function runQuickCommand(command) {
     const def = commandDefs[command];
     const params = [];
+    let deviceId = '';
     (def?.args || []).forEach((arg) => {
       if (arg.name === 'device') {
         const value = $('target-device-id').value.trim();
-        if (value) params.push(value);
+        if (value) {
+          deviceId = value;
+          params.push(value);
+        }
       }
     });
-    await runLiveCommand({ command, params, global_options: globalOptions(), interactive_ai: false, record_video: false }, `${def?.title || command} started.`);
+    await runLiveCommand({ command, params, global_options: globalOptions(), interactive_ai: false, record_video: false, device_id: deviceId || null }, `${def?.title || command} started.`);
   }
 
   async function stopCurrentCommand() {
@@ -1100,13 +1144,21 @@
   }
 
   async function respondToPrompt(response) {
-    if (!state.currentCommandId) return;
+    if (!state.currentCommandId || state.promptResponding) return;
+    state.promptResponding = true;
     try {
-      await api(`/yts/command/live/${state.currentCommandId}/respond`, 'POST', { response });
+      await api(`/yts/command/live/${state.currentCommandId}/respond`, 'POST', {
+        response,
+        prompt_id: state.promptDraftId,
+      });
+      state.promptDraft = '';
+      state.promptDraftId = null;
       await openCommand(state.currentCommandId, true);
       await loadHistory(true);
     } catch (error) {
       showBanner('error', `Failed to answer prompt: ${error.message}`);
+    } finally {
+      state.promptResponding = false;
     }
   }
 
@@ -1288,6 +1340,10 @@
       }
       if (event.target.id === 'prompt-suggest-btn') suggestPrompt(false);
       if (event.target.id === 'prompt-send-suggestion-btn') suggestPrompt(true);
+    });
+    $('prompt-box').addEventListener('input', (event) => {
+      if (event.target.id !== 'prompt-custom-input') return;
+      state.promptDraft = event.target.value || '';
     });
 
     $('ai-start-run-btn').addEventListener('click', startRun);

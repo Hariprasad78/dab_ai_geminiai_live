@@ -5,6 +5,30 @@ from __future__ import annotations
 from typing import Any, Dict, Iterable, List
 
 
+def coerce_confidence(value: Any, default: float = 0.0) -> float:
+    """Normalize numeric or label-style confidence values into 0..1."""
+
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        normalized = str(value or "").strip().lower().replace("_", " ").replace("-", " ")
+        scale = {
+            "certain": 1.0,
+            "very high": 0.95,
+            "high": 0.85,
+            "medium high": 0.75,
+            "medium": 0.6,
+            "moderate": 0.6,
+            "medium low": 0.45,
+            "low": 0.3,
+            "very low": 0.1,
+            "unknown": default,
+            "none": default,
+        }
+        confidence = scale.get(normalized, default)
+    return max(0.0, min(1.0, confidence))
+
+
 def normalize_missing_evidence(value: Any) -> List[str]:
     """Normalize model/gate missing evidence into readable string bullets."""
 

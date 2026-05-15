@@ -49,6 +49,33 @@ _DAB_TO_SAMSUNG_KEY_MAP: Dict[str, str] = {
     "PRESS_BLUE": "BLUE",
 }
 
+_SAMSUNG_NODEMCU_KEY_ALIASES: Dict[str, List[str]] = {
+    "POWER": ["POWER", "KEY_POWER", "POWER_TOGGLE"],
+    "MUTE": ["MUTE", "KEY_MUTE"],
+    "VOL_UP": ["VOL_UP", "VOLUP", "VOLUME_UP", "VOLUMEUP", "KEY_VOLUP", "KEY_VOLUMEUP"],
+    "VOL_DOWN": ["VOL_DOWN", "VOLDOWN", "VOLUME_DOWN", "VOLUMEDOWN", "KEY_VOLDOWN", "KEY_VOLUMEDOWN"],
+    "CH_UP": ["CH_UP", "CHUP", "CHANNEL_UP", "CHANNELUP", "KEY_CHUP", "KEY_CHANNELUP"],
+    "CH_DOWN": ["CH_DOWN", "CHDOWN", "CHANNEL_DOWN", "CHANNELDOWN", "KEY_CHDOWN", "KEY_CHANNELDOWN"],
+    "ENTER": ["ENTER", "OK", "SELECT", "KEY_ENTER", "KEY_OK"],
+    "RETURN": ["RETURN", "BACK", "KEY_RETURN", "KEY_BACK"],
+    "SOURCE": ["SOURCE", "INPUT", "KEY_SOURCE", "KEY_INPUT"],
+    "HOME": ["HOME", "SMART", "KEY_HOME"],
+    "MENU": ["MENU", "KEY_MENU"],
+    "UP": ["UP", "KEY_UP"],
+    "DOWN": ["DOWN", "KEY_DOWN"],
+    "LEFT": ["LEFT", "KEY_LEFT"],
+    "RIGHT": ["RIGHT", "KEY_RIGHT"],
+    "EXIT": ["EXIT", "KEY_EXIT"],
+    "INFO": ["INFO", "KEY_INFO"],
+    "GUIDE": ["GUIDE", "KEY_GUIDE"],
+    "PLAY_PAUSE": ["PLAY_PAUSE", "PLAYPAUSE", "KEY_PLAYPAUSE"],
+    "PLAY": ["PLAY", "KEY_PLAY"],
+    "PAUSE": ["PAUSE", "KEY_PAUSE"],
+    "STOP": ["STOP", "KEY_STOP"],
+    "REWIND": ["REWIND", "REW", "KEY_REWIND"],
+    "FAST_FORWARD": ["FAST_FORWARD", "FF", "FFWD", "KEY_FASTFORWARD"],
+}
+
 
 class SamsungIrService:
     """Samsung-only IR service adapter (dataset + serial endpoint)."""
@@ -71,6 +98,10 @@ class SamsungIrService:
     @property
     def dataset_path(self) -> Path:
         return Path(self._dataset._path)
+
+    @property
+    def serial_port(self) -> str:
+        return self._transport.port
 
     def normalize_key_name(self, key_name: str) -> str:
         raw = str(key_name or "").strip().upper()
@@ -370,14 +401,37 @@ class SamsungIrService:
         }
 
     def _try_legacy_sendk(self, device_id: str, normalized_key: str) -> Dict[str, Any]:
-        legacy_sendk = self._transport.request(
-            {
-                "legacy_cmd": f"SENDK:samsung,{normalized_key}",
-                "expect_prefixes": ["IRSENT:"],
-                "timeout_seconds": 0.35,
-            }
-        )
+        attempts: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for alias in self._samsung_key_aliases(normalized_key):
+            for command in (
+                f"SENDK:samsung,{alias}",
+                f"SENDK:SAMSUNG,{alias}",
+                f"SENDK:samsung:{alias}",
+                f"SENDK:SAMSUNG:{alias}",
+                f"SENDK:{alias}",
+            ):
+                if command in seen:
+                    continue
+                seen.add(command)
+                attempts.append(
+                    {
+                        "legacy_cmd": command,
+                        "expect_prefixes": ["IRSENT:", "IRSEND:", "SENT:"],
+                        "timeout_seconds": 1.0,
+                    }
+                )
+
+        legacy_sendk: Dict[str, Any] = {"success": False, "error": "No SENDK attempts were made"}
+        for attempt in attempts:
+            legacy_sendk = self._transport.request(attempt)
+            if bool(legacy_sendk.get("success")):
+                break
+            if not self._is_unknown_command_error(legacy_sendk):
+                break
         if not bool(legacy_sendk.get("success")):
+            legacy_sendk = dict(legacy_sendk)
+            legacy_sendk["attempted_commands"] = [str(item.get("legacy_cmd") or "") for item in attempts]
             return legacy_sendk
         return {
             "success": True,
@@ -447,6 +501,25 @@ class SamsungIrService:
 
     def send_dab_style_action(self, device_id: str, action: str) -> Dict[str, Any]:
         return self.send_key(device_id=device_id, key_name=self.normalize_key_name(action))
+
+    @staticmethod
+    def _samsung_key_aliases(normalized_key: str) -> List[str]:
+        key = str(normalized_key or "").strip().upper()
+        aliases = list(_SAMSUNG_NODEMCU_KEY_ALIASES.get(key) or [key])
+        if key.startswith("NUM_"):
+            digit = key.removeprefix("NUM_")
+            aliases.extend([digit, f"KEY_{digit}", f"NUM{digit}"])
+        if key and key not in aliases:
+            aliases.insert(0, key)
+        deduped: List[str] = []
+        seen: set[str] = set()
+        for alias in aliases:
+            clean = str(alias or "").strip().upper()
+            if not clean or clean in seen:
+                continue
+            seen.add(clean)
+            deduped.append(clean)
+        return deduped
 
     def _request_with_unknown_cmd_fallback(
         self,

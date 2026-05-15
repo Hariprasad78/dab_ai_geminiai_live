@@ -73,6 +73,7 @@ class ScreenCapture:
         self._dab = dab_client
         self._image_source = self._normalize_source(self._config.image_source)
         self._selected_video_device = (self._config.hdmi_capture_device or "").strip() or None
+        self._strict_selected_video_device = bool(self._selected_video_device)
         self._preferred_video_kind = "auto"
         self._rotation_degrees = self._normalize_rotation_degrees(
             getattr(self._config, "hdmi_capture_rotation", 0)
@@ -97,6 +98,11 @@ class ScreenCapture:
         self._last_stream_jpeg_quality = 0
         self._last_stream_jpeg_ts = 0.0
         self._hdmi = hdmi_session
+        self._busy_video_devices: Dict[str, float] = {}
+        try:
+            self._busy_video_quarantine_s = float(os.environ.get("CAMERA_BUSY_QUARANTINE_SECONDS", "30.0"))
+        except Exception:
+            self._busy_video_quarantine_s = 30.0
 
     def _normalize_rotation_degrees(self, rotation_degrees: Optional[int]) -> int:
         try:
@@ -131,15 +137,18 @@ class ScreenCapture:
                 if os.path.exists(selected):
                     if self._is_capture_capable_device(selected):
                         self._selected_video_device = selected
+                        self._strict_selected_video_device = True
                     else:
                         logger.warning(
                             "Saved capture device is not capture-capable (index != 0), clearing preference: %s",
                             selected,
                         )
                         self._selected_video_device = None
+                        self._strict_selected_video_device = False
                 else:
                     logger.warning("Saved capture device is missing, clearing preference: %s", selected)
                     self._selected_video_device = None
+                    self._strict_selected_video_device = False
             kind = str(data.get("preferred_kind") or "auto").strip().lower()
             if kind in {"auto", "hdmi", "camera"}:
                 self._preferred_video_kind = kind
@@ -218,7 +227,7 @@ class ScreenCapture:
     def _list_video_device_details(self) -> list[dict]:
         details: list[dict] = []
         known = set(sorted(glob.glob("/dev/video*")))
-        for key in ("adt4", "sonytv", "kirkwood"):
+        for key in ("adt4", "sonytv", "samsung", "kirkwood"):
             path = get_camera_path(key)
             if path:
                 known.add(path)
@@ -263,6 +272,56 @@ class ScreenCapture:
         if k == "camera":
             return bool(self._config.enable_camera_capture)
         return True
+
+    @staticmethod
+    def _is_busy_capture_error(error: str) -> bool:
+        text = str(error or "").lower()
+        return (
+            "device or resource busy" in text
+            or "resource busy" in text
+            or "device is already in use" in text
+            or "already in use" in text
+        )
+
+    def _device_identity(self, device: str) -> str:
+        dev = str(device or "").strip()
+        if not dev:
+            return ""
+        try:
+            return os.path.realpath(dev)
+        except Exception:
+            return dev
+
+    def _mark_video_device_busy(self, device: str, error: str) -> None:
+        identity = self._device_identity(device)
+        if not identity:
+            return
+        until = time.monotonic() + max(1.0, self._busy_video_quarantine_s)
+        self._busy_video_devices[identity] = until
+        logger.warning(
+            "Temporarily skipping busy capture device for %.0fs: device=%s resolved=%s error=%s",
+            max(1.0, self._busy_video_quarantine_s),
+            device,
+            identity,
+            error,
+        )
+
+    def _is_video_device_busy_quarantined(self, device: str) -> bool:
+        identity = self._device_identity(device)
+        if not identity:
+            return False
+        until = float(self._busy_video_devices.get(identity) or 0.0)
+        if until <= 0:
+            return False
+        if time.monotonic() >= until:
+            self._busy_video_devices.pop(identity, None)
+            return False
+        return True
+
+    def _clear_video_device_busy_mark(self, device: str) -> None:
+        identity = self._device_identity(device)
+        if identity:
+            self._busy_video_devices.pop(identity, None)
 
     def set_capture_preference(
         self,
@@ -316,6 +375,7 @@ class ScreenCapture:
                 if dev and os.path.exists(dev) and not self._is_capture_capable_device(dev):
                     raise ValueError("device is not capture-capable (requires /dev/video* index0)")
                 self._selected_video_device = dev or None
+                self._strict_selected_video_device = bool(dev)
             elif source is not None and previous_source != self._image_source and self._selected_video_device:
                 # If caller switches capture source without specifying a device,
                 # avoid carrying over a stale explicit selection from the
@@ -336,6 +396,7 @@ class ScreenCapture:
                         self._image_source,
                     )
                     self._selected_video_device = None
+                    self._strict_selected_video_device = False
 
             if rotation_degrees is not None:
                 try:
@@ -389,6 +450,16 @@ class ScreenCapture:
         self._last_stream_jpeg_ts = 0.0
         self._next_hdmi_probe_ts = time.monotonic() + self._hdmi_release_grace_s
 
+    def _reset_capture_session_locked(self, *, probe_delay_s: float = 0.0) -> None:
+        if self._hdmi is not None:
+            self._hdmi.close()
+            self._hdmi = None
+        self._last_stream_jpeg = None
+        self._last_stream_jpeg_quality = 0
+        self._last_stream_jpeg_ts = 0.0
+        self._hdmi_stream_miss_count = 0
+        self._next_hdmi_probe_ts = time.monotonic() + max(0.0, probe_delay_s)
+
     def _mark_hdmi_frame_failure_locked(self, error: str) -> None:
         self._last_hdmi_error = error
         self._hdmi_stream_miss_count += 1
@@ -428,13 +499,22 @@ class ScreenCapture:
         with self._session_lock:
             self._drop_stale_session_locked()
             if self._hdmi is not None:
-                return self.capture_source_status(include_devices=False)
+                if not force:
+                    return self.capture_source_status(include_devices=False)
+                logger.warning(
+                    "Force-resetting active HDMI/camera capture session: device=%s",
+                    self._hdmi.device,
+                )
+                self._reset_capture_session_locked(probe_delay_s=0.0)
 
             now = time.monotonic()
-            if force and now < self._next_hdmi_probe_ts:
+            if not force and now < self._next_hdmi_probe_ts:
                 return self.capture_source_status(include_devices=False)
             if force:
                 self._warned_no_hdmi = False
+                self._reset_capture_session_locked(probe_delay_s=0.0)
+                selected = str(self._selected_video_device or self._config.hdmi_capture_device or "").strip()
+                self._clear_video_device_busy_mark(selected)
             self.ensure_hdmi_session(force=force)
             return self.capture_source_status(include_devices=False)
 
@@ -483,15 +563,23 @@ class ScreenCapture:
         candidates: list[str] = []
         if configured:
             candidates.append(configured)
-        # Recovery path: if a previously selected /dev/videoN disappears or
-        # stops producing frames after switching sources, fall back to
-        # auto-discovered peers of the requested kind.
-        if (not explicit_device_requested or explicit_from_selection) and not explicit_from_context:
+        # Recovery path: if a selected/context device disappears, becomes busy,
+        # or stops producing frames, try auto-discovered peers of the requested
+        # kind instead of retrying one sticky dead path forever.
+        allow_peer_fallback = not explicit_device_requested or (
+            explicit_from_context and not self._strict_selected_video_device
+        )
+        if allow_peer_fallback:
             candidates.extend([d for d in devs if d not in candidates])
 
+        selected_was_busy = False
         candidate_errors = []
         for device in candidates:
             if not os.path.exists(device):
+                continue
+            if self._is_video_device_busy_quarantined(device):
+                candidate_errors.append(f"{device}: recently busy; temporarily skipped")
+                selected_was_busy = selected_was_busy or device == configured
                 continue
             # Read permission is sufficient for VideoCapture; requiring write
             # causes false negatives on systems with strict v4l2 ACLs.
@@ -520,12 +608,30 @@ class ScreenCapture:
             if not session.open():
                 if session.last_error:
                     candidate_errors.append(f"{device}: {session.last_error}")
+                    if self._is_busy_capture_error(session.last_error):
+                        selected_was_busy = selected_was_busy or device == configured
+                        self._mark_video_device_busy(device, session.last_error)
                 continue
 
             logger.info("HDMI capture ready: device=%s", device)
             self._warned_no_hdmi = False
             self._last_hdmi_error = None
+            if self._selected_video_device != device:
+                logger.info("Updating selected capture device to active working device: %s", device)
+                self._selected_video_device = device
+                self._strict_selected_video_device = False
+                self._save_capture_preference()
             return session
+
+        if selected_was_busy and (explicit_from_selection or explicit_from_context) and not self._strict_selected_video_device:
+            logger.warning(
+                "Selected capture device is busy and no working fallback opened; clearing sticky selection: %s",
+                self._selected_video_device,
+            )
+            self._clear_video_device_busy_mark(str(self._selected_video_device or configured or ""))
+            self._selected_video_device = None
+            self._strict_selected_video_device = False
+            self._save_capture_preference()
 
         if not self._warned_no_hdmi:
             video_devices = sorted(glob.glob("/dev/video*"))
@@ -540,7 +646,7 @@ class ScreenCapture:
                 logger.info("No HDMI capture device detected; using DAB screenshot fallback")
             else:
                 logger.info("No HDMI capture device detected")
-            if explicit_device_requested and not explicit_from_selection:
+            if explicit_device_requested and not explicit_from_selection and not explicit_from_context:
                 logger.warning(
                     "Configured capture device could not be opened; refusing fallback to a different device: %s",
                     configured,
@@ -665,6 +771,12 @@ class ScreenCapture:
             preferred_video_kind = self._preferred_video_kind
             effective_preferred_kind = self._effective_kind_preference()
             rotation_degrees = self._rotation_degrees
+            now = time.monotonic()
+            busy_video_devices = {
+                device: max(0.0, until - now)
+                for device, until in list(self._busy_video_devices.items())
+                if until > now
+            }
         video_details = self._list_video_device_details() if include_devices else []
         video_devices = [d["device"] for d in video_details]
         device_readable = {dev: bool(os.access(dev, os.R_OK)) for dev in video_devices} if include_devices else {}
@@ -687,12 +799,14 @@ class ScreenCapture:
             "enable_hdmi_capture": bool(self._config.enable_hdmi_capture),
             "enable_camera_capture": bool(self._config.enable_camera_capture),
             "selected_video_device": selected_video_device,
+            "strict_selected_video_device": bool(self._strict_selected_video_device),
             "preferred_video_kind": preferred_video_kind,
             "effective_preferred_kind": effective_preferred_kind,
             "video_devices": video_devices,
             "video_device_details": video_details,
             "device_readable": device_readable,
             "user_in_video_group": user_in_video_group,
+            "busy_video_devices": busy_video_devices,
         }
 
     def get_hdmi_stream_frame_jpeg(self, quality: Optional[int] = None) -> Optional[bytes]:

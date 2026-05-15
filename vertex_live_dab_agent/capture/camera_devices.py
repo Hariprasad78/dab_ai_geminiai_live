@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import glob
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -245,6 +247,93 @@ def get_camera_device_mapping() -> Dict[str, str]:
 
 def camera_label(camera_name: str) -> str:
     return _CAMERA_LABELS.get(str(camera_name or "").strip().lower(), str(camera_name or "").strip())
+
+
+def _video_device_index(device: str) -> Optional[int]:
+    try:
+        resolved = os.path.realpath(str(device or "").strip())
+        name = os.path.basename(resolved)
+        if not name.startswith("video"):
+            return None
+        index_path = Path("/sys/class/video4linux") / name / "index"
+        return int(index_path.read_text(encoding="utf-8").strip())
+    except Exception:
+        return None
+
+
+def _video_device_name(device: str) -> str:
+    try:
+        resolved = os.path.realpath(str(device or "").strip())
+        name = os.path.basename(resolved)
+        if not name.startswith("video"):
+            return ""
+        name_path = Path("/sys/class/video4linux") / name / "name"
+        return name_path.read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+
+
+def _classify_video_source(device: str) -> str:
+    text = " ".join([str(device or ""), _video_device_name(device)]).lower()
+    if any(token in text for token in ("hdmi", "capture", "macrosilicon", "cam link", "elgato", "u3")):
+        return "hdmi-capture"
+    return "camera-capture"
+
+
+def _candidate_video_devices() -> List[str]:
+    candidates = set(glob.glob("/dev/v4l/by-id/*video-index0"))
+    candidates.update(glob.glob("/dev/video*"))
+    out: List[str] = []
+    for device in sorted(candidates):
+        if not os.path.exists(device):
+            continue
+        index = _video_device_index(device)
+        if index is not None and index != 0:
+            continue
+        out.append(device)
+    return out
+
+
+def _match_score(context: DeviceContext, device: str) -> int:
+    haystack = " ".join([device, os.path.realpath(device), _video_device_name(device)]).lower()
+    tokens = []
+    for raw in (context.contextId, context.displayName, context.cameraId, context.dabDeviceId):
+        tokens.extend(str(raw or "").replace("_", " ").replace("-", " ").split())
+    tokens.extend(re.split(r"[^a-zA-Z0-9]+", str(context.cameraPath or "")))
+
+    score = 0
+    ignored = {"dev", "v4l", "by", "id", "usb", "video", "index", "port", "path", "cam", "camera"}
+    for token in tokens:
+        cleaned = token.strip().lower()
+        if len(cleaned) >= 3 and cleaned not in ignored and cleaned in haystack:
+            score += 10
+    if _classify_video_source(device) == context.videoSource:
+        score += 3
+    return score
+
+
+def resolve_context_camera_path(context: DeviceContext) -> str:
+    """Return an existing camera path for a context, auto-detecting when stale/missing."""
+    configured = str(context.cameraPath or "").strip()
+    if configured and os.path.exists(configured):
+        return configured
+
+    candidates = _candidate_video_devices()
+    if not candidates:
+        return configured
+
+    source_matches = [device for device in candidates if _classify_video_source(device) == context.videoSource]
+    search_space = source_matches or candidates
+    ranked = sorted(
+        ((device, _match_score(context, device)) for device in search_space),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    if ranked and ranked[0][1] > 0:
+        return ranked[0][0]
+    if len(search_space) == 1:
+        return search_space[0]
+    return configured
 
 
 def validate_camera_devices() -> bool:

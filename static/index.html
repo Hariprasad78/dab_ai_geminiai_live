@@ -5125,7 +5125,7 @@
     const prompts = Array.isArray(data.prompts) ? data.prompts : [];
     const responses = Array.isArray(data.responses) ? data.responses : [];
     const aiTraceLogs = Array.isArray(data.logs)
-      ? data.logs.filter(entry => String(entry?.stream || '').toLowerCase() === 'ai')
+      ? data.logs.filter(entry => String(entry?.stream || '').toLowerCase() === 'ai' && String(entry?.operator_message || entry?.message || '').trim())
       : [];
 
     if (!prompts.length && !responses.length && !aiTraceLogs.length) {
@@ -5135,12 +5135,14 @@
 
     const lines = [];
     prompts.forEach((prompt, index) => {
-      lines.push(`Prompt ${index + 1}: ${prompt.text || '(empty prompt)'}`);
-      if (prompt.options?.length) lines.push(`  Options: ${prompt.options.join(', ')}`);
-      if (prompt.ai_suggestion) lines.push(`  Gemini: ${prompt.ai_suggestion} (${prompt.ai_source || 'gemini'})`);
-      if (prompt.ai_visual_summary) lines.push(`  TV: ${prompt.ai_visual_summary}`);
-      if (prompt.response) lines.push(`  Sent: ${prompt.response}`);
-      if (prompt.answered && !prompt.response) lines.push('  Sent automatically');
+      const promptText = String(prompt.text || '').split('\n').map(line => line.trim()).filter(Boolean);
+      const question = [...promptText].reverse().find(line => line.includes('?')) || promptText[promptText.length - 1] || '(empty prompt)';
+      const answer = prompt.response || prompt.ai_suggestion || '';
+      const evidence = prompt.ai_decision?.evidence_summary || prompt.ai_visual_summary || '';
+      const compact = [`Prompt ${index + 1}: ${question}`];
+      if (answer) compact.push(`Answer: ${answer}`);
+      if (evidence) compact.push(`Evidence: ${evidence}`);
+      lines.push(compact.join(' | '));
     });
 
     if (responses.length) {
@@ -5153,7 +5155,7 @@
 
     if (aiTraceLogs.length) {
       lines.push('');
-      lines.push('Gemini Activity:');
+      lines.push('Gemini Evidence:');
       aiTraceLogs.forEach((entry, index) => {
         lines.push(`  ${index + 1}. ${entry.operator_message || entry.message || ''}`);
       });
@@ -5400,12 +5402,15 @@
       renderYtsCommandHistory();
       if (data.status !== 'running') {
         clearYtsCommandPolling();
+        setYtsRunControlsLocked(false);
         await loadYtsCommandHistory(true);
       }
       return data;
     } catch (e) {
       clearYtsCommandPolling();
       setCurrentYtsCommand(null);
+      setYtsRunControlsLocked(false);
+      await loadYtsCommandHistory(true).catch(() => null);
       document.getElementById('yts-command-status').innerHTML = statusHtml('--error', `✗ API Error: ${escHtml(e.message)}`);
       return null;
     }

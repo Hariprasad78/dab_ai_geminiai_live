@@ -209,8 +209,7 @@ pytest tests/ -v
 | `GOOGLE_CLOUD_PROJECT` | `` | GCP project ID for Vertex AI |
 | `GOOGLE_CLOUD_LOCATION` | `asia-south1` | GCP region |
 | `GOOGLE_APPLICATION_CREDENTIALS` | `` | Path to service account JSON |
-| `VERTEX_PLANNER_MODEL` | `gemini-2.5-flash` | Gemini model for `/run/start` and `/planner/debug` |
-| `VERTEX_LIVE_MODEL` | `gemini-2.0-flash-live-preview-04-09` | Gemini Live/LiveKit model |
+| `VERTEX_LIVE_MODEL` | `gemini-3.1-flash-live-preview` | Gemini Live model used by the planner and LiveKit paths |
 | `LIVEKIT_URL` | `` | LiveKit server WebSocket URL |
 | `LIVEKIT_API_KEY` | `` | LiveKit API key |
 | `LIVEKIT_API_SECRET` | `` | LiveKit API secret |

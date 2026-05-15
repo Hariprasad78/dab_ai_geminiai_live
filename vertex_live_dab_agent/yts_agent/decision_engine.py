@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Optional
 
-from vertex_live_dab_agent.yts_agent.utils import normalize_missing_evidence, resolve_option_label
+from vertex_live_dab_agent.yts_agent.utils import coerce_confidence, normalize_missing_evidence, resolve_option_label
 from vertex_live_dab_agent.yts_agent.validation_gate import validate_decision_gate
 
 
@@ -31,7 +31,7 @@ def _normalize_model_decision(model_decision: Dict[str, Any] | None, expectation
     return {
         "selected_option": selected,
         "selected_label": resolved_label or selected,
-        "confidence": float(model_decision.get("confidence") or 0.0),
+        "confidence": coerce_confidence(model_decision.get("confidence")),
         "evidence_summary": str(model_decision.get("evidence_summary") or "").strip(),
         "missing_evidence": normalize_missing_evidence(model_decision.get("missing_evidence")),
         "reason": str(model_decision.get("reason") or "").strip(),
@@ -60,7 +60,7 @@ def decide_yts_response(expectation: Dict[str, Any], evidence: Dict[str, Any], m
         candidate = {
             "selected_option": pass_option["option"],
             "selected_label": pass_option["label"],
-            "confidence": float(latest.get("confidence") or 0.0),
+            "confidence": coerce_confidence(latest.get("confidence")),
             "evidence_summary": latest.get("requirement_evidence") or latest.get("visual_summary") or "",
             "missing_evidence": [],
             "reason": "Continuous visual monitor recommended Pass with positive evidence.",
@@ -83,7 +83,7 @@ def decide_yts_response(expectation: Dict[str, Any], evidence: Dict[str, Any], m
         return {
             "selected_option": fail_option["option"],
             "selected_label": fail_option["label"],
-            "confidence": max(0.55, float(latest.get("confidence") or 0.0)),
+            "confidence": max(0.55, coerce_confidence(latest.get("confidence"))),
             "evidence_summary": latest.get("visual_summary") or evidence.get("summary") or "Evidence is insufficient for Pass.",
             "missing_evidence": list(dict.fromkeys(str(item) for item in missing if str(item).strip())),
             "reason": "Pass was not positively proven by current live TV evidence.",

@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List
 
+from vertex_live_dab_agent.yts_agent.utils import coerce_confidence
+
 
 def _truthy_unknown(value: Any) -> bool | None:
     if isinstance(value, bool):
@@ -51,10 +53,7 @@ def observation_from_event(event: Dict[str, Any]) -> Dict[str, Any]:
     analysis = dict(event.get("analysis") or {})
     summary = str(event.get("summary") or analysis.get("summary") or "").strip()
     confidence = analysis.get("confidence", event.get("confidence"))
-    try:
-        confidence_value = float(confidence or 0.0)
-    except Exception:
-        confidence_value = 0.0
+    confidence_value = coerce_confidence(confidence)
     playback = _truthy_unknown(analysis.get("video_playback_active"))
     if playback is None:
         playback = _truthy_unknown(event.get("video_playback_active"))

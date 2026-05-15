@@ -208,7 +208,7 @@ class SerialIrTransport:
             upper = text.upper()
             if upper.startswith("OK"):
                 return {"success": True, "raw_line": text, "transport": "serial"}
-            if upper.startswith("IRSEND"):
+            if upper.startswith("IRSEND") or upper.startswith("IRSENT") or upper.startswith("SENT"):
                 return {"success": True, "raw_line": text, "transport": "serial"}
             if command.upper().startswith("CAPTURE") and upper.startswith("IRRECV:"):
                 parsed = self._parse_irrecv_payload(text, allow_unknown=False)
@@ -219,7 +219,7 @@ class SerialIrTransport:
                         "raw_line": text,
                         "transport": "serial",
                     }
-            if any(text.startswith(prefix) for prefix in prefixes):
+            if any(upper.startswith(str(prefix or "").upper()) for prefix in prefixes):
                 return {"success": True, "raw_line": text, "transport": "serial"}
             if upper.startswith("ERR"):
                 return {"success": False, "error": text, "raw_line": text, "transport": "serial"}

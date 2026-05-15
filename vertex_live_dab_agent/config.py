@@ -32,11 +32,7 @@ class Config:
     google_cloud_location: str = field(default_factory=lambda: os.environ.get("GOOGLE_CLOUD_LOCATION", "asia-south1"))
     google_application_credentials: str = field(default_factory=lambda: os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", ""))
     vertex_planner_model: str = field(
-        default_factory=lambda: (
-            os.environ.get("VERTEX_PLANNER_MODEL")
-            or os.environ.get("VERTEX_MODEL")
-            or "gemini-2.5-flash"
-        )
+        default_factory=lambda: "gemini-3.1-flash-live-preview"
     )
     vertex_429_cooldown_seconds: float = field(
         default_factory=lambda: float(os.environ.get("VERTEX_429_COOLDOWN_SECONDS", "8.0"))
@@ -44,7 +40,7 @@ class Config:
     vertex_429_wait_seconds: float = field(
         default_factory=lambda: float(os.environ.get("VERTEX_429_WAIT_SECONDS", "1.5"))
     )
-    vertex_live_model: str = field(default_factory=lambda: os.environ.get("VERTEX_LIVE_MODEL", "gemini-3.1-flash-live-preview"))
+    vertex_live_model: str = field(default_factory=lambda: "gemini-3.1-flash-live-preview")
     enable_vertex_planner: bool = field(default_factory=lambda: os.environ.get("ENABLE_VERTEX_PLANNER", "false").lower() == "true")
 
     # LiveKit

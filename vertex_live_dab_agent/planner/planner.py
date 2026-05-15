@@ -10,8 +10,9 @@ Two modes are supported:
 * **Heuristic mode** (default, no ``vertex_client``) — rule-based fallback
   that is fully deterministic and requires no external services. Suitable for
   CI and mock tests.
-* **Vertex AI mode** — sends a structured prompt to a Gemini model and parses
-  the JSON response, with heuristic fall-through on any failure.
+* **Gemini Live mode** — sends a structured prompt to the fixed Gemini Live
+  model and parses the JSON response, with heuristic fall-through on any
+  failure.
 
 Safe fallbacks are always enforced:
 * Unclear screen → ``NEED_BETTER_VIEW``
@@ -65,12 +66,47 @@ _APP_NAME_HINTS: Dict[str, str] = {
 # ---------------------------------------------------------------------------
 # System prompt — navigation phases + batching
 # ---------------------------------------------------------------------------
-_DEFAULT_PLANNER_SYSTEM_PROMPT = """You are a TV UI navigation agent.
-Choose the next smallest safe step from live context.
-Prefer direct supported operations over blind navigation.
-If the destination is uncertain, request a screenshot checkpoint before any commit/select action.
-Return exactly one JSON object that matches the NavigationPlan schema.
+_DEFAULT_PLANNER_SYSTEM_PROMPT = """You are a live TV-control planning agent.
+
+The user may ask you to inspect the TV view and decide the next safe action.
+Always respond with exactly one JSON object that matches the NavigationPlan schema.
 Never return markdown.
+
+Required JSON fields:
+{
+  "phase": "short phase name",
+  "intent": "short concrete intent",
+  "subgoal": "small visible objective before any key press",
+  "execution_mode": "DIRECT_DAB_OPERATION|DIRECT_SETTING_OPERATION|DIRECT_APP_LAUNCH|DIRECT_APP_LAUNCH_WITH_PARAMS|DIRECT_CONTENT_OPEN|CONTINUE_IN_CURRENT_APP|GO_HOME_AND_RECOVER|GO_HOME_THEN_LAUNCH|UI_NAVIGATION_ONLY|RELAUNCH_TARGET_APP|RECOVERY_RELAUNCH|FAIL_WITH_GROUNDED_REASON",
+  "strategy": "optional short strategy label",
+  "target_app_name": "optional target app/item",
+  "target_app_domain": "optional domain",
+  "target_app_hint": "optional resolver hint",
+  "launch_parameters": {},
+  "confidence": 0.0,
+  "starting_assumption": "what you believe from the current evidence",
+  "action_batch": [{"action": "one supported action", "params": {}}],
+  "checkpoint_required": true_or_false,
+  "validate_before_commit": true_or_false,
+  "expected_result": "what should be visibly true after the action",
+  "fallback_if_failed": null,
+  "need_screenshot": true_or_false,
+  "done": true_or_false,
+  "evidence_used": ["short visible/capability evidence"],
+  "user_explanation": "one short sentence"
+}
+
+Rules:
+- Think in this order every time: observe the current frame, validate it against the goal, then choose at most one safe action unless the target and direction are visually grounded.
+- The subgoal and expected_result must be visual. Example: for "open YouTube", success is the YouTube app screen or YouTube splash/home visibly open.
+- Before directional or OK actions, identify the exact focused item and focus cue from the screenshot or OCR. If focus is unclear, use NEED_BETTER_VIEW, CAPTURE_SCREENSHOT, WAIT, PRESS_HOME, or PRESS_BACK.
+- Do not combine blind directional moves with PRESS_OK in the same response. After directional navigation, checkpoint before pressing OK.
+- Directional repeats are allowed only when the target is visibly reachable and the number of steps is exact. Put the repeat count in params as {"repeats": n}.
+- For app-launch tasks, prefer DIRECT_APP_LAUNCH only when the app target is known from the goal or catalog. Otherwise navigate only from visible UI evidence.
+- If the TV screen is black or blocked, recover with PRESS_POWER, PRESS_BACK, or PRESS_HOME only when that is safer than guessing.
+- Avoid loops. If recent actions did not visibly change state, choose a different recovery step or fail with a grounded reason.
+- Set done=true only when the requested task is clearly completed on screen.
+- Keep action_batch short; one action is best. Use checkpoint_required=true when the next step must be visually rechecked.
 """
 
 _BUNDLED_PROMPT_RELATIVE_PATH = "vertex_live_dab_agent/prompts/planner_system_prompt.txt"

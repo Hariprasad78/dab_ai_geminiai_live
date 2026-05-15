@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import httpx
+import io
 import warnings
 from typing import Any, Optional
+
+
+GEMINI_LIVE_MODEL = "gemini-3.1-flash-live-preview"
 
 
 class VertexPlannerClient:
@@ -22,9 +25,10 @@ class VertexPlannerClient:
         self._use_api_key = bool(self._api_key)
         self._project = str(project or "").strip()
         self._location = str(location or "").strip()
-        self._model_name = str(model or "").strip()
-        if not self._model_name:
-            raise ValueError("VERTEX_PLANNER_MODEL is required for planner")
+        # Planner model selection is intentionally disabled. The planner uses
+        # the same Gemini Live model as the live controller so prompt behavior
+        # stays aligned with the camera/audio control loop.
+        self._model_name = GEMINI_LIVE_MODEL
 
         if not self._use_api_key:
             import vertexai
@@ -55,28 +59,6 @@ class VertexPlannerClient:
             and ("not found" in text or "does not have access" in text)
         ) or ("404" in text and "model" in text)
 
-    @staticmethod
-    def _fallback_models(preferred: str) -> list[str]:
-        ordered = [
-            "gemini-2.5-flash",
-            "gemini-2.5-flash-live-preview",
-            "gemini-3-flash-preview",
-            "gemini-2.0-flash-001",
-            "gemini-1.5-flash-002",
-        ]
-        p = str(preferred or "").strip()
-        return [m for m in ordered if m and m != p]
-
-    def _switch_model(self, model_name: str) -> None:
-        if not model_name or model_name == self._model_name:
-            return
-        if not self._use_api_key:
-            from vertexai.generative_models import GenerativeModel
-
-            self._model = GenerativeModel(model_name)
-        self._model_name = model_name
-        self._chat_sessions.clear()
-
     async def _generate_with_api_key(
         self,
         *,
@@ -84,54 +66,70 @@ class VertexPlannerClient:
         screenshot_b64: Optional[str],
         session_id: Optional[str],
     ) -> str:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self._model_name}:generateContent"
-        params = {"key": self._api_key}
+        try:
+            from google import genai
+            from google.genai import types
+        except Exception as exc:
+            raise RuntimeError(
+                "google-genai is required for Gemini Live model calls. "
+                "Install dependencies with `pip install -r requirements.txt`."
+            ) from exc
 
-        parts: list[dict[str, Any]] = [{"text": prompt}]
-        if screenshot_b64:
-            parts.append(
-                {
-                    "inline_data": {
-                        "mime_type": "image/png",
-                        "data": screenshot_b64,
-                    }
-                }
-            )
+        model_name = self._model_name
+        if not model_name.startswith("models/"):
+            model_name = f"models/{model_name}"
 
-        user_turn = {"role": "user", "parts": parts}
-        contents: list[dict[str, Any]] = []
+        client = genai.Client(
+            http_options={"api_version": "v1beta"},
+            api_key=self._api_key,
+        )
+        live_config = types.LiveConnectConfig(
+            response_modalities=["AUDIO"],
+            media_resolution="MEDIA_RESOLUTION_MEDIUM",
+            output_audio_transcription=types.AudioTranscriptionConfig(),
+            speech_config=types.SpeechConfig(
+                voice_config=types.VoiceConfig(
+                    prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Zephyr")
+                )
+            ),
+            generation_config=types.GenerationConfig(temperature=0.1),
+        )
+
+        async def _run_live_turn() -> str:
+            async with client.aio.live.connect(model=model_name, config=live_config) as session:
+                if screenshot_b64:
+                    image_bytes = base64.b64decode(screenshot_b64)
+                    try:
+                        from PIL import Image
+
+                        image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+                        jpeg_buffer = io.BytesIO()
+                        image.save(jpeg_buffer, format="JPEG", quality=92)
+                        image_bytes = jpeg_buffer.getvalue()
+                    except Exception:
+                        pass
+                    await session.send_realtime_input(
+                        video=types.Blob(data=image_bytes, mime_type="image/jpeg")
+                    )
+                await session.send_realtime_input(text=prompt or ".")
+                await session.send_realtime_input(activity_end={})
+
+                text_parts: list[str] = []
+                latest_transcription_text = ""
+                async for response in session.receive():
+                    if text := getattr(response, "text", None):
+                        text_parts.append(str(text))
+                    server_content = getattr(response, "server_content", None)
+                    if server_content:
+                        output_transcription = getattr(server_content, "output_transcription", None)
+                        if output_transcription and getattr(output_transcription, "text", None):
+                            latest_transcription_text = str(output_transcription.text)
+                return "".join(text_parts).strip() or latest_transcription_text.strip()
+
+        response_text = await asyncio.wait_for(_run_live_turn(), timeout=90.0)
         if session_id:
-            prior = self._chat_sessions.get(session_id)
-            if isinstance(prior, list):
-                contents.extend(prior)
-        contents.append(user_turn)
-
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(url, params=params, json={"contents": contents})
-        resp.raise_for_status()
-        payload = resp.json() if resp.content else {}
-
-        text_out = ""
-        candidates = payload.get("candidates") if isinstance(payload, dict) else None
-        if isinstance(candidates, list) and candidates:
-            first = candidates[0] if isinstance(candidates[0], dict) else {}
-            content = first.get("content") if isinstance(first, dict) else {}
-            parts_out = (content or {}).get("parts") if isinstance(content, dict) else []
-            if isinstance(parts_out, list):
-                texts = [
-                    str(p.get("text", "")).strip()
-                    for p in parts_out
-                    if isinstance(p, dict) and str(p.get("text", "")).strip()
-                ]
-                text_out = "\n".join(texts).strip()
-
-        if session_id:
-            history = list(contents)
-            if text_out:
-                history.append({"role": "model", "parts": [{"text": text_out}]})
-            self._chat_sessions[session_id] = history
-
-        return text_out or str(payload)
+            self._chat_sessions[session_id] = [{"role": "model", "parts": [{"text": response_text}]}]
+        return response_text
 
     async def generate_content(
         self,
@@ -142,28 +140,11 @@ class VertexPlannerClient:
         """Generate text response with optional screenshot context."""
 
         if self._use_api_key:
-            try:
-                return await self._generate_with_api_key(
-                    prompt=prompt,
-                    screenshot_b64=screenshot_b64,
-                    session_id=session_id,
-                )
-            except Exception as exc:
-                if not self._is_model_not_found_error(exc):
-                    raise
-                last_exc: Exception = exc
-                for fallback in self._fallback_models(self._model_name):
-                    try:
-                        self._switch_model(fallback)
-                        return await self._generate_with_api_key(
-                            prompt=prompt,
-                            screenshot_b64=screenshot_b64,
-                            session_id=session_id,
-                        )
-                    except Exception as inner:
-                        last_exc = inner
-                        continue
-                raise last_exc
+            return await self._generate_with_api_key(
+                prompt=prompt,
+                screenshot_b64=screenshot_b64,
+                session_id=session_id,
+            )
 
         def _call() -> Any:
             content: Any = prompt
@@ -185,21 +166,8 @@ class VertexPlannerClient:
 
         try:
             response = await asyncio.to_thread(_call)
-        except Exception as exc:
-            if not self._is_model_not_found_error(exc):
-                raise
-
-            last_exc: Exception = exc
-            for fallback in self._fallback_models(self._model_name):
-                try:
-                    self._switch_model(fallback)
-                    response = await asyncio.to_thread(_call)
-                    break
-                except Exception as inner:
-                    last_exc = inner
-                    continue
-            else:
-                raise last_exc
+        except Exception:
+            raise
 
         text = getattr(response, "text", None)
         if isinstance(text, str) and text.strip():
