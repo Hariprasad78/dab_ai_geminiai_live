@@ -20,57 +20,57 @@ import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 
 private val LightColors = lightColorScheme(
-    primary = Color(0xFF2F6BFF),
-    onPrimary = Color(0xFFF8FBFF),
-    primaryContainer = Color(0xFFDDE7FF),
-    onPrimaryContainer = Color(0xFF112A68),
-    secondary = Color(0xFF5B6E9D),
-    onSecondary = Color(0xFFF8FAFF),
-    secondaryContainer = Color(0xFFE0E7FF),
-    onSecondaryContainer = Color(0xFF1C2748),
-    tertiary = Color(0xFF118FA3),
-    onTertiary = Color(0xFFF4FEFF),
-    tertiaryContainer = Color(0xFFD0F2F7),
-    onTertiaryContainer = Color(0xFF07353D),
-    background = Color(0xFFF4F7FB),
-    onBackground = Color(0xFF0E1728),
-    surface = Color(0xFFFFFFFF),
-    onSurface = Color(0xFF121A29),
-    surfaceVariant = Color(0xFFE8EEF8),
-    onSurfaceVariant = Color(0xFF516079),
-    outline = Color(0xFF8B98B1),
-    outlineVariant = Color(0xFFD4DCE9),
-    error = Color(0xFFB3261E),
-    onError = Color.White,
-    errorContainer = Color(0xFFF9DEDC),
-    onErrorContainer = Color(0xFF410E0B)
+    primary = Color(0xFF6366F1),
+    onPrimary = Color(0xFFFFFFFF),
+    primaryContainer = Color(0xFF3730A3),
+    onPrimaryContainer = Color(0xFFE0E7FF),
+    secondary = Color(0xFF818CF8),
+    onSecondary = Color(0xFFFFFFFF),
+    secondaryContainer = Color(0xFF312E81),
+    onSecondaryContainer = Color(0xFFE0E7FF),
+    tertiary = Color(0xFF8B5CF6),
+    onTertiary = Color(0xFFFFFFFF),
+    tertiaryContainer = Color(0xFF4C1D95),
+    onTertiaryContainer = Color(0xFFEDE9FE),
+    background = Color(0xFF0F1115),
+    onBackground = Color(0xFFE6E6E6),
+    surface = Color(0xFF1A1D23),
+    onSurface = Color(0xFFE6E6E6),
+    surfaceVariant = Color(0xFF20242B),
+    onSurfaceVariant = Color(0xFFBFC3C9),
+    outline = Color(0xFF374151),
+    outlineVariant = Color(0xFF2D3748),
+    error = Color(0xFFF87171),
+    onError = Color(0xFF450A0A),
+    errorContainer = Color(0xFF7F1D1D),
+    onErrorContainer = Color(0xFFFECACA)
 )
 
 private val DarkColors = darkColorScheme(
-    primary = Color(0xFF8BB2FF),
-    onPrimary = Color(0xFF0B1C46),
-    primaryContainer = Color(0xFF193164),
-    onPrimaryContainer = Color(0xFFDCE7FF),
-    secondary = Color(0xFFB5C4FF),
-    onSecondary = Color(0xFF172247),
-    secondaryContainer = Color(0xFF27345C),
+    primary = Color(0xFF6366F1),
+    onPrimary = Color(0xFFFFFFFF),
+    primaryContainer = Color(0xFF3730A3),
+    onPrimaryContainer = Color(0xFFE0E7FF),
+    secondary = Color(0xFF818CF8),
+    onSecondary = Color(0xFFFFFFFF),
+    secondaryContainer = Color(0xFF312E81),
     onSecondaryContainer = Color(0xFFE0E7FF),
-    tertiary = Color(0xFF7FE4F5),
-    onTertiary = Color(0xFF00363E),
-    tertiaryContainer = Color(0xFF0D4E59),
-    onTertiaryContainer = Color(0xFFD1F4FA),
-    background = Color(0xFF09111F),
-    onBackground = Color(0xFFF4F7FF),
-    surface = Color(0xFF101A2B),
-    onSurface = Color(0xFFF4F7FF),
-    surfaceVariant = Color(0xFF192338),
-    onSurfaceVariant = Color(0xFFB2C0DA),
-    outline = Color(0xFF6D7A93),
-    outlineVariant = Color(0xFF2B364C),
-    error = Color(0xFFFFB4AB),
-    onError = Color(0xFF690005),
-    errorContainer = Color(0xFF93000A),
-    onErrorContainer = Color(0xFFFFDAD6)
+    tertiary = Color(0xFF8B5CF6),
+    onTertiary = Color(0xFFFFFFFF),
+    tertiaryContainer = Color(0xFF4C1D95),
+    onTertiaryContainer = Color(0xFFEDE9FE),
+    background = Color(0xFF0F1115),
+    onBackground = Color(0xFFE6E6E6),
+    surface = Color(0xFF1A1D23),
+    onSurface = Color(0xFFE6E6E6),
+    surfaceVariant = Color(0xFF20242B),
+    onSurfaceVariant = Color(0xFFBFC3C9),
+    outline = Color(0xFF374151),
+    outlineVariant = Color(0xFF2D3748),
+    error = Color(0xFFF87171),
+    onError = Color(0xFF450A0A),
+    errorContainer = Color(0xFF7F1D1D),
+    onErrorContainer = Color(0xFFFECACA)
 )
 
 private val DabTypography = Typography(
@@ -175,10 +175,10 @@ private val DabShapes = Shapes(
 
 @Composable
 fun DabControlTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
+    darkTheme: Boolean = true,
     content: @Composable () -> Unit
 ) {
-    val colorScheme = if (darkTheme) DarkColors else LightColors
+    val colorScheme = DarkColors
     val view = LocalView.current
     if (!view.isInEditMode) {
         SideEffect {

@@ -232,8 +232,8 @@ private fun WorkspaceTabs(
     )
     ScrollableTabRow(
         selectedTabIndex = tabs.indexOfFirst { it.first == activeTab },
-        containerColor = Color(0xFFF4EDE3),
-        contentColor = Color(0xFF111827),
+        containerColor = Color.Transparent,
+        contentColor = MaterialTheme.colorScheme.onSurface,
         edgePadding = 4.dp,
         divider = {}
     ) {
@@ -1230,7 +1230,7 @@ private fun SectionCard(
                         .fillMaxWidth()
                         .background(
                             Brush.horizontalGradient(
-                                listOf(Color(0xFFD97706), Color(0xFFEA580C), Color(0xFFBE123C))
+                                listOf(Color(0xFF4F46E5), Color(0xFF7C3AED), Color(0xFF2563EB))
                             )
                         )
                         .padding(horizontal = 14.dp, vertical = 10.dp)
@@ -1380,7 +1380,7 @@ private fun LogText(text: String) {
             text = text,
             style = MaterialTheme.typography.bodySmall,
             fontFamily = FontFamily.Monospace,
-            color = Color(0xFFD9F99D)
+            color = Color(0xFFE6E6E6)
         )
     }
 }
@@ -1401,7 +1401,7 @@ private fun HeroHeader(
             modifier = Modifier
                 .background(
                     Brush.linearGradient(
-                        listOf(Color(0xFF7C2D12), Color(0xFF1D4ED8), Color(0xFF0F766E))
+                        listOf(Color(0xFF1E1B4B), Color(0xFF312E81), Color(0xFF4C1D95))
                     )
                 )
                 .padding(horizontal = 12.dp, vertical = 8.dp)
@@ -1467,7 +1467,7 @@ private fun YtsControlDeck(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
         tonalElevation = 3.dp,
-        color = Color(0xFFFFF7ED)
+        color = MaterialTheme.colorScheme.surfaceVariant
     ) {
         Column(
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
@@ -1527,8 +1527,8 @@ private fun OperatorSummaryStrip(
     entries: List<Pair<String, String>>,
     dark: Boolean = false
 ) {
-    val chipColor = if (dark) Color(0x33FFFFFF) else Color(0xFFF3F4F6)
-    val textColor = if (dark) Color.White else Color(0xFF111827)
+    val chipColor = MaterialTheme.colorScheme.surfaceVariant
+    val textColor = MaterialTheme.colorScheme.onSurface
     Row(
         modifier = Modifier.horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(8.dp)

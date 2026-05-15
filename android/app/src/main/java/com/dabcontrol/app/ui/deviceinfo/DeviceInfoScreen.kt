@@ -193,8 +193,9 @@ private fun InfoStatePanel(
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
-        shape = MaterialTheme.shapes.medium
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = MaterialTheme.shapes.medium,
+        shadowElevation = 2.dp
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp),
@@ -217,8 +218,9 @@ private fun InfoStatePanel(
 private fun TableHeader() {
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.62f),
-        shape = MaterialTheme.shapes.medium
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = MaterialTheme.shapes.medium,
+        shadowElevation = 1.dp
     ) {
         Row(
             modifier = Modifier
@@ -248,8 +250,9 @@ private fun DeviceInfoTableRow(row: DeviceInfoRow) {
         modifier = Modifier
             .fillMaxWidth()
             .padding(top = 10.dp),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.74f),
-        shape = MaterialTheme.shapes.medium
+        color = MaterialTheme.colorScheme.surface,
+        shape = MaterialTheme.shapes.medium,
+        shadowElevation = 2.dp
     ) {
         Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 14.dp)) {
             Row(
@@ -268,8 +271,9 @@ private fun DeviceInfoTableRow(row: DeviceInfoRow) {
                 if (row.isStructured) {
                     Surface(
                         modifier = Modifier.weight(1.2f),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                        shape = MaterialTheme.shapes.small
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shape = MaterialTheme.shapes.small,
+                        tonalElevation = 1.dp
                     ) {
                         Text(
                             text = row.value,

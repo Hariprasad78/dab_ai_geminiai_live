@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict
@@ -176,15 +177,17 @@ class MQTTTransport(DABTransportBase):
                        request.topic,
                        payload=json.dumps(request.payload),
                    )
-                   async with asyncio.timeout(request.timeout):
-                       async for msg in self._client.messages:
-                           raw = json.loads(msg.payload)
-                           return TransportResponse(
-                               topic=response_topic,
-                               payload=raw,
-                               request_id=request.request_id,
-                               status=raw.get("status", 200),
-                           )
+                   msg = await asyncio.wait_for(
+                       self._client.messages.__aiter__().__anext__(),
+                       timeout=request.timeout,
+                   )
+                   raw = json.loads(msg.payload)
+                   return TransportResponse(
+                       topic=response_topic,
+                       payload=raw,
+                       request_id=request.request_id,
+                       status=raw.get("status", 200),
+                   )
 
     4. Implement ``close``::
 
@@ -269,61 +272,70 @@ class MQTTTransport(DABTransportBase):
 
                 await client.publish(request.topic, **publish_kwargs)
 
-                async with asyncio.timeout(request.timeout):
-                    async for message in client.messages:
-                        message_topic = str(getattr(message, "topic", response_topic))
-                        raw_payload = getattr(message, "payload", b"{}")
+                messages_iter = client.messages.__aiter__()
+                deadline = time.monotonic() + request.timeout
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
 
-                        if isinstance(raw_payload, (bytes, bytearray)):
-                            payload_text = raw_payload.decode("utf-8", errors="replace")
-                        else:
-                            payload_text = str(raw_payload)
+                    message = await asyncio.wait_for(
+                        messages_iter.__anext__(),
+                        timeout=remaining,
+                    )
+                    message_topic = str(getattr(message, "topic", response_topic))
+                    raw_payload = getattr(message, "payload", b"{}")
 
-                        logger.info(
-                            "MQTT recv: topic=%s request_id=%s payload=%s",
-                            message_topic,
+                    if isinstance(raw_payload, (bytes, bytearray)):
+                        payload_text = raw_payload.decode("utf-8", errors="replace")
+                    else:
+                        payload_text = str(raw_payload)
+
+                    logger.info(
+                        "MQTT recv: topic=%s request_id=%s payload=%s",
+                        message_topic,
+                        request.request_id,
+                        payload_text,
+                    )
+
+                    try:
+                        payload_obj = json.loads(payload_text)
+                    except json.JSONDecodeError as exc:
+                        raise DABTransportError(
+                            f"Invalid JSON response on topic {message_topic}: {payload_text!r}"
+                        ) from exc
+
+                    if not isinstance(payload_obj, dict):
+                        raise DABTransportError(
+                            f"Invalid response payload type on topic {message_topic}: "
+                            f"{type(payload_obj).__name__}"
+                        )
+
+                    response_request_id = str(
+                        payload_obj.get("requestId", request.request_id)
+                    )
+                    if response_request_id != request.request_id:
+                        logger.debug(
+                            "MQTT ignoring unmatched response: expected_request_id=%s "
+                            "got_request_id=%s topic=%s",
                             request.request_id,
-                            payload_text,
+                            response_request_id,
+                            message_topic,
                         )
+                        continue
 
-                        try:
-                            payload_obj = json.loads(payload_text)
-                        except json.JSONDecodeError as exc:
-                            raise DABTransportError(
-                                f"Invalid JSON response on topic {message_topic}: {payload_text!r}"
-                            ) from exc
+                    status_raw = payload_obj.get("status", 200)
+                    try:
+                        status = int(status_raw)
+                    except (TypeError, ValueError):
+                        status = 200
 
-                        if not isinstance(payload_obj, dict):
-                            raise DABTransportError(
-                                f"Invalid response payload type on topic {message_topic}: "
-                                f"{type(payload_obj).__name__}"
-                            )
-
-                        response_request_id = str(
-                            payload_obj.get("requestId", request.request_id)
-                        )
-                        if response_request_id != request.request_id:
-                            logger.debug(
-                                "MQTT ignoring unmatched response: expected_request_id=%s "
-                                "got_request_id=%s topic=%s",
-                                request.request_id,
-                                response_request_id,
-                                message_topic,
-                            )
-                            continue
-
-                        status_raw = payload_obj.get("status", 200)
-                        try:
-                            status = int(status_raw)
-                        except (TypeError, ValueError):
-                            status = 200
-
-                        return TransportResponse(
-                            topic=message_topic,
-                            payload=payload_obj,
-                            request_id=response_request_id,
-                            status=status,
-                        )
+                    return TransportResponse(
+                        topic=message_topic,
+                        payload=payload_obj,
+                        request_id=response_request_id,
+                        status=status,
+                    )
 
                 raise asyncio.TimeoutError(
                     "Timed out waiting for MQTT response on "
