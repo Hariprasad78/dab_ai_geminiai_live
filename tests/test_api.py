@@ -1601,6 +1601,87 @@ async def test_yts_prompt_suggestion_pass_fail_guard_allows_pass_with_strong_evi
 
 
 @pytest.mark.asyncio
+async def test_yts_prompt_suggestion_fast_path_reuses_prompt_frame(monkeypatch):
+    command_id = "cmd-fast-yts-visual"
+    state = api_mod._new_yts_live_state(command_id, interactive_ai=True)
+    state["logs"] = [{"stream": "stdout", "message": "Does the image on screen render correctly? (Expected Asset)"}]
+    api_mod._yts_live_commands[command_id] = state
+
+    class FailingCaptureService:
+        async def capture_live_stream_frame(self):
+            raise AssertionError("prompt frame should be reused instead of recaptured")
+
+        def capture_source_status(self):
+            raise AssertionError("prompt frame should be reused instead of recaptured")
+
+    class FakeVertexClient:
+        def __init__(self):
+            self.calls = []
+
+        async def generate_content(self, prompt, screenshot_b64=None, session_id=None):
+            self.calls.append({"prompt": prompt, "screenshot_b64": screenshot_b64, "session_id": session_id})
+            return json.dumps(
+                {
+                    "analysis": {
+                        "summary": "Expected Asset is visible and rendered correctly.",
+                        "observed_visual_target": "Expected Asset",
+                        "expected_visual_target": "Expected Asset",
+                        "target_match": True,
+                        "prompt_requirement_match": "match",
+                        "requirement_seen": True,
+                        "requirement_evidence": "Expected Asset is visible.",
+                        "confidence": 0.94,
+                    },
+                    "decision": {
+                        "selected_option": "1",
+                        "selected_label": "Yes",
+                        "confidence": 0.94,
+                        "evidence_summary": "Expected Asset is visible.",
+                        "missing_evidence": [],
+                        "reason": "Fresh prompt frame matches the expected asset.",
+                        "safety_blocked_pass": False,
+                    },
+                }
+            )
+
+    fake_client = FakeVertexClient()
+    monkeypatch.setattr(api_mod, "get_screen_capture", lambda: FailingCaptureService())
+    monkeypatch.setattr(api_mod, "get_vertex_text_client", lambda: fake_client)
+
+    suggestion = await api_mod._suggest_yts_prompt_response(
+        command_id,
+        "Does the image on screen render correctly? (Expected Asset)\n1: Yes\n2: No",
+        ["1", "2"],
+        prompt_id=1,
+        prompt_sequence_id=1,
+        prompt_timestamp="2026-05-13T10:00:00+00:00",
+        prompt_visual_context={
+            "summary": "Captured prompt frame.",
+            "source": "hdmi-capture",
+            "screenshot_b64": "img",
+            "observations": [{"attempt": 1, "source": "hdmi-capture", "has_screenshot": True}],
+            "capture_status": {"configured_source": "hdmi-capture"},
+            "analysis": {},
+            "timeline": [],
+            "continuous_frame_count": 1,
+            "captured_at": "2026-05-13T10:00:01+00:00",
+            "prompt_id": 1,
+            "prompt_sequence_id": 1,
+            "prompt_timestamp": "2026-05-13T10:00:00+00:00",
+            "fresh_after_prompt": True,
+        },
+    )
+
+    assert suggestion["response"] == "1"
+    assert len(fake_client.calls) == 1
+    assert fake_client.calls[0]["screenshot_b64"] == "img"
+    assert "Task: answer the current YTS prompt from one fresh attached TV frame." in fake_client.calls[0]["prompt"]
+    assert "fast-visual-decision" in "\n".join(
+        str(entry.get("raw_message") or "") for entry in api_mod._yts_live_commands[command_id]["logs"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_yts_prompt_suggestion_activity_log_is_readable(monkeypatch):
     command_id = "cmd-readable-ai-log"
     state = api_mod._new_yts_live_state(command_id, interactive_ai=True)

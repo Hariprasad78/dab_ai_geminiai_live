@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from typing import Any, Dict, List
 
 from vertex_live_dab_agent.yts_agent.utils import dedupe_strings, normalize_missing_evidence, resolve_option_label
@@ -27,7 +28,34 @@ def _requires_playback(expectation: Dict[str, Any]) -> bool:
     state = str(expectation.get("required_state") or "").lower()
     test_type = str(expectation.get("test_type") or "").lower()
     text = " ".join(str(req.get("description") or "") for req in expectation.get("visual_requirements") or [] if isinstance(req, dict)).lower()
-    return "video_playback_active" in state or test_type == "playback" or bool(re.search(r"\b(playback|playing|video|player|render|frame)\b", text))
+    return "video_playback_active" in state or test_type == "playback" or bool(re.search(r"\b(playback|playing|video|player|pause|resume|seek|buffer)\b", text))
+
+
+def _is_pass_like_label(label: str) -> bool:
+    return bool(re.search(r"\b(pass|yes|correct|ok|okay|success|succeed|true)\b", str(label or "").lower()))
+
+
+def _parse_timestamp(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _normalize_target(value: Any) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").strip().lower())
+    return re.sub(r"[^a-z0-9]+", " ", text).strip()
+
+
+def _target_matches(expected: str, observed: str) -> bool:
+    exp = _normalize_target(expected)
+    obs = _normalize_target(observed)
+    if not exp or not obs:
+        return False
+    return exp == obs or exp in obs or obs in exp
 
 
 def validate_decision_gate(expectation: Dict[str, Any], evidence: Dict[str, Any], decision: Dict[str, Any], *, min_confidence: float = 0.70) -> Dict[str, Any]:
@@ -40,7 +68,7 @@ def validate_decision_gate(expectation: Dict[str, Any], evidence: Dict[str, Any]
     missing: List[str] = normalize_missing_evidence(decision.get("missing_evidence"))
     blocked = False
 
-    if "pass" not in label:
+    if not _is_pass_like_label(label):
         return {
             "allowed": True,
             "safety_blocked_pass": False,
@@ -51,6 +79,35 @@ def validate_decision_gate(expectation: Dict[str, Any], evidence: Dict[str, Any]
     confidence = float(latest.get("confidence") or decision.get("confidence") or 0.0)
     current_context = str(latest.get("detected_app_context") or "").lower()
     screen_type = str(latest.get("screen_type") or "").lower()
+    frame_ts = _parse_timestamp(latest.get("timestamp"))
+    prompt_ts = _parse_timestamp(latest.get("prompt_timestamp") or evidence.get("prompt_timestamp"))
+    if prompt_ts is not None:
+        if frame_ts is None or frame_ts <= prompt_ts:
+            blocked = True
+            missing.append("Latest TV frame was not captured after the current prompt appeared.")
+    elif evidence.get("fresh_after_prompt") is not True and latest.get("fresh_after_prompt") is not True:
+        blocked = True
+        missing.append("Latest TV frame is not explicitly bound to the current prompt.")
+
+    expected_target = str(expectation.get("expected_visual_target") or evidence.get("expected_visual_target") or latest.get("expected_visual_target") or "").strip()
+    observed_target = str(latest.get("observed_visual_target") or "").strip()
+    target_match_raw = latest.get("target_match")
+    prompt_match = str(latest.get("prompt_requirement_match") or "").strip().lower()
+    if expected_target:
+        if isinstance(target_match_raw, bool):
+            target_match = target_match_raw
+        elif str(target_match_raw).strip().lower() in {"true", "yes", "match", "matched"}:
+            target_match = True
+        elif str(target_match_raw).strip().lower() in {"false", "no", "mismatch", "different"}:
+            target_match = False
+        else:
+            target_match = _target_matches(expected_target, observed_target)
+        if not observed_target:
+            blocked = True
+            missing.append(f"Fresh frame did not identify the visible target for expected asset '{expected_target}'.")
+        elif not target_match or prompt_match in {"mismatch", "no", "false", "different"}:
+            blocked = True
+            missing.append(f"Expected asset '{expected_target}' did not match observed asset '{observed_target}'.")
     if _requires_youtube(expectation):
         youtube_active = latest.get("youtube_active")
         if youtube_active is not True or "launcher" in current_context or "launcher" in screen_type or "system" in current_context:

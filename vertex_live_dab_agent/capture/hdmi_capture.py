@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -20,6 +21,11 @@ _CAPTURE_WIDTH_720P = 1280
 _CAPTURE_HEIGHT_720P = 720
 _DEVICE_OPERATION_LOCKS: Dict[str, threading.RLock] = {}
 _DEVICE_OPERATION_LOCKS_GUARD = threading.Lock()
+_DEFAULT_HOLDER_PRIORITIES = {
+    "ffmpeg": 10,
+    "python": 40,
+    "python3": 40,
+}
 
 
 def _device_operation_lock(device: str) -> threading.RLock:
@@ -36,19 +42,59 @@ def _device_operation_lock(device: str) -> threading.RLock:
         return lock
 
 
-def _device_holder_summary(device: str) -> str:
-    """Return a short summary of processes currently holding a video device."""
+def _parse_bool_env(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_priority_map(value: str) -> Dict[str, int]:
+    priorities: Dict[str, int] = dict(_DEFAULT_HOLDER_PRIORITIES)
+    for raw_item in str(value or "").split(","):
+        item = raw_item.strip()
+        if not item or "=" not in item:
+            continue
+        name, raw_priority = item.split("=", 1)
+        name = name.strip()
+        if not name:
+            continue
+        try:
+            priorities[name] = int(raw_priority.strip())
+        except Exception:
+            logger.warning("Ignoring invalid camera holder priority entry: %s", item)
+    return priorities
+
+
+def _process_command(pid_name: str) -> str:
+    command = ""
+    with contextlib.suppress(Exception):
+        with open(f"/proc/{pid_name}/comm", "r", encoding="utf-8") as fh:
+            command = fh.read().strip()
+    return command
+
+
+def _process_cmdline(pid_name: str) -> str:
+    with contextlib.suppress(Exception):
+        with open(f"/proc/{pid_name}/cmdline", "rb") as fh:
+            raw = fh.read().replace(b"\x00", b" ").strip()
+        return raw.decode("utf-8", errors="replace")
+    return ""
+
+
+def _device_holders(device: str) -> List[Dict[str, Any]]:
+    """Return processes currently holding a video device."""
     dev = str(device or "").strip()
     if not dev:
-        return ""
+        return []
     with contextlib.suppress(Exception):
         dev = os.path.realpath(dev)
     try:
         dev_stat = os.stat(dev)
     except Exception:
-        return ""
+        return []
 
-    holders: List[str] = []
+    holders: List[Dict[str, Any]] = []
     current_pid = os.getpid()
     for pid_name in os.listdir("/proc"):
         if not pid_name.isdigit():
@@ -73,16 +119,111 @@ def _device_holder_summary(device: str) -> str:
                 break
         if not holds_device:
             continue
-        command = ""
-        with contextlib.suppress(Exception):
-            with open(f"/proc/{pid_name}/comm", "r", encoding="utf-8") as fh:
-                command = fh.read().strip()
-        holders.append(f"{command or 'process'} pid={pid_name}")
-        if len(holders) >= 3:
-            break
+        holders.append(
+            {
+                "pid": pid,
+                "pid_name": pid_name,
+                "command": _process_command(pid_name),
+                "cmdline": _process_cmdline(pid_name),
+            }
+        )
+    return holders
+
+
+def _holder_priority(holder: Dict[str, Any]) -> int:
+    priority_map = _parse_priority_map(os.environ.get("CAMERA_HOLDER_PRIORITIES", ""))
+    command = str(holder.get("command") or "").strip()
+    cmdline = str(holder.get("cmdline") or "")
+    if command in priority_map:
+        return priority_map[command]
+    for name, priority in priority_map.items():
+        if name and name in cmdline:
+            return priority
+    try:
+        return int(os.environ.get("CAMERA_UNKNOWN_HOLDER_PRIORITY", "50"))
+    except Exception:
+        return 50
+
+
+def _device_holder_summary(device: str) -> str:
+    """Return a short summary of processes currently holding a video device."""
+    holders = _device_holders(device)
     if not holders:
         return ""
-    return "Camera device is already in use by " + ", ".join(holders)
+    bits = []
+    for holder in holders[:3]:
+        command = str(holder.get("command") or "process")
+        bits.append(f"{command} pid={holder.get('pid')}")
+    return "Camera device is already in use by " + ", ".join(bits)
+
+
+def _kill_device_holders(device: str, *, priority_aware: bool = True) -> int:
+    """Kill lower-priority processes holding one video device."""
+    whitelist_env = os.environ.get("CAMERA_HOLDER_WHITELIST", "")
+    whitelist = {x.strip() for x in whitelist_env.split(",") if x.strip()}
+    try:
+        owner_priority = int(os.environ.get("CAMERA_DEVICE_OWNER_PRIORITY", "60"))
+    except Exception:
+        owner_priority = 60
+
+    killed_count = 0
+    for holder in _device_holders(device):
+        pid = int(holder.get("pid") or 0)
+        command = str(holder.get("command") or "")
+        if not pid:
+            continue
+        if str(pid) in whitelist:
+            logger.info("Ignoring whitelisted process pid=%s holding device %s", pid, device)
+            continue
+
+        if command and command in whitelist:
+            logger.info("Ignoring whitelisted application '%s' (pid=%s) holding device %s", command, pid, device)
+            continue
+
+        holder_priority = _holder_priority(holder)
+        if priority_aware and holder_priority >= owner_priority:
+            logger.warning(
+                "Leaving higher/equal priority camera holder alive: pid=%s command=%s priority=%s owner_priority=%s device=%s",
+                pid,
+                command or "process",
+                holder_priority,
+                owner_priority,
+                device,
+            )
+            continue
+
+        try:
+            os.kill(pid, signal.SIGTERM)
+            logger.warning(
+                "Sent SIGTERM to lower-priority process pid=%s (%s, priority=%s) holding device %s",
+                pid,
+                command or "process",
+                holder_priority,
+                device,
+            )
+
+            for _ in range(15):  # Wait up to 1.5 seconds for graceful cleanup
+                try:
+                    os.kill(pid, 0)
+                    time.sleep(0.1)
+                except OSError:
+                    break
+            else:
+                os.kill(pid, signal.SIGKILL)
+                logger.warning("Process pid=%s (%s) failed to exit cleanly; escalated to SIGKILL", pid, command)
+            killed_count += 1
+        except Exception as exc:
+            logger.error("Failed to kill process pid=%s holding device %s: %s", pid, device, exc)
+    return killed_count
+
+
+def _recover_busy_device(device: str) -> int:
+    policy = os.environ.get("CAMERA_BUSY_RECOVERY_POLICY", "priority").strip().lower()
+    if not _parse_bool_env("FORCE_KILL_CAMERA_HOLDERS", False):
+        return 0
+    if policy in {"off", "false", "none", "disabled"}:
+        return 0
+    return _kill_device_holders(device, priority_aware=policy != "force")
 
 
 class HdmiCaptureError(Exception):
@@ -194,6 +335,20 @@ class HdmiCaptureSession:
                         return True
                     fallback_error = str(self._last_error or "").strip()
                     holder_summary = _device_holder_summary(self.device)
+
+                    if holder_summary and _parse_bool_env("FORCE_KILL_CAMERA_HOLDERS", False):
+                        logger.warning("Camera %s is busy. Attempting to gracefully free the device...", self.device)
+                        killed = _recover_busy_device(self.device)
+                        if killed > 0:
+                            time.sleep(0.5)  # Give the OS a moment to clean up file descriptors
+                            cap = self._open_capture_with_fallbacks(cv2)
+                            if cap and cap.isOpened():
+                                logger.info("Successfully recovered camera %s after freeing resources", self.device)
+                                holder_summary = ""
+                            elif self._open_ffmpeg_fallback():
+                                logger.info("Successfully recovered camera %s via ffmpeg fallback after freeing resources", self.device)
+                                return True
+
                     self._last_error = f"Unable to open capture device: {self.device}"
                     if fallback_error:
                         self._last_error = f"{self._last_error}. {fallback_error}"
