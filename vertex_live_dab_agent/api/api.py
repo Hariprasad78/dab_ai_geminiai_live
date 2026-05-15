@@ -1361,7 +1361,6 @@ async def _refresh_device_dab_catalog(device_id: str) -> Dict[str, Any]:
             "raw_payload": dict(raw_settings_payload),
             "unsupported": bool(settings_result.get("unsupported")),
         },
-        "captured_at": captured_at,
     }
 
     _device_dab_catalog_cache[device_id] = {
