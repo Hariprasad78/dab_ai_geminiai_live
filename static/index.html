@@ -665,6 +665,190 @@
     .yts-chip { display:inline-flex; align-items:center; gap:0.45rem; border:1px solid #71717a; background:rgba(113,113,122,0.16); color:#f4f4f5; border-radius:999px; padding:0.3rem 0.65rem; font-size:0.78rem; }
     .yts-chip button { background:none; border:none; color:#d4d4d8; cursor:pointer; padding:0; font-size:0.85rem; }
     .yts-hint { font-size:0.78rem; color:var(--text-muted); margin-top:0.4rem; }
+    .yts-section-shell {
+      margin-top: 1rem;
+      padding: 1rem;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 1rem;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.045), rgba(255,255,255,0) 32%),
+        linear-gradient(180deg, rgba(24, 24, 27, 0.78), rgba(12, 12, 13, 0.9));
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.06);
+    }
+    .yts-section-head {
+      display:flex;
+      align-items:flex-start;
+      justify-content:space-between;
+      gap:0.75rem;
+      margin-bottom:0.85rem;
+    }
+    .yts-section-kicker {
+      display:inline-flex;
+      align-items:center;
+      gap:0.4rem;
+      margin-bottom:0.28rem;
+      color:var(--text-muted);
+      font-size:0.7rem;
+      font-weight:800;
+      letter-spacing:0.12em;
+      text-transform:uppercase;
+    }
+    .yts-section-title {
+      margin:0;
+      color:var(--text-strong);
+      font-size:1rem;
+      line-height:1.25;
+      font-weight:800;
+    }
+    .yts-section-note {
+      margin-top:0.28rem;
+      color:var(--text-muted);
+      font-size:0.8rem;
+      line-height:1.45;
+      max-width:720px;
+    }
+    .yts-option-grid {
+      display:grid;
+      grid-template-columns:repeat(2, minmax(0, 1fr));
+      gap:0.7rem;
+    }
+    .yts-option-card {
+      position:relative;
+      display:grid;
+      grid-template-columns:minmax(0, 1fr) auto;
+      gap:0.75rem;
+      align-items:start;
+      min-height:112px;
+      padding:0.86rem;
+      border:1px solid rgba(255,255,255,0.1);
+      border-radius:0.9rem;
+      background:linear-gradient(180deg, rgba(39,39,42,0.74), rgba(18,18,20,0.86));
+      cursor:pointer;
+      overflow:hidden;
+      transition:border-color 160ms ease, background 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+    }
+    .yts-option-card:hover {
+      transform:translateY(-1px);
+      border-color:rgba(212, 212, 216, 0.24);
+      box-shadow:0 16px 28px rgba(0,0,0,0.24);
+    }
+    .yts-option-card input {
+      position:absolute;
+      inline-size:1px;
+      block-size:1px;
+      opacity:0;
+      pointer-events:none;
+    }
+    .yts-option-main { min-width:0; }
+    .yts-option-topline {
+      display:flex;
+      flex-wrap:wrap;
+      align-items:center;
+      gap:0.45rem;
+      margin-bottom:0.38rem;
+    }
+    .yts-option-name {
+      color:var(--text-strong);
+      font-size:0.9rem;
+      font-weight:800;
+      line-height:1.25;
+    }
+    .yts-option-tag {
+      display:inline-flex;
+      align-items:center;
+      min-height:1.35rem;
+      padding:0.18rem 0.46rem;
+      border:1px solid rgba(255,255,255,0.1);
+      border-radius:999px;
+      color:var(--text-muted);
+      background:rgba(255,255,255,0.045);
+      font-size:0.68rem;
+      font-weight:800;
+      letter-spacing:0.04em;
+      text-transform:uppercase;
+    }
+    .yts-option-copy {
+      color:var(--text-muted);
+      font-size:0.78rem;
+      line-height:1.45;
+    }
+    .yts-option-switch {
+      width:44px;
+      height:24px;
+      border-radius:999px;
+      border:1px solid rgba(255,255,255,0.14);
+      background:rgba(9,9,11,0.7);
+      box-shadow:inset 0 1px 3px rgba(0,0,0,0.36);
+      transition:background 160ms ease, border-color 160ms ease;
+    }
+    .yts-option-switch::after {
+      content:'';
+      display:block;
+      width:18px;
+      height:18px;
+      margin:2px;
+      border-radius:50%;
+      background:#d4d4d8;
+      box-shadow:0 4px 10px rgba(0,0,0,0.35);
+      transition:transform 160ms ease, background 160ms ease;
+    }
+    .yts-option-card:has(input:focus-visible) {
+      border-color:var(--focus);
+      box-shadow:0 0 0 3px var(--focus-ring);
+    }
+    .yts-option-card:has(input:checked) {
+      border-color:rgba(244,244,245,0.28);
+      background:linear-gradient(180deg, rgba(82,82,91,0.82), rgba(32,32,35,0.92));
+    }
+    .yts-option-card:has(input:checked) .yts-option-switch {
+      border-color:rgba(244,244,245,0.36);
+      background:linear-gradient(135deg, #71717a, #a1a1aa);
+    }
+    .yts-option-card:has(input:checked) .yts-option-switch::after {
+      transform:translateX(20px);
+      background:#fafafa;
+    }
+    .yts-advanced-grid {
+      display:grid;
+      grid-template-columns:repeat(2, minmax(0, 1fr));
+      gap:0.75rem;
+    }
+    .yts-field-card {
+      padding:0.85rem;
+      border:1px solid rgba(255,255,255,0.09);
+      border-radius:0.9rem;
+      background:rgba(17,17,19,0.68);
+    }
+    .yts-field-card textarea { min-height:92px; }
+    .yts-field-card.full { grid-column:1 / -1; }
+    body[data-theme="light"] .yts-section-shell {
+      border-color:rgba(41,84,128,0.12);
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.86), rgba(255,255,255,0.48) 34%),
+        linear-gradient(180deg, rgba(240,246,253,0.9), rgba(224,235,248,0.78));
+    }
+    body[data-theme="light"] .yts-option-card {
+      border-color:rgba(41,84,128,0.12);
+      background:linear-gradient(180deg, rgba(255,255,255,0.9), rgba(238,245,252,0.82));
+    }
+    body[data-theme="light"] .yts-option-card:hover { border-color:rgba(53,106,163,0.24); }
+    body[data-theme="light"] .yts-option-card:has(input:checked) {
+      border-color:rgba(14,165,164,0.36);
+      background:linear-gradient(180deg, rgba(232,246,247,0.96), rgba(219,235,249,0.86));
+    }
+    body[data-theme="light"] .yts-option-switch {
+      border-color:rgba(41,84,128,0.16);
+      background:rgba(201,215,232,0.72);
+    }
+    body[data-theme="light"] .yts-option-switch::after { background:#ffffff; }
+    body[data-theme="light"] .yts-option-card:has(input:checked) .yts-option-switch {
+      border-color:rgba(14,165,164,0.34);
+      background:linear-gradient(135deg, #0ea5a4, #3b82f6);
+    }
+    body[data-theme="light"] .yts-field-card {
+      border-color:rgba(41,84,128,0.12);
+      background:rgba(255,255,255,0.68);
+    }
     .yts-inline-actions { display:flex; flex-wrap:wrap; gap:0.5rem; margin-top:0.75rem; }
     .yts-search-results { display:none; position:absolute; background:var(--dropdown-bg); border:1px solid var(--tab-idle-border); border-radius:0.5rem; max-height:220px; overflow-y:auto; z-index:10; width:100%; box-shadow: var(--shadow-md); }
     .yts-search-item { padding:0.55rem 0.65rem; cursor:pointer; border-bottom:1px solid #3f3f46; }
@@ -713,6 +897,7 @@
       main { grid-template-columns: 1fr; }
       .yts-runner-grid { grid-template-columns: 1fr; }
       .yts-runner-layout { grid-template-columns: 1fr; }
+      .yts-option-grid, .yts-advanced-grid { grid-template-columns: 1fr; }
       .sysstate-grid { grid-template-columns: 1fr; }
       header { padding: 0.9rem 1rem; }
       main { padding: 0 0.85rem 1rem; }
@@ -5659,30 +5844,101 @@
         <div class="empty-state" style="padding:0;">No tests selected yet.</div>
       </div>
 
-      <label style="margin-top:1rem;"><input type="checkbox" id="yts-arg-test-guided" style="width:auto; margin-right:0.45rem;" onchange="handleYtsGuidedModeChange('yts-arg-test-guided')"> --guided</label>
-      <div class="yts-hint">Run guided tests/filter mode when supported by the YTS CLI.</div>
+      <div class="yts-section-shell">
+        <div class="yts-section-head">
+          <div>
+            <div class="yts-section-kicker">Run controls</div>
+            <div class="yts-section-title">Guided automation and capture</div>
+            <div class="yts-section-note">Choose how this YTS job should observe the TV, answer prompts, record artifacts, and recover when direct device operations are unavailable.</div>
+          </div>
+        </div>
+        <div class="yts-option-grid">
+          <label class="yts-option-card" for="yts-arg-test-guided">
+            <span class="yts-option-main">
+              <span class="yts-option-topline">
+                <span class="yts-option-name">Guided mode</span>
+                <span class="yts-option-tag">--guided</span>
+              </span>
+              <span class="yts-option-copy">Run YTS guided tests or filter mode when supported by the CLI.</span>
+            </span>
+            <input type="checkbox" id="yts-arg-test-guided" onchange="handleYtsGuidedModeChange('yts-arg-test-guided')">
+            <span class="yts-option-switch" aria-hidden="true"></span>
+          </label>
 
-      <label style="margin-top:1rem;"><input type="checkbox" id="yts-arg-test-interactive-ai" style="width:auto; margin-right:0.45rem;"> Use Gemini for interactive guided responses</label>
-      <div class="yts-hint">When YTS asks terminal questions like yes/no or 1/2/3/4, Gemini briefly watches the TV stream, reads the terminal guide, and then auto-sends the reply it believes matches the on-screen state.</div>
+          <label class="yts-option-card" for="yts-arg-test-interactive-ai">
+            <span class="yts-option-main">
+              <span class="yts-option-topline">
+                <span class="yts-option-name">Gemini responses</span>
+                <span class="yts-option-tag">AI assist</span>
+              </span>
+              <span class="yts-option-copy">Let Gemini watch the TV stream, read terminal prompts, and auto-send the answer that matches the visible state.</span>
+            </span>
+            <input type="checkbox" id="yts-arg-test-interactive-ai">
+            <span class="yts-option-switch" aria-hidden="true"></span>
+          </label>
 
-      <label style="margin-top:1rem;"><input type="checkbox" id="yts-arg-test-record-video" style="width:auto; margin-right:0.45rem;"> Record TV video while this YTS job runs</label>
-      <div class="yts-hint">Stores a per-job video artifact when the active capture source supports recording. The terminal transcript is also saved and can be downloaded after the run.</div>
+          <label class="yts-option-card" for="yts-arg-test-record-video">
+            <span class="yts-option-main">
+              <span class="yts-option-topline">
+                <span class="yts-option-name">Record TV video</span>
+                <span class="yts-option-tag">MP4 artifact</span>
+              </span>
+              <span class="yts-option-copy">Save a per-job video artifact when the active capture source supports recording, alongside the terminal transcript.</span>
+            </span>
+            <input type="checkbox" id="yts-arg-test-record-video">
+            <span class="yts-option-switch" aria-hidden="true"></span>
+          </label>
 
-      <label style="margin-top:0.65rem;"><input type="checkbox" id="yts-arg-test-record-audio" style="width:auto; margin-right:0.45rem;" checked> Include HDMI audio in recorded video</label>
-      <div class="yts-hint">When enabled, recording tries to include ALSA/Pulse audio in the same MP4 artifact.</div>
+          <label class="yts-option-card" for="yts-arg-test-record-audio">
+            <span class="yts-option-main">
+              <span class="yts-option-topline">
+                <span class="yts-option-name">Include HDMI audio</span>
+                <span class="yts-option-tag">ALSA/Pulse</span>
+              </span>
+              <span class="yts-option-copy">Try to mux HDMI audio into the same recorded MP4 artifact when audio capture is available.</span>
+            </span>
+            <input type="checkbox" id="yts-arg-test-record-audio" checked>
+            <span class="yts-option-switch" aria-hidden="true"></span>
+          </label>
 
-      <label style="margin-top:1rem;"><input type="checkbox" id="yts-arg-test-ui-navigation-allowed" style="width:auto; margin-right:0.45rem;"> Allow UI navigation fallback</label>
-      <div class="yts-hint">Use UI navigation fallback when direct operations are unavailable.</div>
+          <label class="yts-option-card" for="yts-arg-test-ui-navigation-allowed">
+            <span class="yts-option-main">
+              <span class="yts-option-topline">
+                <span class="yts-option-name">UI navigation fallback</span>
+                <span class="yts-option-tag">Recovery</span>
+              </span>
+              <span class="yts-option-copy">Allow YTS to fall back to on-screen UI navigation when direct operations are unavailable.</span>
+            </span>
+            <input type="checkbox" id="yts-arg-test-ui-navigation-allowed">
+            <span class="yts-option-switch" aria-hidden="true"></span>
+          </label>
+        </div>
+      </div>
 
-      <label style="margin-top:1rem;">Filter Tokens</label>
-      <textarea id="yts-arg-test-filter" placeholder='Optional filter tokens, e.g. "Time" "Smoke"'></textarea>
-
-      <label style="margin-top:1rem;">Additional YTS Args</label>
-      <textarea id="yts-arg-test-extra-args" placeholder='Optional extra YTS args, e.g. --module=https://... --test-version=20260319'></textarea>
-
-      <label style="margin-top:0.75rem;">JSON Output File</label>
-      <input id="yts-arg-test-json-output" placeholder="/tmp/yts-results.json" value="/tmp/yts-results.json">
-      <div class="yts-hint">If no explicit test IDs are selected, the current suite/category/name filter automatically expands to matching tests.</div>
+      <div class="yts-section-shell">
+        <div class="yts-section-head">
+          <div>
+            <div class="yts-section-kicker">Advanced inputs</div>
+            <div class="yts-section-title">Filters and output</div>
+            <div class="yts-section-note">Use these fields when you need to narrow catalog execution or pass raw YTS CLI arguments.</div>
+          </div>
+        </div>
+        <div class="yts-advanced-grid">
+          <div class="yts-field-card">
+            <label for="yts-arg-test-filter">Filter Tokens</label>
+            <textarea id="yts-arg-test-filter" placeholder='Optional filter tokens, e.g. "Time" "Smoke"'></textarea>
+          </div>
+          <div class="yts-field-card">
+            <label for="yts-arg-test-extra-args">Additional YTS Args</label>
+            <textarea id="yts-arg-test-extra-args" placeholder='Optional extra YTS args, e.g. --module=https://... --test-version=20260319'></textarea>
+          </div>
+          <div class="yts-field-card full">
+            <label for="yts-arg-test-json-output">JSON Output File</label>
+            <input id="yts-arg-test-json-output" placeholder="/tmp/yts-results.json" value="/tmp/yts-results.json">
+            <div class="yts-hint">If no explicit test IDs are selected, the current suite/category/name filter automatically expands to matching tests.</div>
+          </div>
+        </div>
+      </div>
 
       <div class="btn-row" style="margin-top:1rem;">
         <button data-yts-run-button="true" onclick="runYtsCommand('test')">Run Test</button>
