@@ -33,6 +33,114 @@ def test_prompt_expectation_extraction_from_generic_yts_prompt():
     assert "positive proof" in expectation["minimum_evidence_policy"].lower()
 
 
+def test_prompt_expectation_extracts_parenthetical_visual_target_generically():
+    prompt = parse_yts_prompt(
+        "Does the image on screen render correctly? (Sample Asset WebP)\n1: Yes\n2: No",
+        ["1", "2"],
+    )
+    expectation = heuristic_extract_expectation(prompt)
+
+    assert expectation["expected_visual_target"] == "Sample Asset WebP"
+
+
+def test_yes_blocked_when_fresh_frame_observed_target_mismatches_expected_asset():
+    prompt = parse_yts_prompt(
+        "Does the image on screen render correctly? (Expected Asset)\n1: Yes\n2: No",
+        ["1", "2"],
+    )
+    expectation = heuristic_extract_expectation(prompt)
+    evidence = build_visual_evidence(
+        {
+            "prompt_id": 7,
+            "prompt_sequence_id": 7,
+            "prompt_timestamp": "2026-05-13T10:00:00+00:00",
+            "fresh_after_prompt": True,
+            "expected_visual_target": "Expected Asset",
+            "captured_at": "2026-05-13T10:00:01+00:00",
+            "source": "hdmi-capture",
+            "summary": "A different asset is visible.",
+            "analysis": {
+                "summary": "Observed Previous Asset.",
+                "confidence": 0.94,
+                "requirement_seen": True,
+                "recommended_result": "pass",
+                "expected_visual_target": "Expected Asset",
+                "observed_visual_target": "Previous Asset",
+                "target_match": False,
+                "prompt_requirement_match": "mismatch",
+            },
+        }
+    )
+    gate = validate_decision_gate(expectation, evidence, {"selected_option": "1", "selected_label": "Yes", "confidence": 0.94})
+
+    assert gate["safety_blocked_pass"] is True
+    assert "Expected Asset" in " ".join(gate["missing_evidence"])
+    assert "Previous Asset" in " ".join(gate["missing_evidence"])
+
+
+def test_yes_allowed_only_with_prompt_fresh_matching_asset_evidence():
+    prompt = parse_yts_prompt(
+        "Does the image on screen render correctly? (Expected Asset)\n1: Yes\n2: No",
+        ["1", "2"],
+    )
+    expectation = heuristic_extract_expectation(prompt)
+    evidence = build_visual_evidence(
+        {
+            "prompt_id": 8,
+            "prompt_sequence_id": 8,
+            "prompt_timestamp": "2026-05-13T10:00:00+00:00",
+            "fresh_after_prompt": True,
+            "expected_visual_target": "Expected Asset",
+            "captured_at": "2026-05-13T10:00:01+00:00",
+            "source": "hdmi-capture",
+            "summary": "Expected Asset is visible and rendered correctly.",
+            "analysis": {
+                "summary": "Expected Asset is visible and rendered correctly.",
+                "confidence": 0.94,
+                "requirement_seen": True,
+                "recommended_result": "pass",
+                "expected_visual_target": "Expected Asset",
+                "observed_visual_target": "Expected Asset",
+                "target_match": True,
+                "prompt_requirement_match": "match",
+            },
+        }
+    )
+    gate = validate_decision_gate(expectation, evidence, {"selected_option": "1", "selected_label": "Yes", "confidence": 0.94})
+
+    assert gate["allowed"] is True
+    assert gate["safety_blocked_pass"] is False
+
+
+def test_yes_blocked_when_frame_timestamp_is_not_after_prompt_timestamp():
+    prompt = parse_yts_prompt(
+        "Does the image on screen render correctly? (Expected Asset)\n1: Yes\n2: No",
+        ["1", "2"],
+    )
+    expectation = heuristic_extract_expectation(prompt)
+    evidence = build_visual_evidence(
+        {
+            "prompt_timestamp": "2026-05-13T10:00:00+00:00",
+            "fresh_after_prompt": False,
+            "expected_visual_target": "Expected Asset",
+            "captured_at": "2026-05-13T09:59:59+00:00",
+            "source": "hdmi-capture",
+            "analysis": {
+                "summary": "Expected Asset is visible.",
+                "confidence": 0.94,
+                "requirement_seen": True,
+                "expected_visual_target": "Expected Asset",
+                "observed_visual_target": "Expected Asset",
+                "target_match": True,
+            },
+        }
+    )
+    gate = validate_decision_gate(expectation, evidence, {"selected_option": "1", "selected_label": "Yes", "confidence": 0.94})
+
+    assert gate["safety_blocked_pass"] is True
+    assert "after the current prompt" in " ".join(gate["missing_evidence"])
+
+
 def test_pass_blocked_when_current_screen_is_outside_required_app_context():
     expectation = _playback_expectation()
     evidence = build_visual_evidence(

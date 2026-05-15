@@ -70,6 +70,30 @@ def _infer_test_type(text: str) -> str:
     return "other"
 
 
+def _extract_expected_visual_target(text: str) -> str:
+    prompt = _compact(text)
+    if not prompt:
+        return ""
+    parenthetical = [item.strip() for item in re.findall(r"\(([^()]{2,160})\)", prompt) if item.strip()]
+    if parenthetical:
+        return parenthetical[-1]
+    quoted = [item.strip() for item in re.findall(r"['\"]([^'\"]{2,160})['\"]", prompt) if item.strip()]
+    if quoted:
+        return quoted[-1]
+    patterns = [
+        r"\b(?:expected|target|reference)\s+(?:asset|image|video|visual|content)?\s*(?:is|=|:)\s*([^.;\n]{2,160})",
+        r"\b(?:does|is)\s+the\s+(?:image|video|asset|visual|content)\s+(?:on\s+screen\s+)?(?:match|show|render)\s+([^?;\n]{2,160})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, prompt, flags=re.I)
+        if match:
+            candidate = _compact(match.group(1))
+            candidate = re.sub(r"\s+(?:correctly|properly|on screen|now)$", "", candidate, flags=re.I).strip(" .,:;?")
+            if candidate:
+                return candidate
+    return ""
+
+
 def heuristic_extract_expectation(prompt_record: Dict[str, Any], guided_context: str = "") -> Dict[str, Any]:
     prompt_text = str(prompt_record.get("prompt_text") or "")
     combined = "\n".join(part for part in [guided_context, prompt_text] if str(part or "").strip())
@@ -79,7 +103,7 @@ def heuristic_extract_expectation(prompt_record: Dict[str, Any], guided_context:
     required_context = "unknown" if control_prompt else _infer_required_context(combined)
     requires_playback = bool(
         not control_prompt
-        and re.search(r"\b(playback|playing|video|player|render|frame|aspect|visible|shown|match)\b", combined.lower())
+        and re.search(r"\b(playback|playing|video|player|pause|resume|seek|buffer)\b", combined.lower())
     )
     requirement_lines = [
         _compact(line)
@@ -87,11 +111,13 @@ def heuristic_extract_expectation(prompt_record: Dict[str, Any], guided_context:
         if _compact(line) and not re.match(r"^\s*(?:option\s*)?[0-9A-Za-z]+\s*[:.)-]", line, flags=re.I)
     ]
     description = " ".join(requirement_lines[:6]) or _compact(prompt_text) or "Validate the current YTS guided prompt."
+    expected_visual_target = _extract_expected_visual_target(prompt_text)
     return {
         "test_title": str(prompt_record.get("test_title") or "YTS guided prompt"),
         "test_type": test_type,
         "required_app_context": required_context,
         "required_state": "video_playback_active" if requires_playback else "unknown",
+        "expected_visual_target": expected_visual_target,
         "visual_requirements": [
             {
                 "description": description,
@@ -120,6 +146,9 @@ def normalize_expectation(raw: Dict[str, Any], prompt_record: Dict[str, Any]) ->
     for key, value in fallback.items():
         if key not in expectation or expectation.get(key) in (None, "", []):
             expectation[key] = value
+    expectation["expected_visual_target"] = _compact(
+        str(expectation.get("expected_visual_target") or expectation.get("expected_asset") or fallback.get("expected_visual_target") or "")
+    )
     if not isinstance(expectation.get("visual_requirements"), list):
         expectation["visual_requirements"] = fallback["visual_requirements"]
     if not isinstance(expectation.get("negative_conditions"), list):

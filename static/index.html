@@ -1127,8 +1127,8 @@
               <div class="yts-live-preview-title">Gemini Visual Feed</div>
               <div id="yts-gemini-live-preview-status" class="yts-subtle">Starts when interactive YTS is running.</div>
             </div>
-            <div class="yts-live-preview-stage" id="yts-gemini-live-preview-stage">
-              <div class="yts-live-preview-empty">Live capture preview will appear here when Gemini interactive monitoring is active.</div>
+            <div class="btn-row" style="margin-top:0.75rem;">
+              <button class="secondary" onclick="openFloatingLiveStreamForYts()">Open Floating Stream</button>
             </div>
           </div>
           <label style="margin-top:1rem;">Terminal Log</label>
@@ -1278,8 +1278,8 @@
             <div class="yts-live-preview-title">Runtime Live Feed</div>
             <div id="new-run-live-status" class="yts-subtle">Starts after run/task begins.</div>
           </div>
-          <div class="yts-live-preview-stage" id="new-run-live-stage">
-            <div class="yts-live-preview-empty">Start a run or task runner job to watch live stream here.</div>
+          <div class="btn-row" style="margin-top:0.75rem;">
+            <button class="secondary" onclick="openFloatingLiveStreamForRun()">Open Floating Stream</button>
           </div>
         </div>
       </div>
@@ -1332,6 +1332,7 @@
   const THEME_STORAGE_KEY = 'dab_ui_theme';
   let apiBase = '';
   let selectedRunId = null;
+  let newRunLiveFloatingKey = null;
   let pollInterval = null;
   let hdmiStreamRunning = false;
   let hdmiAudioRunning = false;
@@ -3312,8 +3313,8 @@
           overlayText: 'Reconnecting live stream…',
           forceRestart: true,
         });
-        // If Gemini preview is currently tied to an active YTS command, force
-        // its preview img to reload against the new camera source.
+        // If Gemini preview is currently tied to an active YTS command, let it
+        // re-sync against the floating stream after the camera source changes.
         ytsGeminiPreviewCommandId = null;
       }
       void Promise.allSettled([loadCaptureSource(), refreshCaptureDevices(), refreshStreamDiagnostics()]);
@@ -3434,6 +3435,29 @@
     if (!hdmiStreamRunning) return;
     if (floatingStreamOpen && !floatingStreamHidden) hideFloatingStreamWindow();
     else showFloatingStreamWindow();
+  }
+
+  async function ensureFloatingLiveStream(statusEl = null, activeMessage = 'Live stream is open in the floating window.') {
+    try {
+      if (!hdmiStreamRunning) {
+        if (statusEl) statusEl.textContent = 'Opening floating stream...';
+        await startHdmiStream({ smooth: true, overlayText: 'Opening live stream...', forceRestart: false });
+      }
+      showFloatingStreamWindow();
+      if (statusEl) statusEl.textContent = activeMessage;
+    } catch (error) {
+      if (statusEl) statusEl.textContent = `Floating stream could not open: ${error.message || error}`;
+    }
+  }
+
+  function openFloatingLiveStreamForYts() {
+    const statusEl = document.getElementById('yts-gemini-live-preview-status');
+    void ensureFloatingLiveStream(statusEl, 'Gemini is using the selected live feed. Preview is open in the floating window.');
+  }
+
+  function openFloatingLiveStreamForRun() {
+    const statusEl = document.getElementById('new-run-live-status');
+    void ensureFloatingLiveStream(statusEl, 'Runtime live feed is open in the floating window.');
   }
 
   function resetFloatingStreamForStop() {
@@ -5147,14 +5171,12 @@
   }
 
   function renderYtsGeminiLivePreview(data) {
-    const stage = document.getElementById('yts-gemini-live-preview-stage');
     const statusEl = document.getElementById('yts-gemini-live-preview-status');
-    if (!stage || !statusEl) return;
+    if (!statusEl) return;
 
     const isActive = !!(data && data.interactive_ai && data.status === 'running');
     if (!isActive) {
       ytsGeminiPreviewCommandId = null;
-      stage.innerHTML = '<div class="yts-live-preview-empty">Live capture preview will appear here when Gemini interactive monitoring is active.</div>';
       statusEl.textContent = 'Starts when interactive YTS is running.';
       return;
     }
@@ -5162,12 +5184,11 @@
     const commandId = String(data.command_id || '');
     const sourceText = data.latest_visual_analysis?.source || data.last_visual_context?.source || 'live-capture';
     const summary = data.ai_status_message || 'Showing the same live capture source currently used for Gemini visual monitoring.';
-    statusEl.textContent = `${summary} Source: ${sourceText}`;
+    statusEl.textContent = `${summary} Source: ${sourceText}. Preview uses the floating stream window.`;
 
     if (ytsGeminiPreviewCommandId !== commandId) {
       ytsGeminiPreviewCommandId = commandId;
-      const url = `${apiBase}/stream/hdmi?ts=${Date.now()}`;
-      stage.innerHTML = `<img id="yts-gemini-live-preview-img" src="${url}" alt="Gemini live preview" />`;
+      openFloatingLiveStreamForYts();
     }
   }
 
@@ -6312,10 +6333,9 @@
   }
 
   function refreshNewRunLivePanel(context = {}) {
-    const stage = document.getElementById('new-run-live-stage');
     const statusEl = document.getElementById('new-run-live-status');
     const logEl = document.getElementById('new-run-gemini-log');
-    if (!stage || !statusEl || !logEl) return;
+    if (!statusEl || !logEl) return;
 
     const runStatus = context.runStatus || null;
     const taskRunner = context.taskRunner || null;
@@ -6323,12 +6343,18 @@
     const hasTaskRunner = !!taskRunner;
 
     if (activeRun || hasTaskRunner) {
-      stage.innerHTML = `<img src="${apiBase}/stream/hdmi?ts=${Date.now()}" alt="Runtime live stream" />`;
       statusEl.textContent = activeRun
-        ? `Run ${selectedRunId ? selectedRunId.slice(0, 8) : ''} is active.`
-        : `Task runner executed in ${escHtml(String(context.controlMode || 'DAB'))} mode.`;
+        ? `Run ${selectedRunId ? selectedRunId.slice(0, 8) : ''} is active. Preview uses the floating stream window.`
+        : `Task runner executed in ${String(context.controlMode || 'DAB')} mode. Preview uses the floating stream window.`;
+      const floatingKey = activeRun
+        ? `run:${selectedRunId || runStatus?.run_id || ''}`
+        : `task:${String(taskRunner?.instruction || '')}:${String(taskRunner?.success ?? '')}`;
+      if (newRunLiveFloatingKey !== floatingKey) {
+        newRunLiveFloatingKey = floatingKey;
+        void ensureFloatingLiveStream(statusEl, statusEl.textContent);
+      }
     } else {
-      stage.innerHTML = '<div class="yts-live-preview-empty">Start a run or task runner job to watch live stream here.</div>';
+      newRunLiveFloatingKey = null;
       statusEl.textContent = 'Starts after run/task begins.';
     }
 

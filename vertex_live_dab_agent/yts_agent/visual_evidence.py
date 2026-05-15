@@ -66,6 +66,9 @@ def observation_from_event(event: Dict[str, Any]) -> Dict[str, Any]:
         youtube_active = context.lower().startswith("youtube")
     return {
         "timestamp": event.get("captured_at") or event.get("timestamp") or "",
+        "prompt_timestamp": event.get("prompt_timestamp") or analysis.get("prompt_timestamp") or "",
+        "prompt_id": event.get("prompt_id") or analysis.get("prompt_id"),
+        "prompt_sequence_id": event.get("prompt_sequence_id") or analysis.get("prompt_sequence_id"),
         "source": event.get("source") or "unknown",
         "detected_app_context": context,
         "screen_type": _screen_type(summary, analysis),
@@ -78,6 +81,23 @@ def observation_from_event(event: Dict[str, Any]) -> Dict[str, Any]:
         "requirement_evidence": str(analysis.get("requirement_evidence") or event.get("requirement_evidence") or "").strip(),
         "recommended_result": str(analysis.get("recommended_result") or event.get("recommended_result") or "").strip().lower(),
         "prompt_requirement_match": str(analysis.get("prompt_requirement_match") or "").strip().lower(),
+        "expected_visual_target": str(
+            analysis.get("expected_visual_target")
+            or analysis.get("expected_asset")
+            or event.get("expected_visual_target")
+            or event.get("expected_asset")
+            or ""
+        ).strip(),
+        "observed_visual_target": str(
+            analysis.get("observed_visual_target")
+            or analysis.get("observed_asset")
+            or analysis.get("visible_asset")
+            or event.get("observed_visual_target")
+            or event.get("observed_asset")
+            or ""
+        ).strip(),
+        "target_match": analysis.get("target_match", event.get("target_match")),
+        "fresh_after_prompt": event.get("fresh_after_prompt", analysis.get("fresh_after_prompt")),
     }
 
 
@@ -88,6 +108,11 @@ def build_visual_evidence(visual_context: Dict[str, Any]) -> Dict[str, Any]:
     if analysis:
         latest_event = {
             "captured_at": visual_context.get("captured_at") or "",
+            "prompt_timestamp": visual_context.get("prompt_timestamp") or "",
+            "prompt_id": visual_context.get("prompt_id"),
+            "prompt_sequence_id": visual_context.get("prompt_sequence_id"),
+            "fresh_after_prompt": visual_context.get("fresh_after_prompt"),
+            "expected_visual_target": visual_context.get("expected_visual_target") or "",
             "source": visual_context.get("source") or "unknown",
             "summary": analysis.get("summary") or visual_context.get("summary") or "",
             "analysis": analysis,
@@ -113,4 +138,9 @@ def build_visual_evidence(visual_context: Dict[str, Any]) -> Dict[str, Any]:
         "negative_observations": negative,
         "capture_status": dict(visual_context.get("capture_status") or {}),
         "summary": visual_context.get("summary") or latest.get("visual_summary") or "",
+        "prompt_id": visual_context.get("prompt_id"),
+        "prompt_sequence_id": visual_context.get("prompt_sequence_id"),
+        "prompt_timestamp": visual_context.get("prompt_timestamp") or "",
+        "fresh_after_prompt": visual_context.get("fresh_after_prompt"),
+        "expected_visual_target": visual_context.get("expected_visual_target") or latest.get("expected_visual_target") or "",
     }

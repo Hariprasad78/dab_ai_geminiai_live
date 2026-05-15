@@ -574,9 +574,9 @@ class ScreenCapture:
             image_b64: Optional[str] = None
             source = "error"
 
-            if self._image_source == "hdmi-capture":
+            if self._image_source in {"hdmi-capture", "camera-capture"}:
                 image_b64 = self._capture_from_hdmi()
-                source = "hdmi-capture" if image_b64 else "error"
+                source = self._image_source if image_b64 else "error"
             elif self._image_source == "auto":
                 image_b64 = self._capture_from_hdmi()
                 source = "hdmi-capture" if image_b64 else "dab"
@@ -598,7 +598,7 @@ class ScreenCapture:
         """
         async with self._capture_lock:
             image_b64 = self._capture_from_hdmi()
-            source = "hdmi-capture" if image_b64 else "error"
+            source = (self._image_source if self._image_source != "auto" else "hdmi-capture") if image_b64 else "error"
             return CaptureResult(image_b64=image_b64, ocr_text=None, source=source)
 
     async def _capture_from_dab(self) -> Optional[str]:
