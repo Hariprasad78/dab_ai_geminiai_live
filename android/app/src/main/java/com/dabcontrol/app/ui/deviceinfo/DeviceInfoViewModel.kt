@@ -45,17 +45,23 @@ class DeviceInfoViewModel @Inject constructor(
             _uiState.value = _uiState.value.copy(isLoading = true, error = null)
 
             val devicesDeferred = async { controlsRepository.fetchDevices() }
+            val contextDeferred = async { controlsRepository.fetchCurrentDeviceContext() }
             val devicesResult = devicesDeferred.await()
+            val contextResult = contextDeferred.await()
             val deviceIds = extractDeviceIds(devicesResult)
             val selectedDeviceId = resolveSelectedDeviceId(
                 current = _uiState.value.selectedDeviceId,
                 deviceIds = deviceIds,
                 devicesResult = devicesResult
             )
+            val context = (contextResult as? ApiResult.Success)?.data?.context
 
             if (selectedDeviceId.isBlank()) {
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
+                    selectedDeviceName = context?.displayName.orEmpty(),
+                    selectedYtsDeviceId = context?.ytsDeviceId.orEmpty(),
+                    selectedIrDeviceId = context?.irDeviceId.orEmpty(),
                     deviceIds = deviceIds,
                     rows = emptyList(),
                     error = null
@@ -68,6 +74,9 @@ class DeviceInfoViewModel @Inject constructor(
                 isLoading = false,
                 deviceIds = deviceIds,
                 selectedDeviceId = selectedDeviceId,
+                selectedDeviceName = context?.displayName.orEmpty(),
+                selectedYtsDeviceId = context?.ytsDeviceId.orEmpty(),
+                selectedIrDeviceId = context?.irDeviceId.orEmpty(),
                 rows = buildRows(infoResult),
                 error = buildError(infoResult)
             )

@@ -595,14 +595,14 @@ private fun SummaryChip(label: String, value: String) {
 private fun StatusBadge(status: String) {
     val normalized = status.lowercase()
     val background = when {
-        "pass" in normalized || "complete" in normalized -> Color(0x1A0F766E)
-        "fail" in normalized || "error" in normalized -> Color(0x1ADC2626)
-        else -> Color(0x1A9A6B2F)
+        "pass" in normalized || "complete" in normalized -> Color(0x1A3B82F6)
+        "fail" in normalized || "error" in normalized -> Color(0x1AEF4444)
+        else -> Color(0x1A6366F1)
     }
     val foreground = when {
-        "pass" in normalized || "complete" in normalized -> Color(0xFF0F766E)
-        "fail" in normalized || "error" in normalized -> Color(0xFFDC2626)
-        else -> Color(0xFF9A6B2F)
+        "pass" in normalized || "complete" in normalized -> Color(0xFF3B82F6)
+        "fail" in normalized || "error" in normalized -> Color(0xFFEF4444)
+        else -> Color(0xFF818CF8)
     }
     Surface(color = background, shape = MaterialTheme.shapes.small) {
         Text(

@@ -3,6 +3,7 @@ package com.dabcontrol.app.ui.yts
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.dabcontrol.app.data.api.ApiResult
+import com.dabcontrol.app.data.api.CurrentDeviceContextResponseDto
 import com.dabcontrol.app.data.api.RuntimeModelResponseDto
 import com.dabcontrol.app.data.api.ManualActionRequestDto
 import com.dabcontrol.app.data.api.YtsLiveCommandRequestDto
@@ -58,9 +59,8 @@ class YtsListViewModel @Inject constructor(
         }
         viewModelScope.launch {
             apiSettingsStore.selectedDeviceId.collectLatest { deviceId ->
-                if (deviceId.isNotBlank()) {
-                    _uiState.value = _uiState.value.copy(deviceId = deviceId)
-                }
+                _uiState.value = _uiState.value.copy(deviceId = deviceId)
+                refreshSharedDeviceContext()
             }
         }
         refresh()
@@ -262,9 +262,16 @@ class YtsListViewModel @Inject constructor(
     }
 
     fun onDeviceIdChanged(value: String) {
-        _uiState.value = _uiState.value.copy(deviceId = value)
         viewModelScope.launch {
-            apiSettingsStore.saveSelectedDeviceId(value)
+            when (val result = controlsRepository.selectDeviceContext(value, persist = true)) {
+                is ApiResult.Success -> {
+                    val selected = applySharedDeviceContext(result.data)
+                    apiSettingsStore.saveSelectedDeviceId(selected)
+                }
+                is ApiResult.HttpError -> _uiState.value = _uiState.value.copy(error = "HTTP ${result.code}: ${result.message}")
+                is ApiResult.NetworkError -> _uiState.value = _uiState.value.copy(error = "Network error: ${result.throwable.message}")
+                is ApiResult.UnknownError -> _uiState.value = _uiState.value.copy(error = "Unknown error: ${result.throwable.message}")
+            }
         }
     }
 
@@ -563,8 +570,18 @@ class YtsListViewModel @Inject constructor(
 
     private fun buildTestRequest(): YtsLiveCommandRequestDto? {
         val deviceId = _uiState.value.deviceId.trim()
+        val runnerDeviceId = _uiState.value.ytsShortId.ifBlank {
+            _uiState.value.ytsDeviceId.ifBlank { deviceId }
+        }
         if (deviceId.isBlank()) {
             _uiState.value = _uiState.value.copy(error = "Device ID is required.", startStatus = "Device ID is required.")
+            return null
+        }
+        if (runnerDeviceId.isBlank()) {
+            _uiState.value = _uiState.value.copy(
+                error = "The selected device has no YTS mapping yet.",
+                startStatus = "YTS device mapping missing."
+            )
             return null
         }
         val selectedIds = _uiState.value.selectedTestIds
@@ -584,7 +601,7 @@ class YtsListViewModel @Inject constructor(
         }
 
         val params = mutableListOf<String>()
-        params += deviceId
+        params += runnerDeviceId
         params += fallbackIds
         params += filterTokens
         if (_uiState.value.guidedMode) params += "--guided"
@@ -603,8 +620,35 @@ class YtsListViewModel @Inject constructor(
             interactive_ai = _uiState.value.interactiveAi,
             record_video = _uiState.value.recordVideo,
             record_audio = _uiState.value.recordVideo && _uiState.value.recordAudio,
-            device_id = deviceId
+            device_id = runnerDeviceId
         )
+    }
+
+    private fun refreshSharedDeviceContext() {
+        viewModelScope.launch {
+            when (val result = controlsRepository.fetchCurrentDeviceContext()) {
+                is ApiResult.Success -> applySharedDeviceContext(result.data)
+                is ApiResult.HttpError -> _uiState.value = _uiState.value.copy(error = "HTTP ${result.code}: ${result.message}")
+                is ApiResult.NetworkError -> _uiState.value = _uiState.value.copy(error = "Network error: ${result.throwable.message}")
+                is ApiResult.UnknownError -> _uiState.value = _uiState.value.copy(error = "Unknown error: ${result.throwable.message}")
+            }
+        }
+    }
+
+    private fun applySharedDeviceContext(data: CurrentDeviceContextResponseDto): String {
+        val context = data.context
+        val selected = data.selected_device_id?.takeIf { it.isNotBlank() }
+            ?: context?.dabDeviceId.orEmpty()
+        _uiState.value = _uiState.value.copy(
+            deviceId = selected,
+            deviceDisplayName = context?.displayName.orEmpty(),
+            ytsDeviceId = context?.ytsDeviceId.orEmpty(),
+            ytsShortId = data.validation?.ytsShortId.orEmpty(),
+            irDeviceId = context?.irDeviceId.orEmpty(),
+            sharedDeviceReady = data.validation?.valid ?: false,
+            sharedDeviceIssues = data.validation?.issues.orEmpty()
+        )
+        return selected
     }
 
     private fun buildGlobalOptions(): JsonObject = buildJsonObject { }

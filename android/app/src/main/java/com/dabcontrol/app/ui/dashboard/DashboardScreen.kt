@@ -103,7 +103,7 @@ fun DashboardScreen(
                     title = "CPU",
                     value = state.cpuPercent?.let { "${format1(it)}%" } ?: "--",
                     subtitle = "Processor utilization",
-                    accent = Color(0xFF0F766E),
+                    accent = Color(0xFF6366F1),
                     history = state.cpuHistory,
                     maxValue = 100f,
                     modifier = Modifier.fillMaxWidth()
@@ -112,7 +112,7 @@ fun DashboardScreen(
                     title = "Memory",
                     value = state.ramPercent?.let { "${format1(it)}%" } ?: "--",
                     subtitle = "RAM pressure",
-                    accent = Color(0xFF2563EB),
+                    accent = Color(0xFF8B5CF6),
                     history = state.ramHistory,
                     maxValue = 100f,
                     modifier = Modifier.fillMaxWidth()
@@ -121,7 +121,7 @@ fun DashboardScreen(
                     title = "Load",
                     value = state.load1m?.let { format2(it) } ?: "--",
                     subtitle = "1 minute system load",
-                    accent = Color(0xFFD97706),
+                    accent = Color(0xFF3B82F6),
                     history = state.loadHistory,
                     maxValue = (state.loadHistory.maxOfOrNull { it.value } ?: 1f).coerceAtLeast(1f),
                     modifier = Modifier.fillMaxWidth()
@@ -130,7 +130,7 @@ fun DashboardScreen(
                     title = "Temperature",
                     value = state.cpuTempC?.let { "${format1(it)}C" } ?: "--",
                     subtitle = "Thermal signal",
-                    accent = Color(0xFFDC2626),
+                    accent = Color(0xFF818CF8),
                     history = state.tempHistory,
                     maxValue = (state.tempHistory.maxOfOrNull { it.value } ?: 100f).coerceAtLeast(50f),
                     modifier = Modifier.fillMaxWidth()
@@ -218,7 +218,7 @@ private fun DashboardCommandDeck(
             }
 
             DevicePickerCard(
-                deviceIds = state.deviceIds,
+                deviceContexts = state.deviceContexts,
                 selectedDeviceId = state.selectedDeviceId,
                 onSelect = onSelectDevice
             )
@@ -257,7 +257,7 @@ private fun KpiRow(state: DashboardUiState) {
         maxItemsInEachRow = 4
     ) {
         KpiCard("Backend", state.healthStatus, "Health signal", Modifier.fillMaxWidth())
-        KpiCard("Device", state.selectedDeviceId.ifBlank { "--" }, "Selected target", Modifier.fillMaxWidth())
+        KpiCard("Device", state.selectedDeviceName.ifBlank { state.selectedDeviceId.ifBlank { "--" } }, "Selected target", Modifier.fillMaxWidth())
         KpiCard("Cores", state.cpuCount?.toString() ?: "--", "CPU count", Modifier.fillMaxWidth())
         KpiCard("Sample", state.timestamp.substringAfter('T', state.timestamp).substringBefore('.'), "Last refresh", Modifier.fillMaxWidth())
     }
@@ -301,10 +301,10 @@ private fun CombinedStatusCard(state: DashboardUiState) {
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                LegendPill("CPU", Color(0xFF0F766E))
-                LegendPill("Memory", Color(0xFF2563EB))
-                LegendPill("Load", Color(0xFFD97706))
-                LegendPill("Temp", Color(0xFFDC2626))
+                LegendPill("CPU", Color(0xFF6366F1))
+                LegendPill("Memory", Color(0xFF8B5CF6))
+                LegendPill("Load", Color(0xFF3B82F6))
+                LegendPill("Temp", Color(0xFF818CF8))
             }
             Text(
                 state.backendStatusSummary,
@@ -369,10 +369,10 @@ private fun CombinedStatusGraph(
                         style = Stroke(width = 2f),
                         cornerRadius = CornerRadius(18f, 18f)
                     )
-                    drawSeries(cpuHistory, stepX, baseline, 100f, Color(0xFF0F766E))
-                    drawSeries(ramHistory, stepX, baseline, 100f, Color(0xFF2563EB))
-                    drawSeries(loadHistory, stepX, baseline, (loadHistory.maxOfOrNull { it.value } ?: 1f).coerceAtLeast(1f), Color(0xFFD97706))
-                    drawSeries(tempHistory, stepX, baseline, (tempHistory.maxOfOrNull { it.value } ?: 100f).coerceAtLeast(50f), Color(0xFFDC2626))
+                    drawSeries(cpuHistory, stepX, baseline, 100f, Color(0xFF6366F1))
+                    drawSeries(ramHistory, stepX, baseline, 100f, Color(0xFF8B5CF6))
+                    drawSeries(loadHistory, stepX, baseline, (loadHistory.maxOfOrNull { it.value } ?: 1f).coerceAtLeast(1f), Color(0xFF3B82F6))
+                    drawSeries(tempHistory, stepX, baseline, (tempHistory.maxOfOrNull { it.value } ?: 100f).coerceAtLeast(50f), Color(0xFF818CF8))
                 }
             }
         }
@@ -454,7 +454,7 @@ private fun UrlPresetPicker(
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun DevicePickerCard(
-    deviceIds: List<String>,
+    deviceContexts: List<DashboardDeviceContext>,
     selectedDeviceId: String,
     onSelect: (String) -> Unit
 ) {
@@ -464,22 +464,22 @@ private fun DevicePickerCard(
             "The selected device is reused across dashboard, live control, and YTS actions.",
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-        if (deviceIds.isEmpty()) {
+        if (deviceContexts.isEmpty()) {
             Text("No devices loaded yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else {
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                deviceIds.forEach { deviceId ->
-                    val selected = deviceId == selectedDeviceId
+                deviceContexts.forEach { context ->
+                    val selected = context.dabDeviceId == selectedDeviceId
                     Surface(
                         color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
                         shape = MaterialTheme.shapes.small,
-                        modifier = Modifier.clickable { onSelect(deviceId) }
+                        modifier = Modifier.clickable { onSelect(context.dabDeviceId) }
                     ) {
                         Text(
-                            text = deviceId,
+                            text = context.displayName,
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
                             color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
                         )

@@ -3,6 +3,8 @@ package com.dabcontrol.app.ui.dashboard
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.dabcontrol.app.data.api.ApiResult
+import com.dabcontrol.app.data.api.CurrentDeviceContextResponseDto
+import com.dabcontrol.app.data.api.DeviceContextsResponseDto
 import com.dabcontrol.app.data.api.RuntimeModelResponseDto
 import com.dabcontrol.app.data.preferences.ApiSettingsStore
 import com.dabcontrol.app.data.repo.ControlsRepository
@@ -58,9 +60,19 @@ class DashboardViewModel @Inject constructor(
     }
 
     fun onDeviceSelected(value: String) {
-        _uiState.value = _uiState.value.copy(selectedDeviceId = value)
         viewModelScope.launch {
-            apiSettingsStore.saveSelectedDeviceId(value)
+            when (val result = controlsRepository.selectDeviceContext(value, persist = true)) {
+                is ApiResult.Success -> {
+                    val selected = applySharedDeviceContext(result, null)
+                    if (selected.isNotBlank()) {
+                        apiSettingsStore.saveSelectedDeviceId(selected)
+                    }
+                    refresh(silent = true)
+                }
+                is ApiResult.HttpError -> _uiState.value = _uiState.value.copy(error = "HTTP ${result.code}: ${result.message}")
+                is ApiResult.NetworkError -> _uiState.value = _uiState.value.copy(error = "Network error: ${result.throwable.message}")
+                is ApiResult.UnknownError -> _uiState.value = _uiState.value.copy(error = "Unknown error: ${result.throwable.message}")
+            }
         }
     }
 
@@ -125,11 +137,15 @@ class DashboardViewModel @Inject constructor(
             val healthDeferred = async { dashboardRepository.fetchHealth() }
             val metricsDeferred = async { dashboardRepository.fetchMetrics() }
             val devicesDeferred = async { controlsRepository.fetchDevices() }
+            val currentContextDeferred = async { controlsRepository.fetchCurrentDeviceContext() }
+            val contextsDeferred = async { controlsRepository.fetchDeviceContexts() }
             val modelsDeferred = async { ytsRepository.fetchRuntimeModels() }
 
             val healthResult = healthDeferred.await()
             val metricsResult = metricsDeferred.await()
             val devicesResult = devicesDeferred.await()
+            val currentContextResult = currentContextDeferred.await()
+            val contextsResult = contextsDeferred.await()
             val modelsResult = modelsDeferred.await()
 
             val healthStatus = when (healthResult) {
@@ -144,11 +160,8 @@ class DashboardViewModel @Inject constructor(
             val metrics = extractMetrics(metricsResult)
             val deviceIds = extractDeviceIds(devicesResult)
             val preferred = _uiState.value.selectedDeviceId
-            val resolvedSelected = when {
-                preferred.isNotBlank() && deviceIds.contains(preferred) -> preferred
-                devicesResult is ApiResult.Success && !devicesResult.data.selected_device_id.isNullOrBlank() ->
-                    devicesResult.data.selected_device_id.orEmpty()
-                else -> deviceIds.firstOrNull().orEmpty()
+            val resolvedSelected = applySharedDeviceContext(currentContextResult, contextsResult).ifBlank {
+                _uiState.value.selectedDeviceId
             }
             if (resolvedSelected.isNotBlank() && resolvedSelected != preferred) {
                 apiSettingsStore.saveSelectedDeviceId(resolvedSelected)
@@ -162,7 +175,6 @@ class DashboardViewModel @Inject constructor(
                 healthStatus = healthStatus,
                 mode = mode,
                 deviceIds = deviceIds,
-                selectedDeviceId = resolvedSelected,
                 cpuPercent = metrics?.cpuPercent,
                 ramPercent = metrics?.ramPercent,
                 load1m = metrics?.load1m,
@@ -178,16 +190,40 @@ class DashboardViewModel @Inject constructor(
                     healthStatus = healthStatus,
                     mode = mode,
                     deviceCount = deviceIds.size,
-                    selectedDeviceId = resolvedSelected,
+                    selectedDeviceName = _uiState.value.selectedDeviceName.ifBlank { resolvedSelected },
                     modelsResult = modelsResult
                 ),
                 refreshStateLabel = buildRefreshStateLabel(
                     timestamp = metrics?.timestampShort,
                     silent = silent
                 ),
-                error = buildError(healthResult, metricsResult, devicesResult, modelsResult)
+                error = buildError(healthResult, metricsResult, devicesResult, currentContextResult, contextsResult, modelsResult)
             )
         }
+    }
+
+    private fun applySharedDeviceContext(
+        currentContext: ApiResult<CurrentDeviceContextResponseDto>,
+        contexts: ApiResult<DeviceContextsResponseDto>?
+    ): String {
+        val currentPayload = (currentContext as? ApiResult.Success)?.data
+        val mappedContexts = (contexts as? ApiResult.Success)?.data?.contexts.orEmpty().map { dto ->
+            DashboardDeviceContext(
+                displayName = dto.displayName.ifBlank { dto.dabDeviceId },
+                dabDeviceId = dto.dabDeviceId,
+                isActive = dto.active
+            )
+        }
+        val active = mappedContexts.firstOrNull { it.isActive }
+        val resolvedSelected = active?.dabDeviceId
+            ?: currentPayload?.selected_device_id.orEmpty()
+            ?: _uiState.value.selectedDeviceId
+        _uiState.value = _uiState.value.copy(
+            deviceContexts = mappedContexts,
+            selectedDeviceId = resolvedSelected,
+            selectedDeviceName = active?.displayName ?: currentPayload?.context?.displayName.orEmpty()
+        )
+        return resolvedSelected
     }
 
     private fun startAutoRefresh() {
@@ -258,12 +294,16 @@ class DashboardViewModel @Inject constructor(
         health: ApiResult<*>,
         metrics: ApiResult<*>,
         devices: ApiResult<*>,
+        currentContext: ApiResult<*>,
+        contexts: ApiResult<*>,
         models: ApiResult<*>
     ): String? {
         val issues = mutableListOf<String>()
         if (health !is ApiResult.Success) issues.add("Health failed")
         if (metrics !is ApiResult.Success) issues.add("Metrics failed")
         if (devices !is ApiResult.Success) issues.add("Devices failed")
+        if (currentContext !is ApiResult.Success) issues.add("Context failed")
+        if (contexts !is ApiResult.Success) issues.add("Context list failed")
         if (models !is ApiResult.Success) issues.add("Gemini models failed")
         return if (issues.isEmpty()) null else issues.joinToString(" · ")
     }
@@ -272,7 +312,7 @@ class DashboardViewModel @Inject constructor(
         healthStatus: String,
         mode: String,
         deviceCount: Int,
-        selectedDeviceId: String,
+        selectedDeviceName: String,
         modelsResult: ApiResult<*>
     ): String {
         val modelState = if (modelsResult is ApiResult.Success) "models synced" else "model sync issue"
@@ -280,7 +320,7 @@ class DashboardViewModel @Inject constructor(
             "health $healthStatus",
             "mode $mode",
             "$deviceCount device${if (deviceCount == 1) "" else "s"} visible",
-            if (selectedDeviceId.isBlank()) "no device selected" else "device $selectedDeviceId",
+            if (selectedDeviceName.isBlank()) "no device selected" else "device $selectedDeviceName",
             modelState
         ).joinToString(" · ")
     }
