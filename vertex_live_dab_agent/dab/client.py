@@ -1026,8 +1026,10 @@ class AdapterDABClient(DABClientBase):
                     if remaining <= 0:
                         break
                     try:
-                        async with asyncio.timeout(remaining):
-                            message = await messages_iter.__anext__()
+                        message = await asyncio.wait_for(
+                            messages_iter.__anext__(),
+                            timeout=remaining,
+                        )
                     except asyncio.TimeoutError:
                         break
                     except StopAsyncIteration:

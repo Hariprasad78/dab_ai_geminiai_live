@@ -3068,9 +3068,10 @@ def _generate_yts_html_report_artifact(state: Dict[str, Any]) -> Optional[Path]:
                 f"<td>{_escape_html(row.get('justification'))}</td>"
                 "</tr>"
             )
+        no_requirements_row = '<tr><td colspan="4">No requirement lines found</td></tr>'
         req_table = (
             "<table><thead><tr><th>Requirement line</th><th>Answer</th><th>Evidence</th><th>Justification</th></tr></thead>"
-            f"<tbody>{''.join(req_rows) or '<tr><td colspan=\"4\">No requirement lines found</td></tr>'}</tbody></table>"
+            f"<tbody>{''.join(req_rows) or no_requirements_row}</tbody></table>"
         )
 
         sections.append(
@@ -3102,15 +3103,17 @@ def _generate_yts_html_report_artifact(state: Dict[str, Any]) -> Optional[Path]:
             f"<td>{evidence_name}</td>"
             "</tr>"
         )
+    no_revalidation_row = '<tr><td colspan="7">No post-run revalidation results</td></tr>'
     revalidation_html = (
         "<section class=\"card\">"
         "<h2>Post-run Gemini Revalidation</h2>"
         f"<div class=\"meta\"><strong>Revalidated at:</strong> {_escape_html(state.get('revalidated_at') or '-')}</div>"
         "<table><thead><tr><th>#</th><th>Condition</th><th>Verdict</th><th>Confidence</th><th>Reason</th><th>Observed</th><th>Evidence image</th></tr></thead>"
-        f"<tbody>{''.join(revalidation_rows) if revalidation_rows else '<tr><td colspan=\"7\">No post-run revalidation results</td></tr>'}</tbody></table>"
+        f"<tbody>{''.join(revalidation_rows) if revalidation_rows else no_revalidation_row}</tbody></table>"
         "</section>"
     )
 
+    no_prompts_section = '<section class="card"><div class="meta">No interactive prompts captured.</div></section>'
     html = (
         "<!doctype html><html><head><meta charset=\"utf-8\"/>"
         "<title>YTS AI Validation Report</title>"
@@ -3129,7 +3132,7 @@ def _generate_yts_html_report_artifact(state: Dict[str, Any]) -> Optional[Path]:
         f"<div class=\"meta\"><strong>Command:</strong> {_escape_html(state.get('command'))}</div>"
         f"<div class=\"meta\"><strong>Status:</strong> {_escape_html(state.get('status'))} | <strong>Return code:</strong> {_escape_html(state.get('returncode'))}</div>"
         f"<div class=\"meta\"><strong>Created:</strong> {_escape_html(state.get('created_at'))} | <strong>Updated:</strong> {_escape_html(state.get('updated_at'))}</div></div>"
-        f"{''.join(sections) if sections else '<section class=\"card\"><div class=\"meta\">No interactive prompts captured.</div></section>'}"
+        f"{''.join(sections) if sections else no_prompts_section}"
         f"{revalidation_html}"
         "</body></html>"
     )
@@ -7465,6 +7468,13 @@ async def serve_frontend_styles() -> FileResponse:
     if not _SERVE_FRONTEND:
         raise HTTPException(status_code=404, detail="Frontend serving is disabled")
     return _frontend_file_response("styles.css", media_type="text/css")
+
+
+@app.get("/premium.css", include_in_schema=False)
+async def serve_frontend_premium_styles() -> FileResponse:
+    if not _SERVE_FRONTEND:
+        raise HTTPException(status_code=404, detail="Frontend serving is disabled")
+    return _frontend_file_response("premium.css", media_type="text/css")
 
 
 @app.get("/config.js", include_in_schema=False)

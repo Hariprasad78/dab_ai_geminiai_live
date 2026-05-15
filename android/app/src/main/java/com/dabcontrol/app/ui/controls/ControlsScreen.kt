@@ -849,8 +849,9 @@ private fun CompactTable(rows: List<ControlsInfoRow>) {
 private fun TableHeaderRow(columns: List<String>) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-        shape = MaterialTheme.shapes.medium
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = MaterialTheme.shapes.medium,
+        shadowElevation = 1.dp
     ) {
         Row(
             modifier = Modifier
