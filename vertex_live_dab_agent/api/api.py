@@ -119,13 +119,16 @@ _REPO_ROOT = Path(__file__).parent.parent.parent.resolve()
 _STATIC_DIR = _REPO_ROOT / "static"
 _YTS_INTERACTIVE_CAPTURE_ATTEMPTS = 3
 _YTS_INTERACTIVE_CAPTURE_DELAY_SECONDS = 0.9
-_YTS_LIVE_VISUAL_MONITOR_INTERVAL_SECONDS = float(os.environ.get("YTS_LIVE_VISUAL_MONITOR_INTERVAL_SECONDS", "5.0"))
-_YTS_LIVE_VISUAL_MONITOR_STALE_SECONDS = 8.0
+_YTS_LIVE_VISUAL_MONITOR_INTERVAL_SECONDS = float(os.environ.get("YTS_LIVE_VISUAL_MONITOR_INTERVAL_SECONDS", "1.0"))
+_YTS_LIVE_VISUAL_MONITOR_STALE_SECONDS = float(os.environ.get("YTS_LIVE_VISUAL_MONITOR_STALE_SECONDS", "2.5"))
 _YTS_LIVE_VISUAL_HISTORY_LIMIT = 60
 _YTS_LIVE_VISUAL_EVENT_LIMIT = 180
 _YTS_PROMPT_VISUAL_WAIT_SECONDS = float(os.environ.get("YTS_PROMPT_VISUAL_WAIT_SECONDS", "20.0"))
 _YTS_PROMPT_MIN_VISUAL_FRAMES = int(os.environ.get("YTS_PROMPT_MIN_VISUAL_FRAMES", "12"))
 _YTS_PLAYBACK_PROMPT_SETTLE_SECONDS = float(os.environ.get("YTS_PLAYBACK_PROMPT_SETTLE_SECONDS", "2.5"))
+_YTS_PLAYBACK_TIMECODE_MARGIN_SECONDS = float(os.environ.get("YTS_PLAYBACK_TIMECODE_MARGIN_SECONDS", "1.0"))
+_YTS_AD_CLEAR_WAIT_SECONDS = float(os.environ.get("YTS_AD_CLEAR_WAIT_SECONDS", "0"))
+_YTS_AD_CLEAR_POLL_SECONDS = float(os.environ.get("YTS_AD_CLEAR_POLL_SECONDS", "1.0"))
 _last_cpu_times_snapshot: Optional[tuple[float, float]] = None
 
 
@@ -2363,6 +2366,7 @@ async def _ensure_selected_device_context(device_id: Optional[str], persist: boo
     if explicit:
         active_context = _active_device_context()
         explicit_context = find_device_context(explicit)
+        mapped_to_active_context = False
         if active_context is not None and explicit_context is None:
             mapped_values = {
                 active_context.contextId,
@@ -2373,11 +2377,22 @@ async def _ensure_selected_device_context(device_id: Optional[str], persist: boo
                 active_context.cameraId,
                 active_context.cameraPath,
             }
-            if explicit not in {str(v or "").strip() for v in mapped_values}:
+            mapped_tokens: set[str] = set()
+            for value in mapped_values:
+                mapped_tokens.update(_yts_device_token_set(value))
+            mapped_to_active_context = bool(_yts_device_token_set(explicit) & mapped_tokens)
+            if not mapped_to_active_context:
                 raise HTTPException(
                     status_code=400,
                     detail=f"YTS device_id={explicit} is not mapped to active device context {active_context.displayName}.",
                 )
+        if mapped_to_active_context and active_context is not None:
+            if persist:
+                _save_device_context_state({
+                    "selected_device_id": active_context.dabDeviceId,
+                    "selected_context_id": active_context.contextId,
+                })
+            return active_context.dabDeviceId
         current = _resolve_selected_device_id()
         if explicit != current:
             state = await _apply_selected_device_context(explicit, persist=persist)
@@ -4348,7 +4363,7 @@ def _yts_discovered_item_matches_context(item: Dict[str, str], context: DeviceCo
         return True
     if adb_val and (adb_val in normalized or f"adb:{adb_val}" in normalized):
         return True
-    if dab_val and (dab_val in normalized or f"dab:{dab_val}" in normalized):
+    if dab_val and (_yts_device_token_set(dab_val) & normalized or _yts_device_token_set(f"dab:{dab_val}") & normalized):
         return True
     if ip_val and ip_val in normalized:
         return True
@@ -4430,10 +4445,98 @@ async def _require_yts_short_id_for_context(context: DeviceContext) -> str:
     )
 
 
+def _parse_yts_transport_device_id(value: Any) -> Dict[str, str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return {"raw": "", "scheme": "", "device_id": "", "endpoint": ""}
+    lower = raw.lower()
+    if ":" not in lower:
+        return {"raw": raw, "scheme": "", "device_id": raw, "endpoint": ""}
+    scheme, _, tail = raw.partition(":")
+    scheme_lower = scheme.strip().lower()
+    if scheme_lower not in {"dab", "adb"}:
+        return {"raw": raw, "scheme": "", "device_id": raw, "endpoint": ""}
+    device_part, sep, endpoint = tail.strip().partition("@")
+    return {
+        "raw": raw,
+        "scheme": scheme_lower,
+        "device_id": device_part.strip(),
+        "endpoint": endpoint.strip() if sep else "",
+    }
+
+
+def _yts_device_alias_tokens(value: str) -> set[str]:
+    token = str(value or "").strip().lower()
+    if not token:
+        return set()
+    aliases = {token}
+    # ADT-4 is easy to mistype as ADB-4 while entering DAB transport ids.
+    if re.fullmatch(r"adb-\d+", token):
+        aliases.add("adt-" + token.split("-", 1)[1])
+    if re.fullmatch(r"adt-\d+", token):
+        aliases.add("adb-" + token.split("-", 1)[1])
+    return aliases
+
+
+def _yts_device_token_set(value: Any) -> set[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return set()
+    parsed = _parse_yts_transport_device_id(raw)
+    lower = raw.lower()
+    tokens = {lower}
+    scheme = parsed.get("scheme") or ""
+    device_id = str(parsed.get("device_id") or "").strip().lower()
+    endpoint = str(parsed.get("endpoint") or "").strip().lower()
+    if scheme == "dab":
+        tail = lower[4:].strip()
+        tokens.add(tail)
+        tokens.add(f"dab:{tail}")
+        if device_id:
+            for alias in _yts_device_alias_tokens(device_id):
+                tokens.add(alias)
+                tokens.add(f"dab:{alias}")
+        if endpoint and device_id:
+            for alias in _yts_device_alias_tokens(device_id):
+                tokens.add(f"{alias}@{endpoint}")
+                tokens.add(f"dab:{alias}@{endpoint}")
+    elif scheme == "adb":
+        tail = lower[4:].strip()
+        tokens.add(tail)
+        tokens.add(f"adb:{tail}")
+        if device_id:
+            for alias in _yts_device_alias_tokens(device_id):
+                tokens.add(alias)
+                tokens.add(f"adb:{alias}")
+        if endpoint and device_id:
+            for alias in _yts_device_alias_tokens(device_id):
+                tokens.add(f"{alias}@{endpoint}")
+                tokens.add(f"adb:{alias}@{endpoint}")
+    else:
+        for alias in _yts_device_alias_tokens(lower):
+            tokens.add(alias)
+            tokens.add(f"dab:{alias}")
+            tokens.add(f"adb:{alias}")
+    return {token for token in tokens if token}
+
+
+def _preserve_explicit_yts_transport_device_id(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    lower = raw.lower()
+    if lower.startswith("dab:") or lower.startswith("adb:"):
+        return raw
+    if _is_ip_port(raw):
+        return f"adb:{raw}"
+    return ""
+
+
 async def _yts_device_id_belongs_to_context(raw_device_id: Any, context: DeviceContext) -> bool:
     raw = str(raw_device_id or "").strip()
     if not raw:
         return False
+    raw_tokens = _yts_device_token_set(raw)
     direct = {
         context.contextId,
         context.dabDeviceId,
@@ -4442,7 +4545,10 @@ async def _yts_device_id_belongs_to_context(raw_device_id: Any, context: DeviceC
         f"adb:{context.adbDeviceId}" if context.adbDeviceId else "",
         f"dab:{context.dabDeviceId}" if context.dabDeviceId else "",
     }
-    if raw in {str(value or "").strip() for value in direct if str(value or "").strip()}:
+    direct_tokens: set[str] = set()
+    for value in direct:
+        direct_tokens.update(_yts_device_token_set(value))
+    if raw_tokens & direct_tokens:
         return True
     discovered = await _get_yts_discovery_for_context(context)
     if discovered:
@@ -4455,7 +4561,10 @@ async def _yts_device_id_belongs_to_context(raw_device_id: Any, context: DeviceC
             f"adb:{discovered.get('adb')}" if discovered.get("adb") else "",
             f"dab:{discovered.get('dab')}" if discovered.get("dab") else "",
         }
-        if raw in {str(value or "").strip() for value in values if str(value or "").strip()}:
+        discovered_tokens: set[str] = set()
+        for value in values:
+            discovered_tokens.update(_yts_device_token_set(value))
+        if raw_tokens & discovered_tokens:
             return True
     return False
 
@@ -4548,6 +4657,9 @@ async def _resolve_yts_runner_device_id(device_id: Optional[str]) -> str:
                     f"{active_context.displayName}."
                 ),
             )
+        explicit_transport_device_id = _preserve_explicit_yts_transport_device_id(raw_device_id)
+        if explicit_transport_device_id and await _yts_device_id_belongs_to_context(explicit_transport_device_id, active_context):
+            return explicit_transport_device_id
         validation = await _validate_active_yts_context_for_start(active_context)
         short_id = str(validation.get("ytsShortId") or "").strip()
         if short_id:
@@ -4635,10 +4747,22 @@ def _strip_terminal_ansi(text: str) -> str:
 
 def _parse_yts_prompt_option(text: str) -> Optional[str]:
     line = _strip_terminal_ansi(str(text or "")).strip()
-    match = re.match(r"^([1-9])\s*[:.)-]\s+.+$", line)
+    match = re.match(r"^([1-9])\s*[:.)-]\s+(.+)$", line)
     if match:
+        label = re.sub(r"\s+", " ", match.group(2)).strip().lower()
+        if not _is_yts_answer_option_label(label):
+            return None
         return match.group(1)
     return None
+
+
+def _is_yts_answer_option_label(label: str) -> bool:
+    normalized = re.sub(r"\s+", " ", str(label or "").strip().lower()).strip(" .")
+    if not normalized:
+        return False
+    if normalized in {"pass", "fail", "skip", "yes", "no", "true", "false", "ok", "okay", "continue", "retry", "done"}:
+        return True
+    return bool(re.fullmatch(r"(?:mark\s+)?(?:as\s+)?(?:pass|fail|skip|yes|no)", normalized))
 
 
 def _extract_yts_prompt_option_labels(text: str) -> Dict[str, str]:
@@ -4648,7 +4772,10 @@ def _extract_yts_prompt_option_labels(text: str) -> Dict[str, str]:
         match = re.match(r"^([1-9])\s*[:.)-]\s+(.+)$", line)
         if not match:
             continue
-        labels[match.group(1)] = re.sub(r"\s+", " ", match.group(2)).strip().lower()
+        label = re.sub(r"\s+", " ", match.group(2)).strip().lower()
+        if not _is_yts_answer_option_label(label):
+            continue
+        labels[match.group(1)] = label
     return labels
 
 
@@ -5008,6 +5135,39 @@ def _is_yts_playback_validation_prompt(prompt_text: str) -> bool:
         re.search(r"\b(video|playback|plays?|playing|aspect\s*ratio|bar\s+width|letterbox|pillarbox|frame)\b", lowered)
         and re.search(r"\b(pass|fail|correct|otherwise|validate|render|visible|shown)\b", lowered)
     )
+
+
+def _parse_yts_timecode_seconds(value: str) -> Optional[float]:
+    parts = [part for part in str(value or "").strip().split(":") if part != ""]
+    if not parts:
+        return None
+    try:
+        numbers = [float(part) for part in parts]
+    except ValueError:
+        return None
+    if len(numbers) == 1:
+        return numbers[0]
+    if len(numbers) == 2:
+        return numbers[0] * 60 + numbers[1]
+    if len(numbers) == 3:
+        return numbers[0] * 3600 + numbers[1] * 60 + numbers[2]
+    return None
+
+
+def _required_yts_playback_prompt_settle_seconds(prompt_text: str) -> float:
+    if not _is_yts_playback_validation_prompt(prompt_text):
+        return 0.0
+    required = max(0.0, _YTS_PLAYBACK_PROMPT_SETTLE_SECONDS)
+    text = str(prompt_text or "")
+    for match in re.finditer(r"\b(?:at|from|between|times?)\s+([0-9]+(?::[0-9]{1,2}){1,2})\s*(?:-|to|and)\s*([0-9]+(?::[0-9]{1,2}){1,2})", text, re.IGNORECASE):
+        end_seconds = _parse_yts_timecode_seconds(match.group(2))
+        if end_seconds is not None:
+            required = max(required, end_seconds + max(0.0, _YTS_PLAYBACK_TIMECODE_MARGIN_SECONDS))
+    for match in re.finditer(r"\b(?:at|around|after|by)\s+([0-9]+(?::[0-9]{1,2}){1,2})\b", text, re.IGNORECASE):
+        seconds = _parse_yts_timecode_seconds(match.group(1))
+        if seconds is not None:
+            required = max(required, seconds + max(0.0, _YTS_PLAYBACK_TIMECODE_MARGIN_SECONDS))
+    return min(required, 45.0)
 
 
 def _yts_prompt_age_seconds(prompt_entry: Dict[str, Any]) -> Optional[float]:
@@ -5497,11 +5657,13 @@ async def _extract_yts_runtime_expectation(
         return heuristic_extract_expectation(prompt_record, guided_test_context)
     extraction_prompt = build_expectation_extraction_prompt(prompt_record, guided_test_context, previous_memory)
     try:
+        logger.info("Gemini Agent: Extracting runtime expectation from Vertex AI for prompt hash %s...", prompt_record.get('prompt_hash'))
         response = await client.generate_content(
             extraction_prompt,
             session_id=f"yts-expectation-{prompt_record.get('prompt_hash')}",
         )
-        return extract_expectation_from_model_response(response, prompt_record)
+        logger.info("Gemini Agent: Received runtime expectation from Vertex AI.")
+        return extract_expectation_from_model_response(response, prompt_record, guided_test_context)
     except Exception as exc:
         logger.warning("Gemini expectation extraction failed for YTS prompt %s: %s", prompt_record.get("prompt_hash"), exc)
         return heuristic_extract_expectation(prompt_record, guided_test_context)
@@ -5528,7 +5690,8 @@ def _build_yts_runtime_decision_prompt(
             "evidence_summary must be one short line tied to the current YTS log prompt and the fresh TV frame. Do not write generic filler, long activity logs, or previous-prompt evidence.",
             "If the terminal expects numbered choices, selected_option must be one numeric option token. Return only one numeric option token in selected_option such as 1, 2, 3, or 4. Do not return yes or no as selected_option when numbered options exist.",
             "Core policy: never choose Pass/Yes by default. Pass/Yes requires positive proof from a frame captured after the current prompt timestamp. If the expected visual target and observed visual target differ, or if evidence is missing/weak/stale/contradictory, do not choose Pass/Yes.",
-            "Ad/interstitial rule: if the live frame or prompt-scoped visual evidence shows an ad, sponsored screen, promo, commercial break, Skip Ad button, countdown, or unrelated interstitial, do not choose Pass/Yes for render/playback/visual validation. Choose Fail/No when available.",
+            "Content match rule: The screen MUST display the exact specific content, test pattern, or video title required by the YTS test. If any other content is playing (like an advertisement, screensaver, or unrelated video), do not choose Pass/Yes.",
+            "Ad/interstitial rule: if the live frame or prompt-scoped visual evidence shows an ad, sponsored screen, promo, commercial break, Skip Ad button, countdown, or unrelated interstitial, do not choose Pass/Yes for render/playback/visual validation. Choose Fail/No when available. Do not pass tests based on content inside an advertisement. Ad content is never valid test evidence.",
             "YTS log binding rule: the active terminal context identifies the exact current prompt and expected asset/state. Validate only that current requirement; do not pass because a previous prompt, reference text, or unrelated on-screen content looked correct.",
             "Use Skip only for setup limitations, unavailable feed, unsupported device, or blocked execution. Otherwise choose Fail when the test is running but the required condition is not visible.",
             f"Runtime YTS prompt:\n{prompt_text}",
@@ -5685,6 +5848,7 @@ async def _capture_yts_visual_context(command_id: str, force_fresh: bool = False
         summary = f"Failed to capture TV visual context: {exc}"
 
     captured_at = _utc_now_iso()
+    logger.info("Camera Feed [%s]: %s", command_id, summary)
     visual_context = {
         "summary": summary,
         "source": source,
@@ -5892,7 +6056,7 @@ async def _refresh_yts_live_visual_monitor(command_id: str) -> Optional[Dict[str
                 _shared_ai_prompt_preamble(),
                 "Task: monitor Android TV guided validation state from the attached live TV frame.",
                 "Return strict JSON with keys: summary, detected_app_context, screen_type, video_playback_active, youtube_active, detected_text, playback_visible, player_controls_visible, settings_gear_visible, stats_for_nerds_visible, focus_target, confidence, requirement_seen, requirement_evidence, recommended_result, prompt_requirement_match.",
-                "Rules: use the attached live TV frame as source of truth; Do not rely on OCR or local text extraction; keep summary short and factual; classify whether the current frame is YouTube, launcher/home/system, another app, or unknown; if the YTS log describes a validation requirement and the frame satisfies it, set requirement_seen=true and recommended_result=pass; if it contradicts it, set recommended_result=fail; otherwise leave recommended_result empty.",
+                "Rules: use the attached live TV frame as source of truth; Do not rely on OCR or local text extraction; keep summary short and factual; classify whether the current frame is YouTube, launcher/home/system, another app, or unknown; if the YTS log describes a validation requirement and the frame satisfies it EXACTLY (meaning the correct specific video or asset is visible), set requirement_seen=true and recommended_result=pass; if it shows unrelated content (like an ad, screensaver, or wrong video), set recommended_result=fail; otherwise leave recommended_result empty. Ad content is never valid test evidence.",
                 f"YTS command: {state.get('command') or 'unknown'}",
                 f"Guided test metadata:\n{guided_test_context or '(none)'}",
                 f"Recent terminal logs:\n{log_text or '(no recent logs)'}",
@@ -6052,6 +6216,7 @@ async def _capture_fresh_prompt_visual_context(command_id: str, prompt_entry: Di
         visual_context = _bind_to_prompt(visual_context, is_fresh)
         latest = visual_context
         if is_fresh and str(visual_context.get("screenshot_b64") or "").strip():
+            logger.info("Camera Feed [%s]: Captured fresh frame after prompt timestamp.", command_id)
             return visual_context
         await asyncio.sleep(min(0.5, _YTS_INTERACTIVE_CAPTURE_DELAY_SECONDS))
     if latest:
@@ -6080,8 +6245,8 @@ async def _analyze_yts_prompt_frame(
             _shared_ai_prompt_preamble(),
             "Task: analyze only the attached fresh TV frame for the current YTS prompt.",
             "Return strict JSON with keys: summary, detected_app_context, screen_type, video_playback_active, youtube_active, observed_visual_target, expected_visual_target, target_match, prompt_requirement_match, requirement_seen, requirement_evidence, recommended_result, confidence, detected_text, ad_or_interstitial_visible, blocking_overlay_reason.",
-            "Source-of-truth rules: use only the attached frame for visual facts. Do not use previous visual history to identify the visible asset. If the frame shows a different target than expected, set target_match=false, prompt_requirement_match='mismatch', and recommended_result='fail'. If the frame is stale, unclear, blank, or not enough to identify the current expected target, do not recommend pass.",
-            "Ad/interstitial rule: if the frame shows an ad, sponsored screen, promo, commercial break, Skip Ad button, countdown, or unrelated interstitial, set ad_or_interstitial_visible=true, screen_type='ad_interstitial', requirement_seen=false, target_match=false, recommended_result='fail', and explain the ad signal in blocking_overlay_reason.",
+            "Source-of-truth rules: use only the attached frame for visual facts. Do not use previous visual history to identify the visible asset. You MUST identify the specific content or video currently playing. If the frame shows different content than the expected_visual_target (e.g. an advertisement, screensaver, or unrelated video), set target_match=false, prompt_requirement_match='mismatch', and recommended_result='fail'. If the frame is stale, unclear, blank, or not enough to identify the current expected target, do not recommend pass.",
+            "Ad/interstitial rule: inspect the whole frame, especially the bottom-left YouTube overlay and bottom-right countdown. If the frame shows Sponsored, Visit advertiser, an advertiser URL/domain, Skip Ad, an ad countdown, promo, commercial break, or unrelated brand footage, set ad_or_interstitial_visible=true, screen_type='ad_interstitial', requirement_seen=false, target_match=false, recommended_result='fail', and explain the exact ad signal in blocking_overlay_reason. Do not pass tests based on ad content.",
             f"prompt_id: {prompt_id}",
             f"prompt_sequence_id: {prompt_sequence_id}",
             f"prompt_timestamp: {prompt_timestamp or '(unknown)'}",
@@ -6091,11 +6256,13 @@ async def _analyze_yts_prompt_frame(
             f"Extracted expectation:\n{json.dumps(expectation, ensure_ascii=False)}",
         ]
     )
+    logger.info("Gemini Agent [%s]: Sending prompt to Vertex AI for frame analysis...", command_id)
     response = await client.generate_content(
         prompt,
         screenshot_b64=screenshot_b64,
         session_id=f"yts-prompt-frame-{command_id}-{prompt_sequence_id or prompt_id or 'unknown'}",
     )
+    logger.info("Gemini Agent [%s]: Received frame analysis response from Vertex AI.", command_id)
     parsed = _extract_json_object(str(response or ""))
     analysis = parsed if isinstance(parsed, dict) else {"summary": str(response or "").strip()}
     analysis["prompt_id"] = prompt_id
@@ -6128,7 +6295,8 @@ def _build_yts_fast_visual_decision_prompt(
             "If numbered choices exist, decision.selected_option must be exactly one numeric option token from the prompt.",
             "Freshness rule: use only the attached frame for visual facts. Do not use previous visual history to identify the visible target.",
             "Pass/Yes rule: choose Pass/Yes only when this fresh frame positively satisfies the extracted expectation. If expected_visual_target is present and observed_visual_target is different, unclear, or missing, do not choose Pass/Yes.",
-            "Ad/interstitial rule: if the attached frame shows an ad, sponsored screen, promo, commercial break, Skip Ad button, countdown, or unrelated interstitial, set analysis.ad_or_interstitial_visible=true and choose Fail/No for visual validation prompts.",
+            "Content match rule: The screen MUST display the exact specific content, test pattern, or video title required by the YTS test. If any other content is playing (like an advertisement, screensaver, or unrelated video), you MUST choose Fail/No and set target_match=false.",
+            "Ad/interstitial rule: inspect the whole frame, especially bottom-left YouTube overlay text and bottom-right countdown. If the attached frame shows Sponsored, Visit advertiser, an advertiser URL/domain, Skip Ad, an ad countdown, promo, commercial break, or unrelated brand footage, you MUST set analysis.ad_or_interstitial_visible=true and choose Fail/No. Ad content is never valid test evidence.",
             "YTS log binding rule: use the active terminal context to identify the exact current expected asset/state. Answer only this prompt, not earlier prompts or visible reference text from another test step.",
             "Otherwise choose Fail/No when available; choose Skip only for unavailable feed, unsupported setup, or blocked execution.",
             f"Prompt/frame binding:\n{json.dumps({'prompt_id': visual_context.get('prompt_id'), 'prompt_sequence_id': visual_context.get('prompt_sequence_id'), 'prompt_timestamp': visual_context.get('prompt_timestamp'), 'frame_timestamp': visual_context.get('captured_at'), 'fresh_after_prompt': visual_context.get('fresh_after_prompt')}, ensure_ascii=False)}",
@@ -6168,11 +6336,13 @@ async def _generate_yts_fast_visual_decision(
         setup_actions=setup_actions,
         visual_context=visual_context,
     )
+    logger.info("Gemini Agent [%s]: Sending prompt to Vertex AI for fast visual decision...", command_id)
     response = await client.generate_content(
         prompt,
         screenshot_b64=visual_context.get("screenshot_b64"),
         session_id=f"yts-fast-visual-{command_id}-{visual_context.get('prompt_sequence_id') or visual_context.get('prompt_id') or 'manual'}",
     )
+    logger.info("Gemini Agent [%s]: Received fast visual decision response from Vertex AI.", command_id)
     raw = str(response or "").strip()
     parsed = _extract_json_object(raw)
     if not isinstance(parsed, dict):
@@ -6212,6 +6382,57 @@ async def _generate_yts_fast_visual_decision(
     return analysis, decision if isinstance(decision, dict) else {}, raw
 
 
+def _yts_evidence_has_ad_or_interstitial(evidence: Dict[str, Any]) -> bool:
+    latest = dict(evidence.get("latest_observation") or {})
+    if bool(latest.get("ad_or_interstitial_visible")):
+        return True
+    for item in list(evidence.get("observations") or [])[-5:]:
+        if bool((item or {}).get("ad_or_interstitial_visible")):
+            return True
+    for item in list(evidence.get("negative_observations") or [])[-5:]:
+        if bool((item or {}).get("ad_or_interstitial_visible")):
+            return True
+    return False
+
+
+def _yts_prompt_still_waiting(command_id: str, prompt_id: Optional[int]) -> bool:
+    state = _get_yts_live_state(command_id) or {}
+    if state.get("status") not in {"starting", "running"}:
+        return False
+    if not state.get("awaiting_input"):
+        return False
+    pending = state.get("pending_prompt")
+    if prompt_id is None:
+        return isinstance(pending, dict) and not bool(pending.get("answered"))
+    return isinstance(pending, dict) and pending.get("id") == prompt_id and not bool(pending.get("answered"))
+
+
+def _bind_yts_visual_context_to_prompt(
+    visual_context: Dict[str, Any],
+    *,
+    prompt_id: Optional[int],
+    prompt_sequence_id: Optional[int],
+    prompt_timestamp: Optional[str],
+) -> Dict[str, Any]:
+    prompt_ts = str(prompt_timestamp or "").strip()
+    bound = dict(visual_context or {})
+    bound["prompt_id"] = prompt_id
+    bound["prompt_sequence_id"] = prompt_sequence_id
+    bound["prompt_timestamp"] = prompt_ts
+    captured_at = str(bound.get("captured_at") or "").strip()
+    bound["fresh_after_prompt"] = bool(captured_at and (not prompt_ts or captured_at > prompt_ts))
+    timeline = list(bound.get("timeline") or [])
+    if prompt_ts:
+        timeline = [
+            item
+            for item in timeline
+            if str((item or {}).get("captured_at") or (item or {}).get("timestamp") or "") > prompt_ts
+        ]
+    bound["timeline"] = timeline
+    bound["continuous_frame_count"] = len(timeline) or (1 if bound.get("screenshot_b64") else 0)
+    return bound
+
+
 async def _suggest_yts_prompt_response(
     command_id: str,
     prompt_text: str,
@@ -6246,6 +6467,7 @@ async def _suggest_yts_prompt_response(
             if skip_visual_validation
             else "Gemini is watching the TV stream and reading the terminal guide..."
         )
+        logger.info("Gemini Agent [%s]: %s", command_id, state["ai_status_message"])
         _persist_yts_live_state(state)
     interaction_started_at = time.monotonic()
 
@@ -6291,6 +6513,10 @@ async def _suggest_yts_prompt_response(
         if "gemini exception" in lowered_message:
             error = str(payload.get("error") or "").strip()
             return f"{prompt_label}No answer: Gemini error{': ' + error if error else ''}."
+        if "waiting for youtube ad" in lowered_message:
+            return f"{prompt_label}Waiting: YouTube ad/interstitial visible; rechecking live TV before answering."
+        if "youtube ad is still visible" in lowered_message:
+            return f"{prompt_label}No answer: YouTube ad/interstitial is still visible."
         return ""
 
     def _log_ai(message: str, payload: Optional[Dict[str, Any]] = None) -> None:
@@ -6333,7 +6559,13 @@ async def _suggest_yts_prompt_response(
         human_message = str(message or "")
         if details:
             human_message = f"{human_message} - {'; '.join(str(item) for item in details)}"
+            
+        logger.info("Gemini API [%s]: %s", command_id, human_message)
+        
         operator_message = _operator_ai_message(message, payload)
+        if operator_message:
+            logger.info("Gemini Action [%s]: %s", command_id, operator_message)
+            
         if not operator_message:
             return
         state.setdefault("logs", []).append(
@@ -6379,9 +6611,14 @@ async def _suggest_yts_prompt_response(
         state = _get_yts_live_state(command_id) or state
         ai_evidence = _persist_yts_ai_evidence_image(command_id, prompt_id, str(visual_context.get("screenshot_b64") or ""))
         client = get_vertex_text_client()
-        expectation = heuristic_extract_expectation(prompt_record, guided_test_context)
-        if skip_visual_validation:
-            expectation = await _extract_yts_runtime_expectation(client, prompt_record, guided_test_context, previous_memory)
+        expectation_context = "\n".join(
+            part
+            for part in [guided_test_context, active_test_log_text]
+            if str(part or "").strip()
+        )
+        expectation = heuristic_extract_expectation(prompt_record, expectation_context)
+        if client is not None:
+            expectation = await _extract_yts_runtime_expectation(client, prompt_record, expectation_context, previous_memory)
         visual_context["expected_visual_target"] = expectation.get("expected_visual_target") or ""
         fast_model_decision: Dict[str, Any] = {}
         fast_raw_suggestion = ""
@@ -6444,6 +6681,137 @@ async def _suggest_yts_prompt_response(
             },
         )
         evidence = build_visual_evidence(visual_context)
+        ad_wait_started = time.monotonic()
+        ad_wait_attempts = 0
+        ad_wait_timeout_enabled = _YTS_AD_CLEAR_WAIT_SECONDS > 0
+        while not skip_visual_validation and _yts_evidence_has_ad_or_interstitial(evidence):
+            if not _yts_prompt_still_waiting(command_id, prompt_id):
+                _log_ai(
+                    "Deferred AI response because YTS prompt closed while waiting for YouTube ad to clear",
+                    {
+                        "prompt_id": prompt_id,
+                        "prompt_sequence_id": prompt_sequence_id,
+                        "prompt_text": prompt_text,
+                        "visual_summary": evidence.get("summary"),
+                        "visual_source": evidence.get("source"),
+                        "missing_evidence": ["Prompt is no longer awaiting input."],
+                    },
+                )
+                return {
+                    "response": None,
+                    "source": "deferred-prompt-closed",
+                    "deferred_reason": "YTS prompt closed while Gemini was waiting for the ad/interstitial to clear.",
+                    "visual_summary": evidence.get("summary"),
+                    "visual_source": evidence.get("source"),
+                    "ai_evidence": ai_evidence,
+                    "setup_actions": setup_actions,
+                    "expectation": expectation,
+                    "decision": None,
+                    "missing_evidence": ["Prompt is no longer awaiting input."],
+                    "safety_blocked_pass": True,
+                }
+            if ad_wait_timeout_enabled and (time.monotonic() - ad_wait_started) >= _YTS_AD_CLEAR_WAIT_SECONDS:
+                _log_ai(
+                    "Deferred AI response because YouTube ad is still visible",
+                    {
+                        "prompt_id": prompt_id,
+                        "prompt_sequence_id": prompt_sequence_id,
+                        "prompt_text": prompt_text,
+                        "visual_summary": evidence.get("summary"),
+                        "visual_source": evidence.get("source"),
+                        "missing_evidence": ["Ad/interstitial remained visible until wait timeout."],
+                    },
+                )
+                return {
+                    "response": None,
+                    "source": "deferred-ad-visible",
+                    "deferred_reason": "YouTube ad/interstitial is still visible. Waiting instead of marking the YTS result.",
+                    "visual_summary": evidence.get("summary"),
+                    "visual_source": evidence.get("source"),
+                    "ai_evidence": ai_evidence,
+                    "setup_actions": setup_actions,
+                    "expectation": expectation,
+                    "decision": None,
+                    "missing_evidence": ["Ad/interstitial is still visible; actual test video was not available yet."],
+                    "safety_blocked_pass": True,
+                }
+            ad_wait_attempts += 1
+            latest_ad = dict(evidence.get("latest_observation") or {})
+            _log_ai(
+                "Waiting for YouTube ad to clear before answering YTS prompt",
+                {
+                    "prompt_id": prompt_id,
+                    "prompt_sequence_id": prompt_sequence_id,
+                    "prompt_text": prompt_text,
+                    "visual_summary": latest_ad.get("visual_summary") or evidence.get("summary"),
+                    "visual_source": evidence.get("source"),
+                    "frame_timestamp": latest_ad.get("timestamp"),
+                    "missing_evidence": ["Ad/interstitial visible; waiting for actual test video before answering."],
+                },
+            )
+            await asyncio.sleep(max(0.25, _YTS_AD_CLEAR_POLL_SECONDS))
+            with contextlib.suppress(Exception):
+                await _refresh_yts_live_visual_monitor(command_id)
+            visual_context = await _capture_yts_visual_context_compat(command_id, force_fresh=True)
+            visual_context = _bind_yts_visual_context_to_prompt(
+                visual_context,
+                prompt_id=prompt_id,
+                prompt_sequence_id=prompt_sequence_id,
+                prompt_timestamp=prompt_timestamp or visual_context.get("prompt_timestamp") or "",
+            )
+            visual_context["expected_visual_target"] = expectation.get("expected_visual_target") or ""
+            fast_model_decision = {}
+            fast_raw_suggestion = ""
+            if (
+                _YTS_GEMINI_FAST_VISUAL_DECISION
+                and client is not None
+                and str(visual_context.get("screenshot_b64") or "").strip()
+            ):
+                gemini_call_mode = "ad-wait-fast-visual-decision"
+                frame_analysis, fast_model_decision, fast_raw_suggestion = await _generate_yts_fast_visual_decision(
+                    client,
+                    command_id=command_id,
+                    prompt_text=prompt_text,
+                    prompt_record=prompt_record,
+                    expectation=expectation,
+                    recent_log_text=recent_log_text,
+                    active_test_log_text=active_test_log_text,
+                    guided_test_context=guided_test_context,
+                    setup_actions=setup_actions,
+                    visual_context=visual_context,
+                )
+                if frame_analysis:
+                    visual_context["analysis"] = frame_analysis
+                    visual_context["summary"] = str(frame_analysis.get("summary") or visual_context.get("summary") or "")
+            elif client is not None and str(visual_context.get("screenshot_b64") or "").strip():
+                gemini_call_mode = "ad-wait-frame-analysis-plus-decision"
+                frame_analysis = await _analyze_yts_prompt_frame(
+                    client,
+                    command_id=command_id,
+                    prompt_id=prompt_id,
+                    prompt_sequence_id=prompt_sequence_id,
+                    prompt_timestamp=str(prompt_timestamp or visual_context.get("prompt_timestamp") or ""),
+                    prompt_text=prompt_text,
+                    expectation=expectation,
+                    visual_context=visual_context,
+                )
+                if frame_analysis:
+                    visual_context["analysis"] = frame_analysis
+                    visual_context["summary"] = str(frame_analysis.get("summary") or visual_context.get("summary") or "")
+            evidence = build_visual_evidence(visual_context)
+
+        if ad_wait_attempts and not skip_visual_validation and not _yts_evidence_has_ad_or_interstitial(evidence):
+            _log_ai(
+                "YouTube ad cleared; resuming YTS prompt validation",
+                {
+                    "prompt_id": prompt_id,
+                    "prompt_sequence_id": prompt_sequence_id,
+                    "prompt_text": prompt_text,
+                    "visual_summary": evidence.get("summary"),
+                    "visual_source": evidence.get("source"),
+                    "frame_timestamp": (evidence.get("latest_observation") or {}).get("timestamp"),
+                },
+            )
         memory_store.start_run(
             command_id,
             test_name=str(prompt_record.get("test_title") or ""),
@@ -6531,11 +6899,13 @@ async def _suggest_yts_prompt_response(
                     previous_memory=previous_memory,
                     setup_actions=setup_actions,
                 )
+                logger.info("Gemini Agent [%s]: Sending prompt to Vertex AI for standard decision...", command_id)
                 response = await client.generate_content(
                     prompt,
                     screenshot_b64=visual_context.get("screenshot_b64"),
                     session_id=f"yts-live-{command_id}",
                 )
+                logger.info("Gemini Agent [%s]: Received standard decision response from Vertex AI.", command_id)
                 raw_suggestion = str(response or "").strip()
                 model_decision = _parse_yts_model_decision(raw_suggestion)
             if not model_decision:
@@ -6584,11 +6954,13 @@ async def _suggest_yts_prompt_response(
                     ]
                 )
                 with contextlib.suppress(Exception):
+                    logger.info("Gemini Agent [%s]: Pass blocked by safety gate. Sending correction prompt to Vertex AI...", command_id)
                     correction_response = await client.generate_content(
                         correction_prompt,
                         screenshot_b64=visual_context.get("screenshot_b64"),
                         session_id=f"yts-live-corrected-{command_id}",
                     )
+                    logger.info("Gemini Agent [%s]: Received corrected decision from Vertex AI.", command_id)
                     parsed_correction = _parse_yts_model_decision(correction_response)
                     if parsed_correction:
                         corrected_model_decision = parsed_correction
@@ -6606,6 +6978,28 @@ async def _suggest_yts_prompt_response(
             decision["selected_label"] = resolve_option_label(decision.get("selected_option"), expectation.get("allowed_answers") or [])
             decision["missing_evidence"] = normalize_missing_evidence(decision.get("missing_evidence"))
             final_suggestion = suggestion
+            latest_state = _get_yts_live_state(command_id) or {}
+            latest_pending = latest_state.get("pending_prompt") if isinstance(latest_state.get("pending_prompt"), dict) else None
+            if prompt_id is not None and (
+                latest_state.get("status") not in {"running", "starting"}
+                or not latest_state.get("awaiting_input")
+                or latest_pending is None
+                or latest_pending.get("id") != prompt_id
+                or latest_pending.get("answered")
+            ):
+                return {
+                    "response": None,
+                    "source": "deferred-prompt-closed",
+                    "deferred_reason": "YTS prompt/job closed before AI decision completed.",
+                    "visual_summary": visual_context.get("summary"),
+                    "visual_source": visual_context.get("source"),
+                    "ai_evidence": ai_evidence,
+                    "setup_actions": setup_actions,
+                    "expectation": expectation,
+                    "decision": None,
+                    "missing_evidence": ["Prompt closed before AI response could be sent."],
+                    "safety_blocked_pass": decision.get("safety_blocked_pass"),
+                }
             memory_store.record_decision(
                 run_id=command_id,
                 test_key=str(prompt_record.get("test_key") or prompt_record.get("prompt_hash")),
@@ -6736,15 +7130,21 @@ async def _append_yts_stream_output(command_id: str, stream_name: str, stream) -
             _persist_yts_live_state(state)
 
             prompt_age = _yts_prompt_age_seconds(prompt_entry)
+            required_playback_settle_seconds = _required_yts_playback_prompt_settle_seconds(str(prompt_entry.get("text") or ""))
             playback_prompt_settled = (
-                not _is_yts_playback_validation_prompt(str(prompt_entry.get("text") or ""))
+                required_playback_settle_seconds <= 0
                 or prompt_age is None
-                or prompt_age >= _YTS_PLAYBACK_PROMPT_SETTLE_SECONDS
+                or prompt_age >= required_playback_settle_seconds
             )
             prompt_ready = _prompt_ready_for_ai_response(prompt_entry)
             if state.get("interactive_ai") and prompt_ready and not playback_prompt_settled and not prompt_entry.get("answered") and not prompt_entry.get("ai_suggestion"):
-                remaining = _YTS_PLAYBACK_PROMPT_SETTLE_SECONDS - float(prompt_age or 0.0)
-                await asyncio.sleep(max(0.2, min(remaining, _YTS_PLAYBACK_PROMPT_SETTLE_SECONDS)))
+                remaining = required_playback_settle_seconds - float(prompt_age or 0.0)
+                state["ai_observing_tv"] = True
+                state["ai_status_message"] = (
+                    f"Gemini is waiting {max(0.0, remaining):.1f}s for the YTS playback checkpoint before answering..."
+                )
+                _persist_yts_live_state(state)
+                await asyncio.sleep(max(0.2, min(remaining, required_playback_settle_seconds)))
                 prompt_entry = (_get_yts_live_state(command_id) or state).get("pending_prompt") or prompt_entry
                 playback_prompt_settled = True
             if state.get("interactive_ai") and prompt_ready and playback_prompt_settled and not prompt_entry.get("answered") and not prompt_entry.get("ai_suggestion"):
@@ -8559,6 +8959,23 @@ async def dab_device_setting_values(device_id: Optional[str] = None, force: bool
             await _apply_selected_device_context(current_selected_device_id, persist=False)
 
 
+@app.get("/dab/device-current-settings", response_model=dict)
+async def dab_device_current_settings(device_id: Optional[str] = None, force: bool = False) -> dict:
+    """Backward-compatible current setting values endpoint used by the web and Android clients."""
+    values = await dab_device_setting_values(device_id=device_id, force=bool(force))
+    return {
+        "success": bool(values.get("success", True)),
+        "device_id": values.get("device_id"),
+        "last_updated": values.get("captured_at"),
+        "count": int(values.get("count") or 0),
+        "failed": int(values.get("failed") or 0),
+        "current_setting_values": list(values.get("values") or []),
+        "warning": values.get("warning"),
+        "source": values.get("source"),
+        "yts_check": values.get("yts_check") or {},
+    }
+
+
 @app.get("/dab/device-system-state", response_model=dict)
 async def dab_device_system_state(device_id: Optional[str] = None, refresh: bool = False) -> dict:
     """Read persisted per-device capability/status JSON; refresh only when explicitly requested."""
@@ -8606,6 +9023,12 @@ async def dab_device_system_state(device_id: Optional[str] = None, refresh: bool
     finally:
         if switched:
             await _apply_selected_device_context(current_selected_device_id, persist=False)
+
+
+@app.get("/dab/device-capability-status", response_model=dict)
+async def dab_device_capability_status(device_id: Optional[str] = None, refresh: bool = False) -> dict:
+    """Backward-compatible alias for the stored per-device system status JSON."""
+    return await dab_device_system_state(device_id=device_id, refresh=refresh)
 
 
 async def _refresh_device_system_state_snapshot_safe(device_id: Optional[str] = None) -> None:
@@ -8972,6 +9395,10 @@ async def yts_live_command(request: YtsCommandRequest) -> dict:
     yts_execution_device_id = str(validation.get("ytsShortId") or "").strip()
     if not yts_execution_device_id:
         yts_execution_device_id = await _require_yts_short_id_for_context(active_context)
+    explicit_request_device_id = str(request.device_id or "").strip()
+    explicit_transport_device_id = _preserve_explicit_yts_transport_device_id(explicit_request_device_id)
+    if explicit_transport_device_id and await _yts_device_id_belongs_to_context(explicit_transport_device_id, active_context):
+        yts_execution_device_id = explicit_transport_device_id
     request.device_id = yts_execution_device_id
     for option in list(request.global_options.keys()):
         normalized_option = str(option or "").strip().lower()
@@ -8982,7 +9409,7 @@ async def yts_live_command(request: YtsCommandRequest) -> dict:
                     status_code=400,
                     detail=f"YTS device_id={raw_option_device} is not mapped to active device context {active_context.displayName}.",
                 )
-            request.global_options[option] = yts_execution_device_id
+            request.global_options[option] = _preserve_explicit_yts_transport_device_id(raw_option_device) or yts_execution_device_id
 
     if str(request.command or "").strip().lower() == "test":
         params = list(request.params or [])
@@ -8993,7 +9420,7 @@ async def yts_live_command(request: YtsCommandRequest) -> dict:
                     status_code=400,
                     detail=f"YTS device_id={raw_test_device} is not mapped to active device context {active_context.displayName}.",
                 )
-            params[0] = yts_execution_device_id
+            params[0] = _preserve_explicit_yts_transport_device_id(raw_test_device) or yts_execution_device_id
         else:
             params = [yts_execution_device_id]
         request.params = params
@@ -9018,7 +9445,7 @@ async def yts_live_command(request: YtsCommandRequest) -> dict:
                         status_code=400,
                         detail=f"YTS device_id={raw_device} is not mapped to active device context {active_context.displayName}.",
                     )
-                params[0] = yts_execution_device_id
+                params[0] = _preserve_explicit_yts_transport_device_id(raw_device) or yts_execution_device_id
             else:
                 params = [yts_execution_device_id]
             request.params = params
@@ -10658,227 +11085,3 @@ async def planner_debug(request: PlannerDebugRequest) -> PlannerDebugResponse:
         used_live_capture=used_live_capture,
         capture_source=capture_source,
     )
-
-
-# ---------------------------------------------------------------------------
-# DAB operation discovery endpoints
-# ---------------------------------------------------------------------------
-
-@app.get("/dab/operations", response_model=dict)
-async def dab_operations() -> dict:
-    """Return supported DAB operations from device."""
-    resp = await get_dab_client().list_operations()
-    return {"success": resp.success, "result": resp.data}
-
-
-@app.get("/dab/keys", response_model=dict)
-async def dab_keys() -> dict:
-    """Return supported key list from device."""
-    resp = await get_dab_client().list_keys()
-    return {"success": resp.success, "result": resp.data}
-
-
-class TestRequest(BaseModel):
-    device: Optional[str] = None
-    test: str
-
-
-@app.get("/yts/discover")
-async def yts_discover():
-    """Run YTS discover command."""
-    result = subprocess.run(
-        _get_yts_command_prefix() + ['discover'],
-        capture_output=True,
-        text=True,
-        cwd=str(_get_yts_workspace_dir())
-    )
-    return {'output': result.stdout.strip(), 'error': result.stderr.strip()}
-
-
-@app.get("/yts/list")
-async def yts_list():
-    """Run YTS list command."""
-    result = subprocess.run(
-        _get_yts_command_prefix() + ['list'],
-        capture_output=True,
-        text=True,
-        cwd=str(_get_yts_workspace_dir())
-    )
-    return {'output': result.stdout.strip(), 'error': result.stderr.strip()}
-
-
-@app.post("/yts/test")
-async def yts_test(request: TestRequest) -> dict:
-    """Run YTS test command."""
-    resolved_test_device = await _resolve_yts_runner_device_id(request.device)
-    cmd = _get_yts_command_prefix() + ['test', resolved_test_device, request.test]
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        cwd=str(_get_yts_workspace_dir())
-    )
-    return {'output': result.stdout.strip(), 'error': result.stderr.strip(), 'device_id': resolved_test_device}
-
-
-@app.get("/dab/apps", response_model=dict)
-async def dab_apps() -> dict:
-    """Return installed/launchable application list from device."""
-    resp = await get_dab_client().list_apps()
-    return {"success": resp.success, "result": resp.data}
-
-
-@app.get("/dab/voices", response_model=dict)
-async def dab_voices() -> dict:
-    """Return supported voice list from device."""
-    resp = await get_dab_client().list_voices()
-    return {"success": resp.success, "result": resp.data}
-
-
-@app.post("/dab/device-system-state/refresh", response_model=dict)
-async def dab_device_system_state_refresh(device_id: Optional[str] = None) -> dict:
-    """Force-refresh and persist the current device system state snapshot JSON."""
-    return await dab_device_system_state(device_id=device_id, refresh=True)
-
-
-@app.get("/dab/device-capability-status", response_model=dict)
-async def dab_device_capability_status(device_id: Optional[str] = None, refresh: bool = False) -> dict:
-    """Alias endpoint returning normalized per-device DAB capability/status JSON."""
-    return await dab_device_system_state(device_id=device_id, refresh=bool(refresh))
-
-
-@app.get("/dab/device-capability-status/raw", response_model=dict)
-async def dab_device_capability_status_raw(device_id: Optional[str] = None) -> dict:
-    """Return raw stored JSON snapshot for debugging."""
-    resolved_device_id = str(_resolve_selected_device_id(device_id) or "").strip()
-    if not _is_valid_discovered_device_id(resolved_device_id):
-        raise HTTPException(status_code=400, detail="No selected device available")
-    snapshot_path = _device_system_state_path(resolved_device_id)
-    if not snapshot_path.exists():
-        return {"success": False, "device_id": resolved_device_id, "error": "snapshot not found", "json_file": str(snapshot_path), "raw": {}}
-    try:
-        raw = json.loads(snapshot_path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        return {"success": False, "device_id": resolved_device_id, "error": str(exc), "json_file": str(snapshot_path), "raw": {}}
-    return {"success": True, "device_id": resolved_device_id, "json_file": str(snapshot_path), "raw": raw if isinstance(raw, dict) else {}}
-
-
-@app.get("/dab/device-operations-grid", response_model=dict)
-async def dab_device_operations_grid(device_id: Optional[str] = None, refresh: bool = False) -> dict:
-    """Return operation rows with support enablement derived from operations/list."""
-    snapshot = await dab_device_system_state(device_id=device_id, refresh=bool(refresh))
-    rows = _build_operations_grid_rows(snapshot)
-    return {
-        "success": True,
-        "device_id": snapshot.get("device_id"),
-        "last_updated": snapshot.get("last_updated"),
-        "rows": rows,
-    }
-
-
-@app.get("/dab/device-current-settings", response_model=dict)
-async def dab_device_current_settings(device_id: Optional[str] = None, force: bool = False) -> dict:
-    """Return current setting values from system/settings/get using cache+single-flight protection."""
-    values = await dab_device_setting_values(device_id=device_id, force=bool(force))
-    return {
-        "success": bool(values.get("success", True)),
-        "device_id": values.get("device_id"),
-        "last_updated": values.get("captured_at"),
-        "count": int(values.get("count") or 0),
-        "failed": int(values.get("failed") or 0),
-        "current_setting_values": list(values.get("values") or []),
-        "warning": values.get("warning"),
-        "source": values.get("source"),
-        "yts_check": values.get("yts_check") or {},
-    }
-
-
-class DABExecuteRequest(BaseModel):
-    operation: str
-    payload: Dict[str, Any] = Field(default_factory=dict)
-    device_id: Optional[str] = None
-
-
-@app.post("/dab/execute-request", response_model=dict)
-async def dab_execute_request(request: DABExecuteRequest) -> dict:
-    """Execute a frontend-provided DAB operation through existing manual action routing."""
-    operation = str(request.operation or "").strip()
-    if not operation:
-        raise HTTPException(status_code=400, detail="operation is required")
-
-    operation_lower = operation.lower()
-    payload = dict(request.payload or {})
-
-    action = ""
-    params: Dict[str, Any] = {}
-    if operation_lower == "operations/list":
-        action = "OPERATIONS_LIST"
-    elif operation_lower == "applications/list":
-        action = "APPLICATIONS_LIST"
-    elif operation_lower in {"application/launch", "applications/launch"}:
-        action = "LAUNCH_APP"
-        content_value = payload.get("content")
-        if content_value is None:
-            content_value = payload.get("content_id")
-        if content_value is None:
-            content_value = payload.get("contentId")
-        params = {
-            "app_id": payload.get("app_id") or payload.get("appId"),
-            "content": content_value,
-            "parameters": payload.get("parameters"),
-        }
-    elif operation_lower == "applications/launch-with-content":
-        action = "LAUNCH_APP"
-        params = {
-            "app_id": payload.get("app_id") or payload.get("appId"),
-            "content": payload.get("content") or payload.get("content_id") or payload.get("contentId"),
-        }
-    elif operation_lower in {"applications/get-state", "application/get-state"}:
-        action = "GET_STATE"
-        if payload.get("app_id") or payload.get("appId"):
-            params = {"app_id": payload.get("app_id") or payload.get("appId")}
-    elif operation_lower in {"application/exit", "applications/exit"}:
-        action = "EXIT_APP"
-        if payload.get("app_id") or payload.get("appId"):
-            params = {"app_id": payload.get("app_id") or payload.get("appId")}
-    elif operation_lower in {"voice/list", "voices/list"}:
-        action = "VOICE_LIST"
-    elif operation_lower == "system/settings/list":
-        action = "SETTINGS_LIST"
-    elif operation_lower == "system/settings/get":
-        action = "GET_SETTING"
-        params = {"key": payload.get("key") or payload.get("settingKey") or payload.get("setting_key")}
-    elif operation_lower == "system/settings/set":
-        action = "SET_SETTING"
-        params = dict(payload)
-        if payload.get("settingKey") and payload.get("value") is not None:
-            params = {"key": payload.get("settingKey"), "value": payload.get("value")}
-    elif operation_lower == "input/key/list":
-        action = "KEY_LIST"
-    elif operation_lower in {"input/key/press", "input/key-press"}:
-        action = "KEY_PRESS_CODE"
-        params = {"key_code": payload.get("key_code") or payload.get("keyCode")}
-    elif operation_lower in {"input/long-key-press", "input/long-key/press"}:
-        action = "LONG_KEY_PRESS"
-        params = {
-            "key_code": payload.get("key_code") or payload.get("keyCode"),
-            "duration_ms": payload.get("duration_ms") or payload.get("durationMs") or 1500,
-        }
-    else:
-        raise HTTPException(status_code=400, detail=f"Unsupported operation mapping: {operation}")
-
-    manual = await manual_action(
-        ManualActionRequest(
-            action=action,
-            params=params,
-            device_id=request.device_id,
-        )
-    )
-    return {
-        "success": bool(manual.success),
-        "device_id": str(_resolve_selected_device_id(request.device_id) or ""),
-        "operation": operation,
-        "action": action,
-        "result": manual.result,
-        "error": manual.error,
-    }

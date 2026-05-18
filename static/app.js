@@ -70,11 +70,43 @@
   }
 
   async function api(path, method = 'GET', body = null) {
-    const response = await fetch(requestUrl(path), {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-      body: body ? JSON.stringify(body) : null,
-    });
+    const targetUrl = requestUrl(path);
+    let response;
+    try {
+      response = await fetch(targetUrl, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: body ? JSON.stringify(body) : null,
+      });
+    } catch (error) {
+      const origin = state.apiBase || window.location.origin;
+      if (!state.apiBase && window.location.hostname && window.location.port !== '8081') {
+        const fallbackOrigin = `${window.location.protocol}//${window.location.hostname}:8081`;
+        try {
+          const fallbackResponse = await fetch(`${fallbackOrigin}${path}`, {
+            method,
+            headers: { 'Content-Type': 'application/json' },
+            body: body ? JSON.stringify(body) : null,
+          });
+          if (fallbackResponse.ok) {
+            state.apiBase = fallbackOrigin;
+            localStorage.setItem(API_STORAGE_KEY, fallbackOrigin);
+            const summary = $('api-summary');
+            if (summary) summary.textContent = `API: ${fallbackOrigin}`;
+            return fallbackResponse.json();
+          }
+          response = fallbackResponse;
+        } catch (_) {}
+      }
+      let healthHint = '';
+      try {
+        const health = await fetch(`${origin}/health`, { cache: 'no-store' });
+        healthHint = health.ok ? ` Health is reachable at ${origin}/health.` : ` Health returned HTTP ${health.status} at ${origin}/health.`;
+      } catch (_) {
+        healthHint = ` Health is not reachable at ${origin}/health.`;
+      }
+      throw new Error(`Network error calling ${targetUrl || path}: ${error.message || error}.${healthHint} Set Controller API URL to http://<backend-ip>:8081 if this page is not served by the backend.`);
+    }
     if (!response.ok) {
       let detail = response.statusText;
       try {

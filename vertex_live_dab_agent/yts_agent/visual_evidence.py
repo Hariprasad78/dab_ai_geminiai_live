@@ -10,7 +10,8 @@ from vertex_live_dab_agent.yts_agent.utils import coerce_confidence
 _AD_SIGNAL_RE = re.compile(
     r"\bads?\b|\bad\s+\d+\s+of\s+\d+\b|\badvert(?:isement|ising)?\b|"
     r"\bcommercial\s+break\b|\bsponsored\b|\bsponsor\b|\bpromo(?:tion)?\b|"
-    r"\bskip\s+ads?\b|\bvisit\s+advertiser\b",
+    r"\bskip\s+ads?\b|\bvisit\s+advertiser\b|\bvideo\s+will\s+play\s+after\b|"
+    r"\bwww\.[a-z0-9.-]+\.[a-z]{2,}\b",
     re.IGNORECASE,
 )
 
@@ -92,6 +93,9 @@ def observation_from_event(event: Dict[str, Any]) -> Dict[str, Any]:
             screen_type,
             analysis.get("blocking_overlay_reason"),
             analysis.get("requirement_evidence"),
+            analysis.get("advertiser"),
+            analysis.get("sponsor_label"),
+            analysis.get("ad_countdown"),
         )
     )
     if ad_or_interstitial_visible:

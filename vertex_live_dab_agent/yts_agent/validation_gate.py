@@ -11,7 +11,8 @@ from vertex_live_dab_agent.yts_agent.utils import coerce_confidence, dedupe_stri
 _AD_SIGNAL_RE = re.compile(
     r"\bads?\b|\bad\s+\d+\s+of\s+\d+\b|\badvert(?:isement|ising)?\b|"
     r"\bcommercial\s+break\b|\bsponsored\b|\bsponsor\b|\bpromo(?:tion)?\b|"
-    r"\bskip\s+ads?\b|\bvisit\s+advertiser\b",
+    r"\bskip\s+ads?\b|\bvisit\s+advertiser\b|\bvideo\s+will\s+play\s+after\b|"
+    r"\bwww\.[a-z0-9.-]+\.[a-z]{2,}\b",
     re.IGNORECASE,
 )
 
@@ -79,6 +80,33 @@ def _target_matches(expected: str, observed: str) -> bool:
     return exp == obs or exp in obs or obs in exp
 
 
+def _missing_required_text_terms(expectation: Dict[str, Any], latest: Dict[str, Any]) -> List[str]:
+    descriptions = " ".join(
+        str(req.get("description") or "")
+        for req in expectation.get("visual_requirements") or []
+        if isinstance(req, dict)
+    )
+    required_terms = [
+        term.strip()
+        for term in re.findall(r"['\"]([^'\"]{2,80})['\"]", descriptions)
+        if term.strip()
+    ]
+    evidence_text = " ".join(
+        [
+            str(latest.get("detected_text") or ""),
+            str(latest.get("visual_summary") or ""),
+            str(latest.get("requirement_evidence") or ""),
+            str(latest.get("observed_visual_target") or ""),
+        ]
+    ).lower()
+    missing: List[str] = []
+    for term in required_terms:
+        normalized = re.sub(r"\s+", " ", term).strip().lower()
+        if normalized and normalized not in evidence_text:
+            missing.append(term)
+    return missing
+
+
 def validate_decision_gate(expectation: Dict[str, Any], evidence: Dict[str, Any], decision: Dict[str, Any], *, min_confidence: float = 0.70) -> Dict[str, Any]:
     selected = str(decision.get("selected_option") or "").strip()
     label = str(decision.get("selected_label") or _label_for_option(selected, expectation)).strip().lower()
@@ -123,7 +151,7 @@ def validate_decision_gate(expectation: Dict[str, Any], evidence: Dict[str, Any]
             ):
                 ad_detected = True
                 break
-    if visual_required and ad_detected:
+    if ad_detected:
         blocked = True
         missing.append("Live TV feed shows an ad, sponsored screen, or interstitial instead of the required YTS target.")
 
@@ -154,7 +182,7 @@ def validate_decision_gate(expectation: Dict[str, Any], evidence: Dict[str, Any]
             missing.append(f"Fresh frame did not identify the visible target for expected asset '{expected_target}'.")
         elif not target_match or prompt_match in {"mismatch", "no", "false", "different"}:
             blocked = True
-            missing.append(f"Expected asset '{expected_target}' did not match observed asset '{observed_target}'.")
+            missing.append(f"Content mismatch: Expected asset '{expected_target}' did not match observed asset '{observed_target}'.")
     elif isinstance(target_match_raw, bool):
         target_match = target_match_raw
     elif str(target_match_raw).strip().lower() in {"true", "yes", "match", "matched"}:
@@ -163,7 +191,7 @@ def validate_decision_gate(expectation: Dict[str, Any], evidence: Dict[str, Any]
         target_match = False
     if visual_required and (target_match is False or prompt_match in {"mismatch", "no", "false", "different"}):
         blocked = True
-        missing.append("Fresh frame does not match the current YTS prompt requirement.")
+        missing.append("Live TV feed shows the wrong content or does not match the prompt requirement.")
     if _requires_youtube(expectation):
         youtube_active = latest.get("youtube_active")
         if youtube_active is not True or "launcher" in current_context or "launcher" in screen_type or "system" in current_context:
@@ -173,6 +201,10 @@ def validate_decision_gate(expectation: Dict[str, Any], evidence: Dict[str, Any]
         blocked = True
         missing.append("Video playback is not positively verified as active in the live TV feed.")
     requirements = [req for req in expectation.get("visual_requirements") or [] if isinstance(req, dict) and req.get("evidence_required", True)]
+    missing_text_terms = _missing_required_text_terms(expectation, latest)
+    if visual_required and missing_text_terms:
+        blocked = True
+        missing.append(f"Required on-screen text was not verified: {', '.join(missing_text_terms)}.")
     positive_observations = [
         item for item in (evidence.get("positive_observations") or []) if not item.get("ad_or_interstitial_visible")
     ]

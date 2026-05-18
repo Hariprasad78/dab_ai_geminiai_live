@@ -16,6 +16,15 @@ def _normalize_text(value: str) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
+def _is_answer_option_label(label: str) -> bool:
+    normalized = _normalize_text(label).lower().strip(" .")
+    if not normalized:
+        return False
+    if normalized in {"pass", "fail", "skip", "yes", "no", "true", "false", "ok", "okay", "continue", "retry", "done"}:
+        return True
+    return bool(re.fullmatch(r"(?:mark\s+)?(?:as\s+)?(?:pass|fail|skip|yes|no)", normalized))
+
+
 def prompt_hash(prompt_text: str, options: Iterable[Any] | None = None) -> str:
     normalized_options = [_normalize_text(str(option)) for option in (options or []) if _normalize_text(str(option))]
     payload = _normalize_text(prompt_text) + "\n" + "\n".join(normalized_options)
@@ -30,7 +39,7 @@ def _option_labels_from_prompt(prompt_text: str) -> Dict[str, str]:
             continue
         option = match.group(1).strip()
         label = _normalize_text(match.group(2)).lower()
-        if option and label:
+        if option and label and _is_answer_option_label(label):
             labels[option] = label
     return labels
 
@@ -41,7 +50,8 @@ def _semantic_prompt_lines(prompt_text: str) -> List[str]:
         line = _normalize_text(raw_line)
         if not line or _NOISE_RE.search(line):
             continue
-        if _OPTION_RE.match(line):
+        option_match = _OPTION_RE.match(line)
+        if option_match and _is_answer_option_label(option_match.group(2)):
             continue
         lowered = line.lower()
         if any(

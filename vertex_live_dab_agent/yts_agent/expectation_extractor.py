@@ -77,7 +77,11 @@ def _extract_expected_visual_target(text: str) -> str:
     parenthetical = [item.strip() for item in re.findall(r"\(([^()]{2,160})\)", prompt) if item.strip()]
     if parenthetical:
         return parenthetical[-1]
-    quoted = [item.strip() for item in re.findall(r"['\"]([^'\"]{2,160})['\"]", prompt) if item.strip()]
+    quoted = [
+        item.strip()
+        for item in re.findall(r"['\"]([^'\"]{2,160})['\"]", prompt)
+        if item.strip() and item.strip().lower() not in {"pass", "fail", "skip", "yes", "no"}
+    ]
     if quoted:
         return quoted[-1]
     patterns = [
@@ -105,12 +109,13 @@ def heuristic_extract_expectation(prompt_record: Dict[str, Any], guided_context:
         not control_prompt
         and re.search(r"\b(playback|playing|video|player|pause|resume|seek|buffer)\b", combined.lower())
     )
+    requirement_source = combined if guided_context else prompt_text
     requirement_lines = [
         _compact(line)
-        for line in prompt_text.splitlines()
+        for line in requirement_source.splitlines()
         if _compact(line) and not re.match(r"^\s*(?:option\s*)?[0-9A-Za-z]+\s*[:.)-]", line, flags=re.I)
     ]
-    description = " ".join(requirement_lines[:6]) or _compact(prompt_text) or "Validate the current YTS guided prompt."
+    description = " ".join(requirement_lines[:12]) or _compact(prompt_text) or "Validate the current YTS guided prompt."
     expected_visual_target = _extract_expected_visual_target(prompt_text)
     return {
         "test_title": str(prompt_record.get("test_title") or "YTS guided prompt"),
@@ -130,6 +135,10 @@ def heuristic_extract_expectation(prompt_record: Dict[str, Any], guided_context:
             "launcher visible",
             "home screen visible",
             "wrong app",
+            "advertisement playing",
+            "sponsored content visible",
+            "visit advertiser visible",
+            "ad countdown visible",
             "no video playback",
             "unrelated screen",
             "required visual evidence missing",
@@ -140,9 +149,9 @@ def heuristic_extract_expectation(prompt_record: Dict[str, Any], guided_context:
     }
 
 
-def normalize_expectation(raw: Dict[str, Any], prompt_record: Dict[str, Any]) -> Dict[str, Any]:
+def normalize_expectation(raw: Dict[str, Any], prompt_record: Dict[str, Any], guided_context: str = "") -> Dict[str, Any]:
     expectation = dict(raw or {})
-    fallback = heuristic_extract_expectation(prompt_record)
+    fallback = heuristic_extract_expectation(prompt_record, guided_context)
     for key, value in fallback.items():
         if key not in expectation or expectation.get(key) in (None, "", []):
             expectation[key] = value
@@ -180,12 +189,12 @@ def normalize_expectation(raw: Dict[str, Any], prompt_record: Dict[str, Any]) ->
     return expectation
 
 
-def extract_expectation_from_model_response(response_text: str, prompt_record: Dict[str, Any]) -> Dict[str, Any]:
+def extract_expectation_from_model_response(response_text: str, prompt_record: Dict[str, Any], guided_context: str = "") -> Dict[str, Any]:
     parsed = _json_object(response_text)
     if parsed is None:
-        return heuristic_extract_expectation(prompt_record)
+        return heuristic_extract_expectation(prompt_record, guided_context)
     parsed["source"] = parsed.get("source") or "gemini"
-    return normalize_expectation(parsed, prompt_record)
+    return normalize_expectation(parsed, prompt_record, guided_context)
 
 
 def build_expectation_extraction_prompt(prompt_record: Dict[str, Any], guided_context: str, previous_memory: Dict[str, Any] | None = None) -> str:
@@ -195,8 +204,11 @@ def build_expectation_extraction_prompt(prompt_record: Dict[str, Any], guided_co
             "You are a test-agnostic YTS guided validation parser.",
             "Read the runtime YTS console prompt and extract what must be true before Pass is allowed.",
             "Do not hardcode test case names, app text, artwork names, or known YTS cases. Infer expectations only from the prompt, logs, and metadata.",
-            "Return strict JSON with keys: test_title, test_type, required_app_context, required_state, visual_requirements, negative_conditions, allowed_answers, minimum_evidence_policy.",
+            "Return strict JSON with keys: test_title, test_type, required_app_context, required_state, expected_visual_target, visual_requirements, negative_conditions, allowed_answers, minimum_evidence_policy.",
             "Use required_app_context='YouTube' when the prompt requires in-app YouTube playback or video evidence. Use 'unknown' only when the prompt gives no app requirement.",
+            "expected_visual_target MUST be the specific video title, test pattern, or asset name required by this test (e.g., '4:3 test video', 'SDR 60fps'). Do not leave it blank if the test involves a specific video.",
+            "Preserve every concrete visual requirement from the active YTS log, including quoted text that must be visible, named objects, and time windows like 0:06-0:10.",
+            "negative_conditions MUST include 'wrong video playing', 'advertisement playing', 'screensaver visible'.",
             "minimum_evidence_policy must say that Pass requires positive proof from the current live TV feed.",
             f"YTS prompt record:\n{json.dumps(prompt_record, ensure_ascii=False)}",
             f"Guided metadata/log context:\n{guided_context or '(none)'}",
