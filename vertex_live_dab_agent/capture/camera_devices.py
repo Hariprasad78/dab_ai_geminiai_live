@@ -85,6 +85,8 @@ def _normalize_video_source(value: str) -> str:
         return "hdmi-capture"
     if normalized in {"camera", "camera-capture", "webcam", "usb-camera"}:
         return "camera-capture"
+    if normalized in {"scrcpy", "adb", "android", "android-screen", "android-ui"}:
+        return "scrcpy"
     return "camera-capture"
 
 

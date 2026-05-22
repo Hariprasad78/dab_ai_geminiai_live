@@ -465,10 +465,145 @@ def _ffmpeg_rotation_filter(rotation_degrees: Optional[int]) -> Optional[str]:
     return None
 
 
+def _coerce_scrcpy_adb_device_id(value: Any) -> str:
+    """Normalize a configured/discovered ADB target for scrcpy capture."""
+    candidate = str(value or "").strip()
+    if not candidate:
+        return ""
+    if candidate.lower().startswith("adb:"):
+        candidate = candidate[4:].strip()
+    if not candidate:
+        return ""
+    if _is_ip_port(candidate) or candidate.lower().startswith("emulator-"):
+        return candidate
+    if _looks_like_ip(candidate):
+        return candidate if ":" in candidate else f"{candidate}:5555"
+    return candidate
+
+
+def _resolve_context_scrcpy_device_id(context) -> str:
+    """Return a cached/configured ADB serial to use for Android UI streaming."""
+    if context is None:
+        return ""
+    adb_value = _coerce_scrcpy_adb_device_id(getattr(context, "adbDeviceId", ""))
+    if adb_value:
+        return adb_value
+    discovered = _get_cached_yts_discovery_for_context(context)
+    if discovered:
+        for key in ("adb", "ip"):
+            adb_value = _coerce_scrcpy_adb_device_id(discovered.get(key))
+            if adb_value:
+                return adb_value
+    return ""
+
+
+def _dab_discovered_item_matches_context(item: Dict[str, Any], context: DeviceContext) -> bool:
+    raw = item.get("raw") if isinstance(item.get("raw"), dict) else item
+    values = {
+        item.get("device_id"),
+        item.get("label"),
+        raw.get("deviceId") if isinstance(raw, dict) else "",
+        raw.get("device_id") if isinstance(raw, dict) else "",
+        raw.get("id") if isinstance(raw, dict) else "",
+        raw.get("name") if isinstance(raw, dict) else "",
+        raw.get("label") if isinstance(raw, dict) else "",
+    }
+    context_values = {
+        context.contextId,
+        context.dabDeviceId,
+        context.ytsDeviceId,
+        context.displayName,
+    }
+    item_tokens: set[str] = set()
+    context_tokens: set[str] = set()
+    for value in values:
+        item_tokens.update(_yts_device_token_set(value))
+    for value in context_values:
+        context_tokens.update(_yts_device_token_set(value))
+    if item_tokens & context_tokens:
+        return True
+    label = str(item.get("label") or (raw.get("name") if isinstance(raw, dict) else "") or "").strip().lower()
+    compact_label = label.replace(" ", "").replace("-", "")
+    for value in context_values:
+        compact = str(value or "").strip().lower().replace(" ", "").replace("-", "")
+        if compact and compact in compact_label:
+            return True
+    return False
+
+
+def _scrcpy_adb_from_discovered_dab_item(item: Dict[str, Any]) -> str:
+    raw = item.get("raw") if isinstance(item.get("raw"), dict) else item
+    if not isinstance(raw, dict):
+        raw = {}
+    for key in (
+        "adbDeviceId",
+        "adb_device_id",
+        "adbSerial",
+        "adb_serial",
+        "adb",
+        "serial",
+        "ip",
+        "ipAddress",
+        "ip_address",
+        "host",
+    ):
+        adb_value = _coerce_scrcpy_adb_device_id(raw.get(key) or item.get(key))
+        if adb_value:
+            return adb_value
+    return ""
+
+
+async def _resolve_context_scrcpy_device_id_live(context: DeviceContext) -> str:
+    """Resolve ADB for a context from config, YTS discovery, or DAB discovery."""
+    adb_value = _resolve_context_scrcpy_device_id(context)
+    if adb_value:
+        return adb_value
+
+    discovered_yts = await _get_yts_discovery_for_context(context, max_age_seconds=0.0)
+    if discovered_yts:
+        for key in ("adb", "ip"):
+            adb_value = _coerce_scrcpy_adb_device_id(discovered_yts.get(key))
+            if adb_value:
+                return adb_value
+
+    devices, _warning = await _discover_dab_devices(max_age_seconds=0.0)
+    for item in devices:
+        if not isinstance(item, dict) or not _dab_discovered_item_matches_context(item, context):
+            continue
+        adb_value = _scrcpy_adb_from_discovered_dab_item(item)
+        if adb_value:
+            return adb_value
+    return ""
+
+
 def _resolve_active_capture_video_device() -> tuple[Optional[str], Dict[str, Any]]:
     capture = get_screen_capture()
     context = _active_device_context()
     if context is not None:
+        current = capture.capture_source_status(include_devices=False)
+        configured_source = str(current.get("configured_source") or "").strip()
+        if configured_source == "scrcpy":
+            adb_device_id = (
+                _resolve_context_scrcpy_device_id(context)
+                or str(current.get("selected_scrcpy_device") or current.get("scrcpy_device") or "").strip()
+            )
+            if not adb_device_id:
+                status = capture.capture_source_status(include_devices=False)
+                status["context_alignment_error"] = (
+                    f"ADB device mapping missing for selected Android context {context.displayName}."
+                )
+                return None, status
+            if str(current.get("selected_scrcpy_device") or "").strip() != adb_device_id:
+                capture.set_capture_preference(
+                    source="scrcpy",
+                    scrcpy_device=adb_device_id,
+                    preferred_kind="auto",
+                    persist=True,
+                )
+            capture.ensure_hdmi_session(force=False)
+            status = capture.capture_source_status(include_devices=False)
+            return str(status.get("scrcpy_device") or adb_device_id), status
+
         camera_path = resolve_context_camera_path(context)
         if not camera_path or not os.path.exists(camera_path):
             status = capture.capture_source_status(include_devices=False)
@@ -476,7 +611,6 @@ def _resolve_active_capture_video_device() -> tuple[Optional[str], Dict[str, Any
                 f"Video mapping missing for selected device {context.displayName}. Please configure camera_devices.json."
             )
             return None, status
-        current = capture.capture_source_status(include_devices=False)
         selected = str(current.get("selected_video_device") or "").strip()
         active = str(current.get("hdmi_device") or "").strip()
         if selected != camera_path or (active and active != camera_path):
@@ -503,6 +637,28 @@ def _align_capture_preference_to_active_context(*, include_devices: bool = False
     context = _active_device_context()
     if context is None:
         return capture.capture_source_status(include_devices=include_devices)
+    current = capture.capture_source_status(include_devices=False)
+    configured_source = str(current.get("configured_source") or "").strip()
+    if configured_source == "scrcpy":
+        adb_device_id = (
+            _resolve_context_scrcpy_device_id(context)
+            or str(current.get("selected_scrcpy_device") or current.get("scrcpy_device") or "").strip()
+        )
+        if not adb_device_id:
+            status = capture.capture_source_status(include_devices=include_devices)
+            status["context_alignment_error"] = (
+                f"ADB device mapping missing for selected Android context {context.displayName}."
+            )
+            return status
+        if str(current.get("selected_scrcpy_device") or "").strip() != adb_device_id:
+            capture.set_capture_preference(
+                source="scrcpy",
+                scrcpy_device=adb_device_id,
+                preferred_kind="auto",
+                persist=True,
+            )
+        return capture.capture_source_status(include_devices=include_devices)
+
     camera_path = resolve_context_camera_path(context)
     if not camera_path or not os.path.exists(camera_path):
         status = capture.capture_source_status(include_devices=include_devices)
@@ -511,7 +667,6 @@ def _align_capture_preference_to_active_context(*, include_devices: bool = False
         )
         return status
 
-    current = capture.capture_source_status(include_devices=False)
     selected = str(current.get("selected_video_device") or "").strip()
     active = str(current.get("hdmi_device") or "").strip()
     configured_source = str(current.get("configured_source") or "").strip()
@@ -9076,11 +9231,22 @@ async def capture_select(request: CaptureSelectRequest) -> CaptureSourceResponse
             context_camera_path = resolve_context_camera_path(context)
             requested_device = str(request.device or "").strip()
             requested_source = str(request.source or "").strip().lower()
-            if requested_device and requested_device != context_camera_path:
+            if requested_source in {"scrcpy", "adb", "android", "android-screen"}:
+                adb_device_id = await _resolve_context_scrcpy_device_id_live(context)
+                if not adb_device_id:
+                    raise ValueError(
+                        f"ADB device mapping missing for selected Android context {context.displayName}. "
+                        "Add adbDeviceId to camera_devices.json or make DAB/YTS discovery expose adb/ip."
+                    )
+                request.source = "scrcpy"
+                request.device = None
+                request.scrcpy_device = adb_device_id
+                request.preferred_kind = "auto"
+            elif requested_device and requested_device != context_camera_path:
                 raise ValueError(
                     f"Capture device {requested_device} is not mapped to active device context {context.displayName}."
                 )
-            if requested_source in {"camera", "camera-capture", "hdmi", "hdmi-capture", "capture-card", "auto", ""}:
+            elif requested_source in {"camera", "camera-capture", "hdmi", "hdmi-capture", "capture-card", "auto", ""}:
                 if not context_camera_path:
                     raise ValueError(
                         f"Video mapping missing for selected device {context.displayName}. Please configure camera_devices.json."
@@ -9093,6 +9259,7 @@ async def capture_select(request: CaptureSelectRequest) -> CaptureSourceResponse
         status = capture.set_capture_preference(
             source=request.source,
             device=request.device,
+            scrcpy_device=request.scrcpy_device,
             preferred_kind=request.preferred_kind,
             rotation_degrees=request.rotation_degrees,
             persist=bool(request.persist),
@@ -9366,6 +9533,145 @@ class YtsInteractiveResponseRequest(BaseModel):
 
 class YtsInteractiveSuggestRequest(BaseModel):
     send_response: bool = False
+
+
+class ScrcpyStreamStartRequest(BaseModel):
+    device_id: Optional[str] = None
+    persist: bool = True
+
+
+async def _resolve_scrcpy_target_context(raw_device_id: str) -> tuple[Optional[DeviceContext], str]:
+    raw = str(raw_device_id or "").strip()
+    if raw:
+        direct = find_device_context(raw)
+        if direct is not None:
+            return direct, await _resolve_context_scrcpy_device_id_live(direct)
+        active = _active_device_context()
+        if active is not None and await _yts_device_id_belongs_to_context(raw, active):
+            return active, await _resolve_context_scrcpy_device_id_live(active)
+        for context in load_device_contexts():
+            if await _yts_device_id_belongs_to_context(raw, context):
+                return context, await _resolve_context_scrcpy_device_id_live(context)
+        candidate = _coerce_scrcpy_adb_device_id(raw)
+        if candidate and (raw.lower().startswith("adb:") or _is_ip_port(candidate) or candidate.lower().startswith("emulator-")):
+            return None, candidate
+        devices, _warning = await _discover_dab_devices(max_age_seconds=0.0)
+        raw_tokens = _yts_device_token_set(raw)
+        for item in devices:
+            if not isinstance(item, dict):
+                continue
+            raw_item = item.get("raw") if isinstance(item.get("raw"), dict) else item
+            item_tokens: set[str] = set()
+            for value in (
+                item.get("device_id"),
+                item.get("label"),
+                raw_item.get("deviceId") if isinstance(raw_item, dict) else "",
+                raw_item.get("device_id") if isinstance(raw_item, dict) else "",
+                raw_item.get("id") if isinstance(raw_item, dict) else "",
+                raw_item.get("name") if isinstance(raw_item, dict) else "",
+                raw_item.get("label") if isinstance(raw_item, dict) else "",
+            ):
+                item_tokens.update(_yts_device_token_set(value))
+            if raw_tokens & item_tokens:
+                adb_value = _scrcpy_adb_from_discovered_dab_item(item)
+                if adb_value:
+                    return None, adb_value
+        return None, ""
+    context = _active_device_context()
+    return context, await _resolve_context_scrcpy_device_id_live(context) if context is not None else ""
+
+
+@app.get("/stream/scrcpy/devices", response_model=dict)
+async def stream_scrcpy_devices() -> dict:
+    """List Android UI streaming candidates from device contexts and YTS discover."""
+    devices: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def _add(device_id: str, label: str, source: str, context: Optional[DeviceContext] = None, raw: Optional[Dict[str, Any]] = None) -> None:
+        resolved = str(device_id or "").strip()
+        if not resolved or resolved in seen:
+            return
+        seen.add(resolved)
+        devices.append(
+            {
+                "device_id": resolved,
+                "label": label or resolved,
+                "source": source,
+                "contextId": context.contextId if context is not None else "",
+                "dabDeviceId": context.dabDeviceId if context is not None else "",
+                "ytsDeviceId": context.ytsDeviceId if context is not None else "",
+                "raw": raw or {},
+            }
+        )
+
+    for context in load_device_contexts():
+        adb_id = await _resolve_context_scrcpy_device_id_live(context)
+        if adb_id:
+            _add(adb_id, f"{context.displayName} ({adb_id})", "context", context)
+
+    with contextlib.suppress(Exception):
+        for item in await _get_yts_discovered_devices(max_age_seconds=30.0):
+            adb_id = str(item.get("adb") or "").strip()
+            if adb_id:
+                _add(adb_id, str(item.get("label") or adb_id), "yts-discover", None, item)
+
+    return {"success": True, "devices": devices}
+
+
+@app.post("/stream/scrcpy/start", response_model=dict)
+async def stream_scrcpy_start(request: ScrcpyStreamStartRequest) -> dict:
+    """Start Android device UI streaming through the shared live preview path."""
+    context, adb_device_id = await _resolve_scrcpy_target_context(str(request.device_id or ""))
+    if not adb_device_id:
+        requested = str(request.device_id or "").strip() or "selected device"
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"No ADB device id available for scrcpy streaming for {requested}. "
+                "Add adbDeviceId (for example 10.99.57.61:5555) to camera_devices.json, "
+                "or make DAB/YTS discovery return an adb/ip field for this device."
+            ),
+        )
+    if context is not None:
+        await _apply_selected_device_context(context.dabDeviceId, persist=bool(request.persist))
+    capture = get_screen_capture()
+    status = capture.set_capture_preference(
+        source="scrcpy",
+        scrcpy_device=adb_device_id,
+        preferred_kind="auto",
+        persist=bool(request.persist),
+    )
+    with contextlib.suppress(Exception):
+        await _live_av_stream_manager.stop()
+    with contextlib.suppress(Exception):
+        await _close_all_webrtc_peers()
+    capture.ensure_hdmi_session(force=True)
+    status = capture.capture_source_status(include_devices=False)
+    return {
+        "success": bool(status.get("hdmi_available")),
+        "device_id": adb_device_id,
+        "context": _context_payload(context, active=context is not None) if context is not None else None,
+        "status": status,
+        "stream_url": "/stream/hdmi",
+    }
+
+
+@app.post("/stream/scrcpy/stop", response_model=dict)
+async def stream_scrcpy_stop() -> dict:
+    """Leave scrcpy mode and restore the selected context camera/capture source."""
+    context = _active_device_context()
+    capture = get_screen_capture()
+    if context is not None and resolve_context_camera_path(context):
+        capture.set_capture_preference(
+            source=context.videoSource,
+            device=resolve_context_camera_path(context),
+            preferred_kind="hdmi" if context.videoSource == "hdmi-capture" else "camera",
+            persist=True,
+        )
+    else:
+        capture.set_capture_preference(source="auto", persist=True)
+    status = capture.capture_source_status(include_devices=False)
+    return {"success": True, "status": status}
 
 
 @app.post("/yts/command/live")

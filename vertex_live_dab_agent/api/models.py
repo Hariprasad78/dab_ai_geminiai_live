@@ -271,11 +271,15 @@ class CaptureSourceResponse(BaseModel):
     hdmi_configured: bool
     hdmi_available: bool
     hdmi_device: Optional[str] = None
-    hdmi_info: Dict[str, float] = Field(default_factory=dict)
+    hdmi_info: Dict[str, Any] = Field(default_factory=dict)
     hdmi_last_error: Optional[str] = None
     enable_hdmi_capture: bool = True
     enable_camera_capture: bool = True
+    enable_scrcpy_capture: bool = True
     selected_video_device: Optional[str] = None
+    selected_scrcpy_device: Optional[str] = None
+    scrcpy_available: bool = False
+    scrcpy_device: Optional[str] = None
     rotation_degrees: int = 0
     preferred_video_kind: str = "auto"
     effective_preferred_kind: str = "auto"
@@ -288,6 +292,7 @@ class CaptureSourceResponse(BaseModel):
 class CaptureSelectRequest(BaseModel):
     source: Optional[str] = None
     device: Optional[str] = None
+    scrcpy_device: Optional[str] = None
     preferred_kind: Optional[str] = None
     rotation_degrees: Optional[int] = None
     persist: bool = True
