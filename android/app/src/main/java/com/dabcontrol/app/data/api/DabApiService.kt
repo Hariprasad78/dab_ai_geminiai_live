@@ -66,6 +66,19 @@ interface DabApiService {
         @Body request: YtsPromptSuggestRequest
     ): Response<JsonObject>
 
+    @GET("yts/results/artifacts")
+    suspend fun ytsResultsArtifacts(
+        @Query("limit") limit: Int = 100
+    ): Response<List<YtsResultArtifactItemDto>>
+
+    @POST("yts/results/analyze")
+    suspend fun analyzeYtsResultArtifacts(
+        @Body request: YtsResultsAnalysisRequestDto
+    ): Response<JsonObject>
+
+    @GET("yts/results/analysis/{reportId}/txt")
+    suspend fun ytsResultsAnalysisTxt(@Path("reportId") reportId: String): Response<JsonObject>
+
     @GET("yts/tests")
     suspend fun ytsTests(
         @Query("guided") guided: Boolean = false

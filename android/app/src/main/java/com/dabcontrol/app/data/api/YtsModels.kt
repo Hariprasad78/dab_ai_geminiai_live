@@ -92,3 +92,24 @@ data class YtsLiveCommandStateDto(
     val video_recording_status: String? = null,
     val video_file_name: String? = null
 )
+
+@Serializable
+data class YtsResultArtifactItemDto(
+    val command_id: String,
+    val command: String? = null,
+    val status: String? = null,
+    val updated_at: String? = null,
+    val result_summary: JsonObject? = null,
+    val ref: String,
+    val type: String,
+    val label: String,
+    val available: Boolean
+)
+
+@Serializable
+data class YtsResultsAnalysisRequestDto(
+    val artifact_refs: List<String> = emptyList(),
+    val include_zip_base64: Boolean = true,
+    val analysis_model: String? = null,
+    val triage_level: String = "deep"
+)

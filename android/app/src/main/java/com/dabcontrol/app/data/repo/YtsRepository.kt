@@ -11,6 +11,8 @@ import com.dabcontrol.app.data.api.YtsLiveCommandSummaryDto
 import com.dabcontrol.app.data.api.YtsPromptResponseRequest
 import com.dabcontrol.app.data.api.YtsPromptSuggestRequest
 import com.dabcontrol.app.data.api.YtsTestCatalogItemDto
+import com.dabcontrol.app.data.api.YtsResultArtifactItemDto
+import com.dabcontrol.app.data.api.YtsResultsAnalysisRequestDto
 import com.dabcontrol.app.data.api.safeApiCall
 import com.dabcontrol.app.data.preferences.ApiSettingsStore
 import javax.inject.Inject
@@ -47,6 +49,14 @@ class YtsRepository @Inject constructor(
 
     suspend fun suggestPrompt(commandId: String, sendResponse: Boolean): ApiResult<JsonObject> {
         return safeApiCall { service().suggestYtsLiveCommand(commandId, YtsPromptSuggestRequest(send_response = sendResponse)) }
+    }
+
+    suspend fun fetchResultArtifacts(limit: Int = 100): ApiResult<List<YtsResultArtifactItemDto>> {
+        return safeApiCall { service().ytsResultsArtifacts(limit) }
+    }
+
+    suspend fun analyzeResultArtifacts(request: YtsResultsAnalysisRequestDto): ApiResult<JsonObject> {
+        return safeApiCall { service().analyzeYtsResultArtifacts(request) }
     }
 
     suspend fun fetchTests(guided: Boolean): ApiResult<List<YtsTestCatalogItemDto>> {

@@ -4,6 +4,7 @@ import com.dabcontrol.app.data.api.YtsLiveCommandStartResponseDto
 import com.dabcontrol.app.data.api.YtsLiveCommandStateDto
 import com.dabcontrol.app.data.api.YtsLiveCommandSummaryDto
 import com.dabcontrol.app.data.api.YtsTestCatalogItemDto
+import com.dabcontrol.app.data.api.YtsResultArtifactItemDto
 
 enum class YtsWorkspaceTab {
     CREATE_JOB,
@@ -21,6 +22,9 @@ data class YtsListUiState(
     val activeCommandId: String? = null,
     val commandTestCountHints: Map<String, Int> = emptyMap(),
     val activeCommand: YtsLiveCommandStateDto? = null,
+    val artifacts: List<YtsResultArtifactItemDto> = emptyList(),
+    val analysisReportText: String = "",
+    val analysisLoading: Boolean = false,
     val promptInput: String = "",
     val sessionStatus: String = "No active YTS session.",
     val remoteStatus: String = "Remote idle.",
