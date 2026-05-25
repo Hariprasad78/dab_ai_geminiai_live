@@ -17,6 +17,7 @@ import threading
 import time
 import glob
 import sys
+import zipfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 import uuid as uuidlib
@@ -83,7 +84,7 @@ from vertex_live_dab_agent.capture.hdmi_audio import (
 )
 from vertex_live_dab_agent.config import get_config
 from vertex_live_dab_agent.dab.client import DABClientBase, DABError, create_dab_client
-from vertex_live_dab_agent.dab.topics import KEY_MAP
+from vertex_live_dab_agent.dab.topics import KEY_MAP, format_topic
 from vertex_live_dab_agent.orchestrator.orchestrator import Orchestrator
 from vertex_live_dab_agent.orchestrator.run_state import RunState, RunStatus
 from vertex_live_dab_agent.planner.planner import Planner
@@ -256,6 +257,7 @@ _COMMON_VERTEX_MODELS: List[str] = [
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
 ]
+_YTS_RESULTS_ANALYSIS_MODEL = os.environ.get("YTS_RESULTS_ANALYSIS_MODEL", "gemini-3.1-pro-preview").strip() or "gemini-3.1-pro-preview"
 
 
 async def _is_manual_keypress_duplicate(
@@ -2784,6 +2786,14 @@ def _new_yts_live_state(command_id: str, interactive_ai: bool = False) -> Dict[s
         "returncode": None,
         "result_file_content": None,
         "result_file_name": None,
+        "collect_dab_logs": False,
+        "dab_log_collection_started": False,
+        "dab_log_collection_error": None,
+        "dab_log_zip_name": None,
+        "dab_log_zip_path": None,
+        "dab_log_summary_name": None,
+        "dab_log_summary_path": None,
+        "analysis_reports": [],
         "revalidation": [],
         "revalidated_at": None,
         "report_html_name": f"yts-report-{command_id}.html",
@@ -2831,6 +2841,8 @@ def _normalize_yts_live_state(state: Dict[str, Any]) -> Dict[str, Any]:
     normalized["report_html_path"] = str(normalized.get("report_html_path") or (artifacts_dir / normalized["report_html_name"]))
     normalized["report_pdf_name"] = str(normalized.get("report_pdf_name") or f"yts-report-{command_id}.pdf")
     normalized["report_pdf_path"] = str(normalized.get("report_pdf_path") or (artifacts_dir / normalized["report_pdf_name"]))
+    normalized["analysis_reports"] = list(normalized.get("analysis_reports") or [])
+    normalized["collect_dab_logs"] = bool(normalized.get("collect_dab_logs"))
     video_path_raw = normalized.get("video_file_path")
     video_path_text = str(video_path_raw or "").strip()
     if video_path_text.startswith("<coroutine object"):
@@ -4295,6 +4307,111 @@ def _compact_yts_result_summary(state: Dict[str, Any], *, max_len: int = 280) ->
     return summary[: max(40, max_len)].rstrip()
 
 
+def _safe_artifact_name(value: str, fallback: str) -> str:
+    name = re.sub(r"[^a-zA-Z0-9._-]+", "-", str(value or "").strip()).strip("-")
+    return name or fallback
+
+
+def _extract_base64_zip_from_payload(payload: Any) -> str:
+    if isinstance(payload, str):
+        return payload.strip()
+    if isinstance(payload, dict):
+        for key in ("zip", "zipBase64", "zip_base64", "logsZip", "logs_zip", "artifact", "data", "content", "file"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        result = payload.get("result")
+        if result is not payload:
+            nested = _extract_base64_zip_from_payload(result)
+            if nested:
+                return nested
+    return ""
+
+
+async def _send_dab_operation(device_id: str, operation: str, payload: Optional[Dict[str, Any]] = None, *, timeout_s: float = 8.0) -> Any:
+    resolved_device = str(device_id or _resolve_selected_device_id()).strip()
+    operation_name = str(operation or "").strip().strip("/")
+    if not resolved_device or not operation_name:
+        raise DABError("DAB device and operation are required")
+    await _ensure_selected_device_context(resolved_device, persist=False)
+    dab = get_dab_client()
+    if hasattr(dab, "_send_with_retry"):
+        topic_template = f"dab/{{device_id}}/{operation_name}"
+        return await dab._send_with_retry(  # type: ignore[attr-defined]
+            topic_template,
+            dict(payload or {}),
+            timeout_override=timeout_s,
+            max_retries_override=0,
+        )
+    req_id = str(uuid.uuid4())
+    return type(
+        "_DabUnsupportedResponse",
+        (),
+        {
+            "success": False,
+            "status": 501,
+            "data": {"error": "Generic DAB operation is unavailable for this client"},
+            "topic": format_topic(f"dab/{{device_id}}/{operation_name}", resolved_device),
+            "request_id": req_id,
+        },
+    )()
+
+
+async def _start_yts_dab_log_collection(command_id: str, state: Dict[str, Any]) -> None:
+    if not state.get("collect_dab_logs"):
+        return
+    device_id = str(state.get("dab_device_id") or _resolve_selected_device_id()).strip()
+    try:
+        resp = await _send_dab_operation(device_id, "system/logs/start-collection", {"commandId": command_id}, timeout_s=4.0)
+        state["dab_log_collection_started"] = bool(resp.success)
+        state["dab_log_collection_error"] = None if resp.success else str((resp.data or {}).get("error") or resp.data or "start log collection failed")
+        state["logs"].append({"stream": "system", "message": "DAB log collection started" if resp.success else f"DAB log collection start failed: {state['dab_log_collection_error']}"})
+    except Exception as exc:
+        state["dab_log_collection_started"] = False
+        state["dab_log_collection_error"] = str(exc)
+        state["logs"].append({"stream": "system", "message": f"DAB log collection start failed: {exc}"})
+    _persist_yts_live_state(state)
+
+
+async def _stop_yts_dab_log_collection(command_id: str, state: Dict[str, Any]) -> None:
+    if not state.get("collect_dab_logs"):
+        return
+    device_id = str(state.get("dab_device_id") or _resolve_selected_device_id()).strip()
+    artifacts_dir = Path(str(state.get("artifacts_dir") or _get_yts_live_artifacts_dir(command_id)))
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        resp = await _send_dab_operation(device_id, "system/logs/stop-collection", {"commandId": command_id}, timeout_s=20.0)
+        if not resp.success:
+            raise DABError(str((resp.data or {}).get("error") or resp.data or "stop log collection failed"))
+        zip_b64 = _extract_base64_zip_from_payload(resp.data)
+        if not zip_b64:
+            raise DABError("stop log collection response did not contain a base64 ZIP")
+        zip_bytes = base64.b64decode(zip_b64, validate=False)
+        zip_name = f"dab-log-collection-{command_id}.zip"
+        zip_path = artifacts_dir / zip_name
+        zip_path.write_bytes(zip_bytes)
+        state["dab_log_zip_name"] = zip_name
+        state["dab_log_zip_path"] = str(zip_path)
+        summary_lines = [f"DAB log collection artifact: {zip_name}", f"Size: {len(zip_bytes)} bytes"]
+        try:
+            with zipfile.ZipFile(zip_path) as zf:
+                names = zf.namelist()
+                summary_lines.append(f"Files: {len(names)}")
+                summary_lines.extend(f"- {name}" for name in names[:80])
+        except Exception as exc:
+            summary_lines.append(f"ZIP listing unavailable: {exc}")
+        summary_name = f"dab-log-summary-{command_id}.txt"
+        summary_path = artifacts_dir / summary_name
+        summary_path.write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
+        state["dab_log_summary_name"] = summary_name
+        state["dab_log_summary_path"] = str(summary_path)
+        state["logs"].append({"stream": "system", "message": f"DAB log collection saved: {zip_name}"})
+    except Exception as exc:
+        state["dab_log_collection_error"] = str(exc)
+        state["logs"].append({"stream": "system", "message": f"DAB log collection stop failed: {exc}"})
+    _persist_yts_live_state(state)
+
+
 def _summarize_yts_live_state(state: Dict[str, Any]) -> Dict[str, Any]:
     normalized = _normalize_yts_live_state(state)
     return {
@@ -4310,6 +4427,11 @@ def _summarize_yts_live_state(state: Dict[str, Any]) -> Dict[str, Any]:
         "result_file_name": normalized.get("result_file_name"),
         "report_html_name": normalized.get("report_html_name"),
         "report_pdf_name": normalized.get("report_pdf_name"),
+        "collect_dab_logs": normalized.get("collect_dab_logs"),
+        "dab_log_zip_name": normalized.get("dab_log_zip_name"),
+        "dab_log_summary_name": normalized.get("dab_log_summary_name"),
+        "dab_log_collection_error": normalized.get("dab_log_collection_error"),
+        "analysis_reports": normalized.get("analysis_reports") or [],
         "awaiting_input": normalized.get("awaiting_input"),
         "updated_at": normalized.get("updated_at"),
         "created_at": normalized.get("created_at"),
@@ -4319,6 +4441,236 @@ def _summarize_yts_live_state(state: Dict[str, Any]) -> Dict[str, Any]:
         "log_count": len(normalized.get("logs") or []),
         "response_count": len(normalized.get("responses") or []),
     }
+
+
+def _iter_yts_result_artifacts(limit: int = 100) -> List[Dict[str, Any]]:
+    states = _list_yts_live_states(limit=limit, active_only=False, cleanup_stale=False)
+    artifacts: List[Dict[str, Any]] = []
+    for item in states:
+        command_id = str(item.get("command_id") or "").strip()
+        if not command_id:
+            continue
+        base = {
+            "command_id": command_id,
+            "command": item.get("command"),
+            "status": item.get("status"),
+            "updated_at": item.get("updated_at"),
+            "result_summary": item.get("result_summary"),
+        }
+        artifacts.append({**base, "ref": f"{command_id}:terminal-log", "type": "terminal-log", "label": f"{command_id} terminal log", "available": True})
+        if item.get("result_file_name"):
+            artifacts.append({**base, "ref": f"{command_id}:result-json", "type": "result-json", "label": str(item.get("result_file_name")), "available": True})
+        if item.get("dab_log_zip_name"):
+            artifacts.append({**base, "ref": f"{command_id}:dab-log-zip", "type": "dab-log-zip", "label": str(item.get("dab_log_zip_name")), "available": True})
+        if item.get("dab_log_summary_name"):
+            artifacts.append({**base, "ref": f"{command_id}:dab-log-summary", "type": "dab-log-summary", "label": str(item.get("dab_log_summary_name")), "available": True})
+    return artifacts
+
+
+def _artifact_text_for_analysis(command_id: str, artifact_type: str, *, include_zip_base64: bool = True) -> tuple[str, str]:
+    state = _get_yts_live_state(command_id)
+    if not state:
+        return f"{command_id}:{artifact_type}", "Artifact missing: command not found."
+    label = f"{command_id}:{artifact_type}"
+    if artifact_type == "terminal-log":
+        return label, str(state.get("stdout") or "") + ("\n" if state.get("stdout") and state.get("stderr") else "") + str(state.get("stderr") or "")
+    if artifact_type == "result-json":
+        return str(state.get("result_file_name") or label), str(state.get("result_file_content") or "")
+    if artifact_type == "dab-log-summary":
+        path = Path(str(state.get("dab_log_summary_path") or ""))
+        if path.exists():
+            return str(state.get("dab_log_summary_name") or label), path.read_text(encoding="utf-8", errors="replace")
+        return label, "DAB log summary artifact is not available."
+    if artifact_type == "dab-log-zip":
+        path = Path(str(state.get("dab_log_zip_path") or ""))
+        if not path.exists():
+            return label, "DAB log ZIP artifact is not available."
+        parts = [f"DAB log ZIP: {path.name}", f"Size: {path.stat().st_size} bytes"]
+        try:
+            with zipfile.ZipFile(path) as zf:
+                names = zf.namelist()
+                parts.append(f"Files: {len(names)}")
+                for name in names[:30]:
+                    parts.append(f"- {name}")
+                    try:
+                        with zf.open(name) as fh:
+                            sample = fh.read(12000)
+                        decoded = sample.decode("utf-8", errors="replace").strip()
+                        if decoded:
+                            parts.append(decoded[:12000])
+                    except Exception:
+                        pass
+        except Exception as exc:
+            parts.append(f"ZIP read failed: {exc}")
+        if include_zip_base64:
+            zip_b64 = base64.b64encode(path.read_bytes()).decode("ascii")
+            parts.append("Base64 ZIP artifact:")
+            parts.append(zip_b64[:180000])
+            if len(zip_b64) > 180000:
+                parts.append(f"... truncated {len(zip_b64) - 180000} base64 characters ...")
+        return path.name, "\n".join(parts)
+    return label, "Unsupported artifact type."
+
+
+def _scan_result_failures_from_json_text(text: str) -> Dict[str, Any]:
+    summary = {"total_tests": 0, "failed_tests": 0, "failed_reasons": []}
+    try:
+        data = json.loads(text)
+    except Exception:
+        return summary
+
+    def _walk(value: Any) -> None:
+        if isinstance(value, dict):
+            status_blob = " ".join(str(value.get(k) or "") for k in ("status", "result", "outcome", "verdict")).lower()
+            has_test_marker = any(k in value for k in ("test_id", "testId", "name", "title", "case", "id"))
+            failed = bool(value.get("success") is False or any(token in status_blob for token in ("fail", "failed", "error")))
+            passed = bool(value.get("success") is True or any(token in status_blob for token in ("pass", "passed", "ok", "success")))
+            if has_test_marker and (failed or passed):
+                summary["total_tests"] += 1
+                if failed:
+                    summary["failed_tests"] += 1
+                    test_name = str(value.get("test_id") or value.get("testId") or value.get("name") or value.get("title") or value.get("id") or "unknown")
+                    reason = str(value.get("reason") or value.get("error") or value.get("message") or value.get("failure") or "No reason in JSON")
+                    summary["failed_reasons"].append(f"{test_name}: {reason}")
+            for child in value.values():
+                _walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                _walk(child)
+
+    _walk(data)
+    summary["failed_reasons"] = summary["failed_reasons"][:60]
+    return summary
+
+
+def _get_vertex_analysis_client(model_name: str) -> Optional[VertexPlannerClient]:
+    if not _vertex_planner_requested():
+        return None
+    c = get_config()
+    try:
+        project = _resolve_vertex_project(c.google_cloud_project)
+        try:
+            return VertexPlannerClient(
+                project=project,
+                location=c.google_cloud_location,
+                model=model_name,
+                api_key=str(getattr(c, "google_api_key", "") or "").strip() or None,
+            )
+        except TypeError:
+            return VertexPlannerClient(
+                project=project,
+                location=c.google_cloud_location,
+                model=model_name,
+            )
+    except Exception as exc:
+        logger.warning("Vertex analysis client unavailable for YTS result triage: %s", exc)
+        return None
+
+
+async def _create_yts_results_analysis(
+    artifact_refs: List[str],
+    *,
+    include_zip_base64: bool = True,
+    analysis_model: Optional[str] = None,
+    triage_level: str = "deep",
+) -> Dict[str, Any]:
+    cleaned_refs = [str(ref or "").strip() for ref in artifact_refs if str(ref or "").strip()]
+    if not cleaned_refs:
+        raise HTTPException(status_code=400, detail="Select at least one YTS result artifact.")
+    sections: List[str] = []
+    heuristic = {"total_tests": 0, "failed_tests": 0, "failed_reasons": []}
+    command_ids: List[str] = []
+    for ref in cleaned_refs:
+        command_id, _, artifact_type = ref.partition(":")
+        command_id = command_id.strip()
+        artifact_type = artifact_type.strip()
+        if not command_id or not artifact_type:
+            continue
+        if command_id not in command_ids:
+            command_ids.append(command_id)
+        label, text = _artifact_text_for_analysis(command_id, artifact_type, include_zip_base64=include_zip_base64)
+        if artifact_type == "result-json":
+            part = _scan_result_failures_from_json_text(text)
+            heuristic["total_tests"] += int(part.get("total_tests") or 0)
+            heuristic["failed_tests"] += int(part.get("failed_tests") or 0)
+            heuristic["failed_reasons"].extend(list(part.get("failed_reasons") or []))
+        sections.append(f"===== {label} =====\n{text[:220000]}")
+
+    requested_model = str(analysis_model or _YTS_RESULTS_ANALYSIS_MODEL).strip() or _YTS_RESULTS_ANALYSIS_MODEL
+    requested_triage = str(triage_level or "deep").strip().lower() or "deep"
+    prompt = (
+        "Analyze these YTS execution artifacts as a senior QA triage lead. You are given YTS console output, result JSON, and DAB device log ZIP content/base64 when selected.\n"
+        f"Use triage depth: {requested_triage}. For deep triage, correlate terminal output, structured result JSON, DAB logs, timings, device state, and repeated failure patterns before concluding.\n"
+        "Prioritize root cause analysis over generic summaries. Separate direct evidence from inference, and call out missing evidence clearly.\n"
+        "Return a detailed test execution analysis with:\n"
+        "1. Overall result summary\n"
+        "2. Total tests found\n"
+        "3. Failed tests count\n"
+        "4. Failed test names and failure reasons\n"
+        "5. Root-cause hypotheses ranked by likelihood\n"
+        "6. DAB/device log observations relevant to failures\n"
+        "7. Evidence gaps and what artifact would close each gap\n"
+        "8. Actionable next debugging steps\n\n"
+        f"Heuristic pre-scan: total_tests={heuristic['total_tests']} failed_tests={heuristic['failed_tests']} failed_reasons={json.dumps(heuristic['failed_reasons'][:40], ensure_ascii=False)}\n\n"
+        + "\n\n".join(sections)
+    )
+    client = _get_vertex_analysis_client(requested_model) or get_vertex_text_client()
+    if client is not None:
+        try:
+            model_text = await client.generate_content(prompt, session_id=f"yts-results-analysis-{uuid.uuid4()}")
+        except Exception as exc:
+            model_text = f"Gemini analysis failed: {exc}\n\nHeuristic summary will be used."
+    else:
+        model_text = "Gemini client unavailable; heuristic summary only."
+
+    report_id = str(uuid.uuid4())
+    analysis_dir = _artifacts_root_path() / "yts_result_analysis"
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+    txt_path = analysis_dir / f"yts-result-analysis-{report_id}.txt"
+    pdf_path = analysis_dir / f"yts-result-analysis-{report_id}.pdf"
+    lines = [
+        "YTS Results Gemini Analysis",
+        f"Report ID: {report_id}",
+        f"Created: {_utc_now_iso()}",
+        f"Analysis model: {requested_model}",
+        f"Triage level: {requested_triage}",
+        f"Artifacts: {', '.join(cleaned_refs)}",
+        "",
+        "Result Summary",
+        f"Total tests found: {heuristic['total_tests']}",
+        f"Failed tests count: {heuristic['failed_tests']}",
+        "",
+        "Failed tests / reasons",
+        *(heuristic["failed_reasons"][:80] or ["No failed test reasons found by heuristic scan."]),
+        "",
+        "Gemini Analysis",
+        model_text.strip(),
+    ]
+    txt_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    pdf_path.write_bytes(_generate_minimal_pdf_bytes(lines))
+    report_meta = {
+        "report_id": report_id,
+        "txt_name": txt_path.name,
+        "pdf_name": pdf_path.name,
+        "txt_path": str(txt_path),
+        "pdf_path": str(pdf_path),
+        "artifact_refs": cleaned_refs,
+        "created_at": _utc_now_iso(),
+        "summary": model_text.strip()[:1200],
+        "analysis_model": requested_model,
+        "triage_level": requested_triage,
+        "total_tests": heuristic["total_tests"],
+        "failed_tests": heuristic["failed_tests"],
+        "failed_reasons": heuristic["failed_reasons"][:80],
+    }
+    for command_id in command_ids:
+        state = _get_yts_live_state(command_id)
+        if state is not None:
+            reports = list(state.get("analysis_reports") or [])
+            reports.insert(0, report_meta)
+            state["analysis_reports"] = reports[:20]
+            _persist_yts_live_state(state)
+    return report_meta
 
 
 def _list_yts_live_states(limit: int = 10, active_only: bool = False, *, cleanup_stale: bool = True) -> List[Dict[str, Any]]:
@@ -7409,6 +7761,7 @@ async def _run_yts_command_live(command_id: str, request: "YtsCommandRequest") -
         if state.get("record_audio"):
             state["audio_recording_status"] = "pending"
     _persist_yts_live_state(state)
+    await _start_yts_dab_log_collection(command_id, state)
 
     recording_started = False
     if state.get("record_video"):
@@ -7436,6 +7789,7 @@ async def _run_yts_command_live(command_id: str, request: "YtsCommandRequest") -
                 state["video_recording_status"] = "stopped"
             if state.get("record_audio") and state.get("audio_recording_status") == "recording":
                 state["audio_recording_status"] = "stopped"
+        await _stop_yts_dab_log_collection(command_id, state)
         await asyncio.to_thread(_write_yts_terminal_log_artifact, state)
         await asyncio.to_thread(_generate_yts_html_report_artifact, state)
         await asyncio.to_thread(_generate_yts_pdf_report_artifact, state)
@@ -7489,6 +7843,7 @@ async def _run_yts_command_live(command_id: str, request: "YtsCommandRequest") -
                 state["video_recording_status"] = "stopped"
                 if state.get("record_audio") and state.get("audio_recording_status") == "recording":
                     state["audio_recording_status"] = "stopped"
+        await _stop_yts_dab_log_collection(command_id, state)
         await _run_yts_post_revalidation(state)
         await asyncio.to_thread(_write_yts_terminal_log_artifact, state)
         await asyncio.to_thread(_generate_yts_html_report_artifact, state)
@@ -7516,6 +7871,7 @@ async def _run_yts_command_live(command_id: str, request: "YtsCommandRequest") -
                 state["video_recording_status"] = "stopped"
                 if state.get("record_audio") and state.get("audio_recording_status") == "recording":
                     state["audio_recording_status"] = "stopped"
+        await _stop_yts_dab_log_collection(command_id, state)
         await asyncio.to_thread(_write_yts_terminal_log_artifact, state)
         await asyncio.to_thread(_generate_yts_html_report_artifact, state)
         await asyncio.to_thread(_generate_yts_pdf_report_artifact, state)
@@ -9561,6 +9917,7 @@ class YtsCommandRequest(BaseModel):
     interactive_ai: bool = False
     record_video: bool = False
     record_audio: bool = True
+    collect_dab_logs: bool = False
     device_id: Optional[str] = None
 
 
@@ -9571,6 +9928,13 @@ class YtsInteractiveResponseRequest(BaseModel):
 
 class YtsInteractiveSuggestRequest(BaseModel):
     send_response: bool = False
+
+
+class YtsResultsAnalysisRequest(BaseModel):
+    artifact_refs: List[str] = []
+    include_zip_base64: bool = True
+    analysis_model: Optional[str] = None
+    triage_level: str = "deep"
 
 
 class ScrcpyStreamStartRequest(BaseModel):
@@ -9807,6 +10171,7 @@ async def yts_live_command(request: YtsCommandRequest) -> dict:
     state["device_context_validation"] = validation
     state["record_video"] = bool(request.record_video)
     state["record_audio"] = bool(request.record_video and request.record_audio)
+    state["collect_dab_logs"] = bool(request.collect_dab_logs)
     state["video_recording_status"] = "pending" if request.record_video else "disabled"
     state["audio_recording_status"] = "pending" if bool(request.record_video and request.record_audio) else "disabled"
     if str(request.command or "").strip().lower() == "test":
@@ -9850,6 +10215,39 @@ async def list_yts_live_commands(limit: int = 10, active_only: bool = False) -> 
     return await asyncio.to_thread(_list_yts_live_states, limit, active_only)
 
 
+@app.get("/yts/results/artifacts")
+async def list_yts_result_artifacts(limit: int = 100) -> List[dict]:
+    return await asyncio.to_thread(_iter_yts_result_artifacts, limit)
+
+
+@app.post("/yts/results/analyze")
+async def analyze_yts_result_artifacts(request: YtsResultsAnalysisRequest) -> dict:
+    return await _create_yts_results_analysis(
+        request.artifact_refs,
+        include_zip_base64=bool(request.include_zip_base64),
+        analysis_model=request.analysis_model,
+        triage_level=request.triage_level,
+    )
+
+
+@app.get("/yts/results/analysis/{report_id}/txt")
+async def download_yts_result_analysis_txt(report_id: str) -> FileResponse:
+    safe_id = _safe_artifact_name(report_id, "analysis")
+    path = _artifacts_root_path() / "yts_result_analysis" / f"yts-result-analysis-{safe_id}.txt"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Analysis text report not found")
+    return FileResponse(str(path), media_type="text/plain", filename=path.name)
+
+
+@app.get("/yts/results/analysis/{report_id}/pdf")
+async def download_yts_result_analysis_pdf(report_id: str) -> FileResponse:
+    safe_id = _safe_artifact_name(report_id, "analysis")
+    path = _artifacts_root_path() / "yts_result_analysis" / f"yts-result-analysis-{safe_id}.pdf"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Analysis PDF report not found")
+    return FileResponse(str(path), media_type="application/pdf", filename=path.name)
+
+
 @app.get("/yts/command/live/{command_id}/terminal-log")
 async def download_yts_terminal_log(command_id: str) -> FileResponse:
     state = _get_yts_live_state(command_id)
@@ -9871,6 +10269,30 @@ async def download_yts_video_recording(command_id: str) -> FileResponse:
     if path is None or not path.exists():
         raise HTTPException(status_code=404, detail="Recorded video not available")
     return FileResponse(str(path), media_type="video/mp4", filename=path.name)
+
+
+@app.get("/yts/command/live/{command_id}/dab-log")
+async def download_yts_dab_log_zip(command_id: str) -> FileResponse:
+    state = _get_yts_live_state(command_id)
+    if not state:
+        raise HTTPException(status_code=404, detail=f"YTS command {command_id!r} not found")
+    path_raw = state.get("dab_log_zip_path")
+    path = Path(str(path_raw)) if path_raw else None
+    if path is None or not path.exists():
+        raise HTTPException(status_code=404, detail="DAB log ZIP not available")
+    return FileResponse(str(path), media_type="application/zip", filename=path.name)
+
+
+@app.get("/yts/command/live/{command_id}/dab-log-summary")
+async def download_yts_dab_log_summary(command_id: str) -> FileResponse:
+    state = _get_yts_live_state(command_id)
+    if not state:
+        raise HTTPException(status_code=404, detail=f"YTS command {command_id!r} not found")
+    path_raw = state.get("dab_log_summary_path")
+    path = Path(str(path_raw)) if path_raw else None
+    if path is None or not path.exists():
+        raise HTTPException(status_code=404, detail="DAB log summary not available")
+    return FileResponse(str(path), media_type="text/plain", filename=path.name)
 
 
 @app.get("/yts/command/live/{command_id}/report-html")

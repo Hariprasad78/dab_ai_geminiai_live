@@ -659,7 +659,24 @@
     .yts-panel.active { display: block; }
     .yts-panel h3 { font-size: 1.1rem; font-weight: 600; margin-bottom: 0.5rem; color: #f1f5f9; }
     .yts-panel .description { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1.25rem; }
-    .yts-result-box { margin-top:1rem; background:#111113; border:1px solid #3f3f46; border-radius:0.5rem; padding:0.75rem; font-family:monospace; font-size:0.8rem; color:#b0b0b5; white-space:pre-wrap; max-height:280px; overflow-y:auto; min-height:60px; }
+    .yts-result-box {
+      margin-top:1rem;
+      max-width:100%;
+      min-width:0;
+      background:#111113;
+      border:1px solid #3f3f46;
+      border-radius:0.5rem;
+      padding:0.75rem;
+      font-family:monospace;
+      font-size:0.8rem;
+      color:#b0b0b5;
+      white-space:pre-wrap;
+      overflow:auto;
+      overflow-wrap:anywhere;
+      word-break:break-word;
+      max-height:280px;
+      min-height:60px;
+    }
     .yts-runner-grid { display:grid; grid-template-columns:1fr 1fr; gap:0.75rem; }
     .yts-chip-list { display:flex; flex-wrap:wrap; gap:0.5rem; min-height:2.5rem; padding:0.75rem; border:1px solid #3f3f46; border-radius:0.5rem; background:#111113; }
     .yts-chip { display:inline-flex; align-items:center; gap:0.45rem; border:1px solid #71717a; background:rgba(113,113,122,0.16); color:#f4f4f5; border-radius:999px; padding:0.3rem 0.65rem; font-size:0.78rem; }
@@ -858,8 +875,8 @@
     .yts-prompt-box { margin-top:0.75rem; padding:0.75rem; border:1px solid #3f3f46; border-radius:0.5rem; background:#18181b; }
     .yts-prompt-actions { display:flex; gap:0.5rem; flex-wrap:wrap; margin-top:0.75rem; }
     .yts-prompt-chip { background:#27272a; color:#e4e4e7; border:1px solid #3f3f46; border-radius:999px; padding:0.25rem 0.6rem; font-size:0.78rem; }
-    .yts-runner-layout { display:grid; grid-template-columns: 1.4fr 0.8fr; gap:1rem; }
-    .yts-runner-panel { background:linear-gradient(180deg, rgba(24, 24, 27, 0.92), rgba(14, 14, 16, 0.95)); border:1px solid rgba(255, 255, 255, 0.1); border-radius:1rem; padding:0.95rem; }
+    .yts-runner-layout { display:grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 0.8fr); gap:1rem; }
+    .yts-runner-panel { min-width:0; background:linear-gradient(180deg, rgba(24, 24, 27, 0.92), rgba(14, 14, 16, 0.95)); border:1px solid rgba(255, 255, 255, 0.1); border-radius:1rem; padding:0.95rem; }
     .yts-runner-panel h3 { font-size:0.95rem; color:#e2e8f0; margin-bottom:0.6rem; }
     .yts-job-list { display:flex; flex-direction:column; gap:0.55rem; max-height:720px; overflow-y:auto; }
     .yts-job-item { background:linear-gradient(180deg, rgba(24, 24, 27, 0.95), rgba(15, 15, 17, 0.95)); border:1px solid rgba(255, 255, 255, 0.1); border-radius:0.95rem; padding:0.8rem; cursor:pointer; transition:border-color 150ms ease, transform 150ms ease, box-shadow 150ms ease; }
@@ -869,6 +886,18 @@
     .yts-job-title { font-size:0.82rem; color:#e2e8f0; word-break:break-word; }
     .yts-job-summary { margin-top:0.45rem; font-size:0.76rem; line-height:1.35; color:var(--text); background:var(--surface-2); border:1px solid var(--border); border-radius:0.65rem; padding:0.45rem 0.55rem; }
     .yts-job-links { display:flex; flex-wrap:wrap; gap:0.4rem; margin-top:0.5rem; }
+    .yts-analysis-artifacts { display:flex; flex-direction:column; gap:0.65rem; max-height:380px; overflow:auto; border:1px solid var(--border); border-radius:0.75rem; padding:0.65rem; background:var(--surface-1); }
+    .yts-analysis-controls { display:flex; flex-wrap:wrap; gap:0.45rem; align-items:center; margin-bottom:0.65rem; }
+    .yts-analysis-count { font-size:0.78rem; color:var(--text-muted); }
+    .yts-analysis-job { border:1px solid var(--border); border-radius:0.9rem; padding:0.75rem; background:var(--surface-2); }
+    .yts-analysis-job-head { display:flex; justify-content:space-between; gap:0.65rem; align-items:flex-start; margin-bottom:0.6rem; }
+    .yts-analysis-job-title { font-size:0.84rem; font-weight:800; color:var(--text-strong); word-break:break-word; }
+    .yts-analysis-job-actions { display:flex; flex-wrap:wrap; gap:0.35rem; justify-content:flex-end; }
+    .yts-analysis-job .meta { color:var(--text-muted); font-size:0.72rem; margin-top:0.12rem; word-break:break-word; }
+    .yts-analysis-artifact { display:grid; grid-template-columns:auto minmax(0, 1fr); gap:0.5rem; align-items:start; padding:0.5rem; border:1px solid var(--border); border-radius:0.72rem; background:var(--surface-1); font-size:0.78rem; color:var(--text); cursor:pointer; }
+    .yts-analysis-artifact + .yts-analysis-artifact { margin-top:0.4rem; }
+    .yts-analysis-artifact:has(input:checked) { border-color:var(--border-strong); background:var(--surface-3); }
+    .yts-analysis-artifact input { width:auto; margin-top:0.15rem; }
     .yts-status-badge { display:inline-block; padding:0.18rem 0.5rem; border-radius:999px; font-size:0.72rem; font-weight:600; }
     .yts-status-running { background:rgba(113, 113, 122, 0.18); color:var(--info); }
     .yts-status-completed { background:rgba(34, 197, 94, 0.12); color:var(--success); }
@@ -1403,7 +1432,6 @@
 
   <div class="card full-width" id="yts-runner-card">
     <h2>YTS Runner & Job History</h2>
-    <label style="margin-bottom:0.75rem;"><input type="checkbox" id="yts-runner-ui-nav-toggle" style="width:auto; margin-right:0.45rem;" /> Allow UI navigation fallback</label>
     <div class="yts-runner-layout">
       <div class="yts-runner-panel">
         <h3>Live Job Console</h3>
@@ -1431,9 +1459,41 @@
           <button class="secondary" onclick="loadYtsCommandHistory(true)">↻ Refresh</button>
         </div>
         <div class="yts-subtle" style="margin-bottom:0.75rem;">Jobs are stored by job ID in the backend database, so you can reopen them after refreshing the page.</div>
+        <div class="yts-subtle" id="yts-history-status" style="margin-bottom:0.75rem;">Loading YTS jobs...</div>
         <div id="yts-job-history-list" class="yts-job-list">
           <div class="empty-state" style="padding:1rem;">No YTS jobs yet.</div>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card full-width" id="yts-results-analysis-card">
+    <h2>YTS Results Analysis</h2>
+    <div class="yts-runner-layout">
+      <div class="yts-runner-panel">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:0.5rem; margin-bottom:0.75rem; flex-wrap:wrap;">
+          <h3 style="margin:0;">Selectable Result Artifacts</h3>
+          <button class="secondary" onclick="loadYtsAnalysisArtifacts()">↻ Refresh Artifacts</button>
+        </div>
+        <div class="yts-subtle" style="margin-bottom:0.75rem;">Pick exactly the artifacts you want to send. Use the job buttons for fast per-run selection.</div>
+        <div class="yts-analysis-controls">
+          <button class="secondary mini-btn" onclick="selectLatestYtsAnalysisJob()">Select Latest Job</button>
+          <button class="secondary mini-btn" onclick="clearYtsAnalysisSelection()">Clear</button>
+          <span class="yts-analysis-count" id="yts-analysis-selection-count">0 selected</span>
+        </div>
+        <div id="yts-analysis-artifacts" class="yts-analysis-artifacts">
+          <div class="empty-state" style="padding:1rem;">Load artifacts to choose past YTS results.</div>
+        </div>
+        <label style="margin-top:0.75rem;"><input type="checkbox" id="yts-analysis-include-zip-toggle" checked style="width:auto; margin-right:0.45rem;" /> Include DAB ZIP base64 in Gemini analysis prompt</label>
+        <div class="btn-row">
+          <button onclick="submitYtsResultsAnalysis()">Analyze Selected With Gemini</button>
+        </div>
+      </div>
+      <div class="yts-runner-panel">
+        <h3>Analysis Output</h3>
+        <div id="yts-analysis-status" class="yts-subtle">No analysis submitted yet.</div>
+        <div id="yts-analysis-output" class="yts-result-box" style="min-height:260px;">Select artifacts and submit analysis.</div>
+        <div id="yts-analysis-downloads" style="margin-top:0.75rem;"></div>
       </div>
     </div>
   </div>
@@ -1630,7 +1690,9 @@
   let currentYtsCommandId = null;
   let ytsCommandPollInterval = null;
   const YTS_COMMAND_STORAGE_KEY = 'dab_yts_live_command_id';
-  let ytsCommandHistory = [];
+  const YTS_HISTORY_CACHE_KEY = 'dab_yts_command_history_cache';
+  let ytsCommandHistory = readYtsHistoryCache();
+  let ytsAnalysisArtifacts = [];
   let selectedRemoteMode = (localStorage.getItem(REMOTE_MODE_STORAGE_KEY) || 'DAB').toUpperCase();
   let selectedIrDeviceId = localStorage.getItem(IR_DEVICE_STORAGE_KEY) || 'samsung_tv_default';
   let irDeviceList = [];
@@ -4875,7 +4937,8 @@
     const goal = document.getElementById('yts-job-goal').value.trim();
     const device = document.getElementById('yts-job-device').value.trim();
     const steps = document.getElementById('yts-job-steps').value.trim();
-    const uiNavToggle = document.getElementById('yts-runner-ui-nav-toggle');
+    const uiNavToggle = document.getElementById('yts-arg-test-ui-navigation-allowed');
+    const dabLogToggle = document.getElementById('yts-arg-test-collect-dab-logs');
 
     if (!goal) {
       document.getElementById('yts-job-output').textContent = 'Job goal is required.';
@@ -4891,6 +4954,7 @@
       if (!selectedDeviceId) return;
       body.device_id = selectedDeviceId;
       body.ui_navigation_allowed = !!(uiNavToggle && uiNavToggle.checked);
+      body.collect_dab_logs = !!(dabLogToggle && dabLogToggle.checked);
       if (steps) body.max_steps = parseInt(steps, 10);
 
       const data = await api('/yts/job', 'POST', body);
@@ -5368,6 +5432,23 @@
     }
   }
 
+  function readYtsHistoryCache() {
+    try {
+      const raw = localStorage.getItem(YTS_HISTORY_CACHE_KEY) || '';
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed.filter(item => item && item.command_id) : [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function writeYtsHistoryCache(items = ytsCommandHistory) {
+    try {
+      const arr = Array.isArray(items) ? items.filter(item => item && item.command_id).slice(0, 100) : [];
+      if (arr.length) localStorage.setItem(YTS_HISTORY_CACHE_KEY, JSON.stringify(arr));
+    } catch (_) {}
+  }
+
   function startYtsCommandPolling(commandId) {
     clearYtsCommandPolling();
     if (!commandId) return;
@@ -5383,6 +5464,13 @@
       button.disabled = !!locked;
       button.title = locked ? 'A YTS job is already running.' : '';
     });
+  }
+
+  function setYtsHistoryStatus(message, token = '--text-muted') {
+    const el = document.getElementById('yts-history-status');
+    if (!el) return;
+    el.textContent = message || '';
+    setUiColor(el, token);
   }
 
   function formatYtsStatusBadge(status) {
@@ -5447,6 +5535,13 @@
     if (!container) return;
 
     if (!Array.isArray(ytsCommandHistory) || !ytsCommandHistory.length) {
+      const cachedHistory = readYtsHistoryCache();
+      if (cachedHistory.length) {
+        ytsCommandHistory = cachedHistory;
+        setYtsHistoryStatus(`Showing ${cachedHistory.length} cached YTS job${cachedHistory.length === 1 ? '' : 's'} while backend refresh catches up.`, '--warning');
+        renderYtsCommandHistory();
+        return;
+      }
       container.innerHTML = '<div class="empty-state" style="padding:1rem;">No YTS jobs yet.</div>';
       setYtsRunControlsLocked(false);
       return;
@@ -5466,6 +5561,8 @@
       if (item.report_html_name) artifactBits.push(`html:${item.report_html_name}`);
       if (item.report_pdf_name) artifactBits.push(`report:${item.report_pdf_name}`);
       if (item.record_video) artifactBits.push(`video:${item.video_recording_status || 'pending'}`);
+      if (item.dab_log_zip_name) artifactBits.push(`dab-log:${item.dab_log_zip_name}`);
+      if (Array.isArray(item.analysis_reports) && item.analysis_reports.length) artifactBits.push(`analysis:${item.analysis_reports.length}`);
       const links = [];
       links.push(`<a class="yts-download-link secondary" href="${apiOrigin}/yts/command/live/${encodeURIComponent(commandId)}/terminal-log" target="_blank" rel="noopener" download onclick="event.stopPropagation()">Terminal Log</a>`);
       if (item.result_file_name) {
@@ -5475,6 +5572,12 @@
       links.push(`<a class="yts-download-link secondary" href="${apiOrigin}/yts/command/live/${encodeURIComponent(commandId)}/report" download onclick="event.stopPropagation()">PDF Report</a>`);
       if (item.video_file_name && (item.video_recording_status || '') !== 'unavailable' && (item.video_recording_status || '') !== 'failed') {
         links.push(`<a class="yts-download-link secondary" href="${apiOrigin}/yts/command/live/${encodeURIComponent(commandId)}/video" download="${escHtml(item.video_file_name)}" onclick="event.stopPropagation()">Video</a>`);
+      }
+      if (item.dab_log_zip_name) {
+        links.push(`<a class="yts-download-link secondary" href="${apiOrigin}/yts/command/live/${encodeURIComponent(commandId)}/dab-log" download="${escHtml(item.dab_log_zip_name)}" onclick="event.stopPropagation()">DAB Log ZIP</a>`);
+      }
+      if (item.dab_log_summary_name) {
+        links.push(`<a class="yts-download-link secondary" href="${apiOrigin}/yts/command/live/${encodeURIComponent(commandId)}/dab-log-summary" download="${escHtml(item.dab_log_summary_name)}" onclick="event.stopPropagation()">DAB Log Summary</a>`);
       }
       const resultSummary = String(item.result_summary || '').trim();
       return `
@@ -5493,23 +5596,47 @@
     }).join('');
   }
 
-  async function loadYtsCommandHistory(keepSelection = false) {
+  async function loadYtsCommandHistory(keepSelection = false, options = {}) {
+    const { allowEmptyReplace = false } = options || {};
+    setYtsHistoryStatus('Loading YTS jobs...', '--info');
     try {
       const history = await api('/yts/command/live?limit=100');
-      ytsCommandHistory = Array.isArray(history) ? history : [];
+      const nextHistory = Array.isArray(history) ? history : [];
+      if (!nextHistory.length && ytsCommandHistory.length && !allowEmptyReplace) {
+        renderYtsCommandHistory();
+        setYtsHistoryStatus(`Backend returned 0 jobs; keeping ${ytsCommandHistory.length} cached job${ytsCommandHistory.length === 1 ? '' : 's'} visible.`, '--warning');
+        return;
+      }
+      if (!nextHistory.length && !ytsCommandHistory.length && !allowEmptyReplace) {
+        const cachedHistory = readYtsHistoryCache();
+        if (cachedHistory.length) {
+          ytsCommandHistory = cachedHistory;
+          renderYtsCommandHistory();
+          setYtsHistoryStatus(`Backend returned 0 jobs; showing ${cachedHistory.length} cached job${cachedHistory.length === 1 ? '' : 's'}.`, '--warning');
+          return;
+        }
+      }
+      ytsCommandHistory = nextHistory;
+      writeYtsHistoryCache(ytsCommandHistory);
       const currentStillExists = currentYtsCommandId && ytsCommandHistory.some(item => item.command_id === currentYtsCommandId);
       if (currentYtsCommandId && !currentStillExists) {
         setCurrentYtsCommand(null);
       }
       renderYtsCommandHistory();
-
-      if ((!keepSelection || !currentYtsCommandId) && !currentYtsCommandId && ytsCommandHistory.length) {
-        await openYtsCommandHistoryItem(ytsCommandHistory[0].command_id, { startPollingIfRunning: false });
-      }
+      setYtsHistoryStatus(
+        ytsCommandHistory.length
+          ? `Loaded ${ytsCommandHistory.length} YTS job${ytsCommandHistory.length === 1 ? '' : 's'}.`
+          : 'No YTS jobs found in backend history.',
+        ytsCommandHistory.length ? '--success' : '--warning'
+      );
     } catch (e) {
       const container = document.getElementById('yts-job-history-list');
-      if (container) {
+      if (ytsCommandHistory.length) {
+        renderYtsCommandHistory();
+        setYtsHistoryStatus(`Refresh failed; keeping ${ytsCommandHistory.length} cached job${ytsCommandHistory.length === 1 ? '' : 's'} visible: ${e.message}`, '--error');
+      } else if (container) {
         container.innerHTML = `<div class="empty-state" style="padding:1rem; color:#f87171;">Failed to load YTS jobs: ${escHtml(e.message)}</div>`;
+        setYtsHistoryStatus('YTS job history refresh failed.', '--error');
       }
     }
   }
@@ -5530,6 +5657,10 @@
       result_file_name: data.result_file_name,
       report_html_name: data.report_html_name,
       report_pdf_name: data.report_pdf_name,
+      dab_log_zip_name: data.dab_log_zip_name,
+      dab_log_summary_name: data.dab_log_summary_name,
+      dab_log_collection_error: data.dab_log_collection_error,
+      analysis_reports: data.analysis_reports,
       awaiting_input: data.awaiting_input,
       updated_at: data.updated_at,
       created_at: data.created_at,
@@ -5543,6 +5674,7 @@
     } else {
       ytsCommandHistory.unshift(summary);
     }
+    writeYtsHistoryCache(ytsCommandHistory);
   }
 
   async function openYtsCommandHistoryItem(commandId, options = {}) {
@@ -5600,6 +5732,9 @@
     output += `<strong>Last Updated:</strong> ${escHtml(data.updated_at || '(unknown)')}\n\n`;
     if (data.result_summary) {
       output += `<strong>Past Result Summary:</strong>\n${escHtml(data.result_summary)}\n\n`;
+    }
+    if (data.collect_dab_logs || data.dab_log_zip_name || data.dab_log_collection_error) {
+      output += `<strong>DAB Log Collection:</strong> ${data.dab_log_zip_name ? escHtml(data.dab_log_zip_name) : escHtml(data.dab_log_collection_error || 'pending / unavailable')}\n\n`;
     }
     if (data.record_video) {
       output += `<strong>Video Recording:</strong> ${escHtml(data.video_recording_status || 'pending')}\n`;
@@ -5673,8 +5808,184 @@
     } else if (data.record_video) {
       downloadButtons.push(`<span class="yts-subtle">Video status: ${escHtml(data.video_recording_status || 'pending')}</span>`);
     }
+    if (data.dab_log_zip_name) {
+      downloadButtons.push(`<a class="yts-download-link secondary" href="${apiOrigin}/yts/command/live/${encodeURIComponent(data.command_id)}/dab-log" download="${escHtml(data.dab_log_zip_name)}">Download DAB Log ZIP</a>`);
+    }
+    if (data.dab_log_summary_name) {
+      downloadButtons.push(`<a class="yts-download-link secondary" href="${apiOrigin}/yts/command/live/${encodeURIComponent(data.command_id)}/dab-log-summary" download="${escHtml(data.dab_log_summary_name)}">Download DAB Log Summary</a>`);
+    }
+    if (Array.isArray(data.analysis_reports) && data.analysis_reports.length) {
+      data.analysis_reports.slice(0, 3).forEach(report => {
+        if (report && report.report_id) {
+          downloadButtons.push(`<a class="yts-download-link secondary" href="${apiOrigin}/yts/results/analysis/${encodeURIComponent(report.report_id)}/txt" download>Analysis TXT</a>`);
+          downloadButtons.push(`<a class="yts-download-link secondary" href="${apiOrigin}/yts/results/analysis/${encodeURIComponent(report.report_id)}/pdf" download>Analysis PDF</a>`);
+        }
+      });
+    }
     downloadContainer.innerHTML = downloadButtons.join(' ');
 
+  }
+
+  function renderYtsAnalysisArtifacts() {
+    const box = document.getElementById('yts-analysis-artifacts');
+    if (!box) return;
+    if (!Array.isArray(ytsAnalysisArtifacts) || !ytsAnalysisArtifacts.length) {
+      box.innerHTML = '<div class="empty-state" style="padding:1rem;">No result artifacts found yet.</div>';
+      updateYtsAnalysisSelectionCount();
+      return;
+    }
+    const selectedRefs = new Set(Array.from(document.querySelectorAll('.yts-analysis-artifact-checkbox:checked')).map(el => el.value));
+    const groups = new Map();
+    ytsAnalysisArtifacts.forEach(item => {
+      const commandId = String(item.command_id || 'unknown').trim() || 'unknown';
+      if (!groups.has(commandId)) groups.set(commandId, []);
+      groups.get(commandId).push(item);
+    });
+    box.innerHTML = Array.from(groups.entries()).map(([commandId, items], groupIdx) => {
+      const first = items[0] || {};
+      const updated = String(first.updated_at || '').trim();
+      const command = String(first.command || '').trim();
+      const status = String(first.status || '').trim();
+      const artifactHtml = items.map(item => {
+        const ref = String(item.ref || '');
+        const type = String(item.type || '');
+        const summary = String(item.result_summary || '').trim();
+        const label = String(item.label || ref);
+        const checked = selectedRefs.has(ref) ? 'checked' : '';
+        return `<label class="yts-analysis-artifact">
+          <input type="checkbox" class="yts-analysis-artifact-checkbox" data-command-id="${escHtml(commandId)}" value="${escHtml(ref)}" ${checked} onchange="updateYtsAnalysisSelectionCount()" />
+          <span>
+            <strong>${escHtml(type)}</strong> ${escHtml(label)}
+            <div class="meta">${summary ? escHtml(summary) : escHtml(ref)}</div>
+          </span>
+        </label>`;
+      }).join('');
+      return `<div class="yts-analysis-job">
+        <div class="yts-analysis-job-head">
+          <div>
+            <div class="yts-analysis-job-title">${escHtml(commandId)}</div>
+            <div class="meta">${escHtml([status, updated, command].filter(Boolean).join(' · ') || 'YTS result artifacts')}</div>
+          </div>
+          <div class="yts-analysis-job-actions">
+            <button class="secondary mini-btn" onclick="selectYtsAnalysisJob('${escHtml(commandId)}', false)">Core</button>
+            <button class="secondary mini-btn" onclick="selectYtsAnalysisJob('${escHtml(commandId)}', true)">All</button>
+          </div>
+        </div>
+        ${artifactHtml}
+      </div>`;
+    }).join('');
+    updateYtsAnalysisSelectionCount();
+  }
+
+  function updateYtsAnalysisSelectionCount() {
+    const el = document.getElementById('yts-analysis-selection-count');
+    if (!el) return;
+    const count = document.querySelectorAll('.yts-analysis-artifact-checkbox:checked').length;
+    el.textContent = `${count} selected`;
+  }
+
+  function clearYtsAnalysisSelection() {
+    document.querySelectorAll('.yts-analysis-artifact-checkbox').forEach(el => { el.checked = false; });
+    updateYtsAnalysisSelectionCount();
+  }
+
+  function selectYtsAnalysisJob(commandId, includeAll = false) {
+    const id = String(commandId || '').trim();
+    clearYtsAnalysisSelection();
+    document.querySelectorAll('.yts-analysis-artifact-checkbox').forEach(el => {
+      if (String(el.dataset.commandId || '') !== id) return;
+      const ref = String(el.value || '');
+      const type = ref.split(':').pop();
+      el.checked = includeAll || ['result-json', 'terminal-log', 'dab-log-summary'].includes(type);
+    });
+    updateYtsAnalysisSelectionCount();
+  }
+
+  function selectLatestYtsAnalysisJob() {
+    const latest = Array.isArray(ytsAnalysisArtifacts) ? ytsAnalysisArtifacts.find(item => item && item.command_id) : null;
+    if (latest) selectYtsAnalysisJob(String(latest.command_id || ''), false);
+  }
+
+  async function loadYtsAnalysisArtifacts() {
+    const status = document.getElementById('yts-analysis-status');
+    if (status) {
+      status.textContent = 'Loading artifacts...';
+      setUiColor(status, '--info');
+    }
+    try {
+      const data = await api('/yts/results/artifacts?limit=100');
+      ytsAnalysisArtifacts = Array.isArray(data) ? data : [];
+      renderYtsAnalysisArtifacts();
+      if (status) {
+        status.textContent = `Loaded ${ytsAnalysisArtifacts.length} artifact option${ytsAnalysisArtifacts.length === 1 ? '' : 's'}.`;
+        setUiColor(status, '--success');
+      }
+    } catch (e) {
+      if (status) {
+        status.textContent = `Artifact load failed: ${e.message}`;
+        setUiColor(status, '--error');
+      }
+    }
+  }
+
+  async function submitYtsResultsAnalysis() {
+    const status = document.getElementById('yts-analysis-status');
+    const output = document.getElementById('yts-analysis-output');
+    const downloads = document.getElementById('yts-analysis-downloads');
+    const refs = Array.from(document.querySelectorAll('.yts-analysis-artifact-checkbox:checked')).map(el => el.value).filter(Boolean);
+    if (!refs.length) {
+      if (status) {
+        status.textContent = 'Select at least one artifact first.';
+        setUiColor(status, '--error');
+      }
+      return;
+    }
+    if (status) {
+      status.textContent = 'Gemini is analyzing selected artifacts...';
+      setUiColor(status, '--info');
+    }
+    if (output) output.textContent = 'Analyzing selected result JSON, terminal logs, and DAB logs...';
+    if (downloads) downloads.innerHTML = '';
+    try {
+      const data = await api('/yts/results/analyze', 'POST', {
+        artifact_refs: refs,
+        include_zip_base64: !!document.getElementById('yts-analysis-include-zip-toggle')?.checked,
+        analysis_model: 'gemini-3.1-pro-preview',
+        triage_level: 'deep',
+      });
+      if (status) {
+        status.textContent = `Deep triage complete · ${data.analysis_model || 'Gemini Pro'} · failed tests: ${Number(data.failed_tests || 0)}`;
+        setUiColor(status, '--success');
+      }
+      const lines = [
+        `Report: ${data.report_id || '-'}`,
+        `Model: ${data.analysis_model || 'gemini-3.1-pro-preview'}`,
+        `Triage level: ${data.triage_level || 'deep'}`,
+        `Total tests found: ${Number(data.total_tests || 0)}`,
+        `Failed tests count: ${Number(data.failed_tests || 0)}`,
+        '',
+        'Failed reasons:',
+        ...((Array.isArray(data.failed_reasons) && data.failed_reasons.length) ? data.failed_reasons : ['No failed reasons found by heuristic scan.']),
+        '',
+        'Gemini summary:',
+        data.summary || '-',
+      ];
+      if (output) output.textContent = lines.join('\n');
+      if (downloads && data.report_id) {
+        const apiOrigin = getApiOrigin();
+        downloads.innerHTML = [
+          `<a class="yts-download-link" href="${apiOrigin}/yts/results/analysis/${encodeURIComponent(data.report_id)}/txt" download="${escHtml(data.txt_name || 'yts-result-analysis.txt')}">Download TXT Analysis</a>`,
+          `<a class="yts-download-link secondary" href="${apiOrigin}/yts/results/analysis/${encodeURIComponent(data.report_id)}/pdf" download="${escHtml(data.pdf_name || 'yts-result-analysis.pdf')}">Download PDF Analysis</a>`,
+        ].join(' ');
+      }
+      await loadYtsCommandHistory(true);
+    } catch (e) {
+      if (status) {
+        status.textContent = `Analysis failed: ${e.message}`;
+        setUiColor(status, '--error');
+      }
+      if (output) output.textContent = String(e.message || e);
+    }
   }
 
   async function pollLiveYtsCommand(commandId) {
@@ -5694,7 +6005,12 @@
       clearYtsCommandPolling();
       setCurrentYtsCommand(null);
       setYtsRunControlsLocked(false);
-      await loadYtsCommandHistory(true).catch(() => null);
+      if (ytsCommandHistory.length) {
+        renderYtsCommandHistory();
+        setYtsHistoryStatus(`Selected YTS job is unavailable; kept ${ytsCommandHistory.length} cached job${ytsCommandHistory.length === 1 ? '' : 's'} visible.`, '--warning');
+      } else {
+        await loadYtsCommandHistory(true).catch(() => null);
+      }
       document.getElementById('yts-command-status').innerHTML = statusHtml('--error', `✗ API Error: ${escHtml(e.message)}`);
       return null;
     }
@@ -5702,6 +6018,14 @@
 
   async function resumeLiveYtsCommand() {
     let commandId = localStorage.getItem(YTS_COMMAND_STORAGE_KEY);
+
+    if (commandId && Array.isArray(ytsCommandHistory) && ytsCommandHistory.length) {
+      const storedStillExists = ytsCommandHistory.some(item => item.command_id === commandId);
+      if (!storedStillExists) {
+        localStorage.removeItem(YTS_COMMAND_STORAGE_KEY);
+        commandId = null;
+      }
+    }
 
     if (!commandId) {
       try {
@@ -5720,8 +6044,8 @@
     const data = await openYtsCommandHistoryItem(commandId, { startPollingIfRunning: false });
     if (data?.status === 'running') {
       startYtsCommandPolling(commandId);
-    } else if (!data && ytsCommandHistory.length) {
-      await openYtsCommandHistoryItem(ytsCommandHistory[0].command_id, { startPollingIfRunning: false });
+    } else if (!data) {
+      localStorage.removeItem(YTS_COMMAND_STORAGE_KEY);
     }
   }
 
@@ -6000,6 +6324,18 @@
             <span class="yts-option-switch" aria-hidden="true"></span>
           </label>
 
+          <label class="yts-option-card" for="yts-arg-test-collect-dab-logs">
+            <span class="yts-option-main">
+              <span class="yts-option-topline">
+                <span class="yts-option-name">Collect DAB logs</span>
+                <span class="yts-option-tag">ZIP artifact</span>
+              </span>
+              <span class="yts-option-copy">Start DAB log collection before the YTS job and save the stop response ZIP with the result artifacts.</span>
+            </span>
+            <input type="checkbox" id="yts-arg-test-collect-dab-logs">
+            <span class="yts-option-switch" aria-hidden="true"></span>
+          </label>
+
           <label class="yts-option-card" for="yts-arg-test-ui-navigation-allowed">
             <span class="yts-option-main">
               <span class="yts-option-topline">
@@ -6137,7 +6473,8 @@
       global_options: {},
       output_file: null,
       interactive_ai: false,
-      ui_navigation_allowed: !!document.getElementById('yts-runner-ui-nav-toggle')?.checked,
+      collect_dab_logs: false,
+      ui_navigation_allowed: false,
       device_id: selectedDeviceId,
     };
 
@@ -6176,6 +6513,7 @@
       body.record_video = document.getElementById('yts-arg-test-record-video').checked;
       body.record_audio = document.getElementById('yts-arg-test-record-audio')?.checked !== false;
       body.ui_navigation_allowed = !!document.getElementById('yts-arg-test-ui-navigation-allowed')?.checked;
+      body.collect_dab_logs = !!document.getElementById('yts-arg-test-collect-dab-logs')?.checked;
 
       if (!resolvedIds.length && !filterTokens.length && !guided && !extraArgs.length) {
         document.getElementById('yts-command-status').innerHTML = statusHtml('--error', '✗ Select tests, add test IDs, or choose a suite/category/name before running.');
@@ -7045,6 +7383,7 @@
       loadYtsTestCatalog(),
     ]);
     await loadYtsCommandHistory();
+    await loadYtsAnalysisArtifacts();
     await resumeLiveYtsCommand();
   }
 
