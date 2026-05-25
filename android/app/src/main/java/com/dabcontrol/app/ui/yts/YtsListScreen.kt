@@ -6,6 +6,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
@@ -46,6 +47,9 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
+import androidx.compose.material.icons.Icons
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -59,6 +63,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextAlign
@@ -1119,6 +1124,7 @@ private fun FullStreamPanel(
     frameBytes: ByteArray?,
     streamStatus: String
 ) {
+    var staticScale by remember { mutableFloatStateOf(1f) }
     SignalCard("Live Streaming", modifier = modifier) {
         val bitmap = remember(frameBytes) {
             frameBytes?.let { bytes ->
@@ -1129,14 +1135,22 @@ private fun FullStreamPanel(
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(16f / 9f)
-                .background(Brush.linearGradient(listOf(Color(0xFF0F172A), Color(0xFF1E293B)))),
+                .background(Brush.linearGradient(listOf(Color(0xFF0F172A), Color(0xFF1E293B))))
+                .pointerInput(Unit) {
+                    detectTransformGestures { _, _, zoom, _ ->
+                        staticScale = (staticScale * zoom).coerceIn(1f, 4f)
+                    }
+                },
             contentAlignment = Alignment.Center
         ) {
             if (bitmap != null) {
                 Image(
                     bitmap = bitmap,
                     contentDescription = "Device live stream",
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.fillMaxSize().graphicsLayer(
+                        scaleX = staticScale,
+                        scaleY = staticScale
+                    ),
                     contentScale = ContentScale.Fit
                 )
             } else {
@@ -1162,16 +1176,18 @@ private fun FloatingYtsStreamOverlay(
     }
     var offsetX by remember { mutableFloatStateOf(0f) }
     var offsetY by remember { mutableFloatStateOf(0f) }
+    var scale by remember { mutableFloatStateOf(1f) }
+    val scaledWidth = 320.dp * scale
 
     ElevatedCard(
         modifier = modifier
             .padding(12.dp)
             .offset { IntOffset(offsetX.toInt(), offsetY.toInt()) }
             .pointerInput(Unit) {
-                detectDragGestures { change, dragAmount ->
-                    change.consume()
-                    offsetX += dragAmount.x
-                    offsetY += dragAmount.y
+                detectTransformGestures { _, pan, zoom, _ ->
+                    scale = (scale * zoom).coerceIn(0.5f, 3f)
+                    offsetX += pan.x
+                    offsetY += pan.y
                 }
             }
     ) {
@@ -1180,16 +1196,24 @@ private fun FloatingYtsStreamOverlay(
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             Row(
-                modifier = Modifier.width(320.dp),
+                modifier = Modifier.width(scaledWidth),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text("Live", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-                OutlinedButton(onClick = onHide) {
-                    Text("Hide")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = { scale = (scale - 0.2f).coerceAtLeast(0.5f) }) {
+                        Text("-", style = MaterialTheme.typography.titleLarge)
+                    }
+                    IconButton(onClick = { scale = (scale + 0.2f).coerceAtMost(3f) }) {
+                        Text("+", style = MaterialTheme.typography.titleLarge)
+                    }
+                    OutlinedButton(onClick = onHide) {
+                        Text("Hide")
+                    }
                 }
             }
-            Surface(shape = MaterialTheme.shapes.medium, modifier = Modifier.width(320.dp)) {
+            Surface(shape = MaterialTheme.shapes.medium, modifier = Modifier.width(scaledWidth)) {
                 if (bitmap != null) {
                     Image(
                         bitmap = bitmap,

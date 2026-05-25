@@ -82,7 +82,7 @@ data class AudioSourceResponseDto(
 
 @Serializable
 data class ManualActionRequestDto(
-    val action: String,
+    val action: String = "",
     val params: JsonObject? = null,
     val device_id: String? = null,
     val control_mode: String? = null,
@@ -92,14 +92,14 @@ data class ManualActionRequestDto(
 @Serializable
 data class ManualActionResponseDto(
     val success: Boolean = false,
-    val action: String,
+    val action: String = "",
     val result: JsonObject? = null,
     val error: String? = null
 )
 
 @Serializable
 data class ManualActionBatchRequestDto(
-    val actions: List<ManualActionRequestDto>,
+    val actions: List<ManualActionRequestDto> = emptyList(),
     val continue_on_error: Boolean = true
 )
 
@@ -112,14 +112,14 @@ data class ManualActionBatchResponseDto(
 
 @Serializable
 data class IrSendRequestDto(
-    val device_id: String,
-    val key_name: String
+    val device_id: String = "",
+    val key_name: String = ""
 )
 
 @Serializable
 data class IrTrainRequestDto(
-    val device_id: String,
-    val key_name: String,
+    val device_id: String = "",
+    val key_name: String = "",
     val timeout_ms: Int = 6000
 )
 
@@ -138,7 +138,7 @@ data class IrDeviceKeysResponseDto(
 
 @Serializable
 data class TaskMacroRequestDto(
-    val instruction: String,
+    val instruction: String = "",
     val execute: Boolean = false,
     val continue_on_error: Boolean = true,
     val control_mode: String? = null,
@@ -149,7 +149,7 @@ data class TaskMacroRequestDto(
 
 @Serializable
 data class PlannerDebugRequestDto(
-    val goal: String,
+    val goal: String = "",
     val device_id: String? = null,
     val ocr_text: String? = null,
     val current_app: String? = null,

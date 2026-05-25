@@ -7,7 +7,7 @@ import kotlinx.serialization.json.JsonObject
 
 @Serializable
 data class YtsPromptResponseRequest(
-    val response: String
+    val response: String = ""
 )
 
 @Serializable
@@ -17,7 +17,7 @@ data class YtsPromptSuggestRequest(
 
 @Serializable
 data class YtsTestCatalogItemDto(
-    val test_id: String,
+    val test_id: String = "",
     val test_title: String? = null,
     val test_suite: String? = null,
     val test_category: String? = null
@@ -36,13 +36,13 @@ data class RuntimeModelResponseDto(
 
 @Serializable
 data class RuntimeModelUpdateRequestDto(
-    val model: String,
+    val model: String = "",
     val target: String = "planner"
 )
 
 @Serializable
 data class YtsLiveCommandRequestDto(
-    val command: String,
+    val command: String = "",
     val params: List<String> = emptyList(),
     val global_options: JsonObject = JsonObject(emptyMap()),
     val output_file: String? = null,
@@ -54,15 +54,15 @@ data class YtsLiveCommandRequestDto(
 
 @Serializable
 data class YtsLiveCommandStartResponseDto(
-    val command_id: String,
-    val status: String,
+    val command_id: String = "",
+    val status: String = "",
     val device_id: String? = null
 )
 
 @Serializable
 data class YtsLiveCommandSummaryDto(
-    val command_id: String,
-    val status: String,
+    val command_id: String = "",
+    val status: String = "",
     val command: String? = null,
     val updated_at: String? = null,
     val result_file_name: String? = null,
@@ -75,8 +75,8 @@ data class YtsLiveCommandSummaryDto(
 
 @Serializable
 data class YtsLiveCommandStateDto(
-    val command_id: String,
-    val status: String,
+    val command_id: String = "",
+    val status: String = "",
     val command: String? = null,
     val updated_at: String? = null,
     val returncode: Int? = null,
@@ -95,15 +95,15 @@ data class YtsLiveCommandStateDto(
 
 @Serializable
 data class YtsResultArtifactItemDto(
-    val command_id: String,
+    val command_id: String = "",
     val command: String? = null,
     val status: String? = null,
     val updated_at: String? = null,
     val result_summary: JsonObject? = null,
-    val ref: String,
-    val type: String,
-    val label: String,
-    val available: Boolean
+    val ref: String = "",
+    val type: String = "",
+    val label: String = "",
+    val available: Boolean = false
 )
 
 @Serializable

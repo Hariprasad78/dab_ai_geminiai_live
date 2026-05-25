@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
@@ -40,6 +41,9 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
+import androidx.compose.material.icons.Icons
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -51,6 +55,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.IntOffset
@@ -593,16 +598,31 @@ private fun LiveControlCard(
             }
         }
 
+        var staticScale by remember { mutableFloatStateOf(1f) }
         Card(modifier = Modifier.fillMaxWidth()) {
             if (frameBitmap != null) {
-                Image(
-                    bitmap = frameBitmap,
-                    contentDescription = "Live HDMI stream",
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .aspectRatio(16f / 9f),
-                    contentScale = ContentScale.Fit
-                )
+                        .pointerInput(Unit) {
+                            detectTransformGestures { _, _, zoom, _ ->
+                                staticScale = (staticScale * zoom).coerceIn(1f, 4f)
+                            }
+                        }
+                ) {
+                    Image(
+                        bitmap = frameBitmap,
+                        contentDescription = "Live HDMI stream",
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(16f / 9f)
+                            .graphicsLayer(
+                                scaleX = staticScale,
+                                scaleY = staticScale
+                            ),
+                        contentScale = ContentScale.Fit
+                    )
+                }
             } else {
                 Box(
                     modifier = Modifier
@@ -672,16 +692,18 @@ private fun FloatingStreamOverlay(
     }
     var offsetX by remember { mutableFloatStateOf(0f) }
     var offsetY by remember { mutableFloatStateOf(0f) }
+    var scale by remember { mutableFloatStateOf(1f) }
+    val scaledWidth = 300.dp * scale
 
     ElevatedCard(
         modifier = modifier
             .padding(12.dp)
             .offset { IntOffset(offsetX.toInt(), offsetY.toInt()) }
             .pointerInput(Unit) {
-                detectDragGestures { change, dragAmount ->
-                    change.consume()
-                    offsetX += dragAmount.x
-                    offsetY += dragAmount.y
+                detectTransformGestures { _, pan, zoom, _ ->
+                    scale = (scale * zoom).coerceIn(0.5f, 3f)
+                    offsetX += pan.x
+                    offsetY += pan.y
                 }
             }
     ) {
@@ -690,16 +712,24 @@ private fun FloatingStreamOverlay(
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             Row(
-                modifier = Modifier.width(300.dp),
+                modifier = Modifier.width(scaledWidth),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text("Live", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-                OutlinedButton(onClick = onHide) {
-                    Text("Hide")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = { scale = (scale - 0.2f).coerceAtLeast(0.5f) }) {
+                        Text("-", style = MaterialTheme.typography.titleLarge)
+                    }
+                    IconButton(onClick = { scale = (scale + 0.2f).coerceAtMost(3f) }) {
+                        Text("+", style = MaterialTheme.typography.titleLarge)
+                    }
+                    OutlinedButton(onClick = onHide) {
+                        Text("Hide")
+                    }
                 }
             }
-            Card(modifier = Modifier.width(300.dp)) {
+            Card(modifier = Modifier.width(scaledWidth)) {
                 if (frameBitmap != null) {
                     Image(
                         bitmap = frameBitmap,
