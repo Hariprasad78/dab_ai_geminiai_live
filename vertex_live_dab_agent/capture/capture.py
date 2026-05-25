@@ -19,6 +19,7 @@ from vertex_live_dab_agent.capture.camera_devices import (
     validate_camera_devices,
 )
 from vertex_live_dab_agent.capture.hdmi_capture import HdmiCaptureSession
+from vertex_live_dab_agent.capture.scrcpy_stream import ScrcpyStreamSession
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,7 @@ class ScreenCapture:
         self._dab = dab_client
         self._image_source = self._normalize_source(self._config.image_source)
         self._selected_video_device = (self._config.hdmi_capture_device or "").strip() or None
+        self._selected_scrcpy_device = (getattr(self._config, "scrcpy_device_id", "") or "").strip() or None
         self._strict_selected_video_device = bool(self._selected_video_device)
         self._preferred_video_kind = "auto"
         self._rotation_degrees = self._normalize_rotation_degrees(
@@ -98,6 +100,7 @@ class ScreenCapture:
         self._last_stream_jpeg_quality = 0
         self._last_stream_jpeg_ts = 0.0
         self._hdmi = hdmi_session
+        self._scrcpy: Optional[ScrcpyStreamSession] = None
         self._busy_video_devices: Dict[str, float] = {}
         try:
             self._busy_video_quarantine_s = float(os.environ.get("CAMERA_BUSY_QUARANTINE_SECONDS", "30.0"))
@@ -116,6 +119,8 @@ class ScreenCapture:
             return "hdmi-capture"
         if s in {"camera", "camera-capture", "webcam"}:
             return "camera-capture"
+        if s in {"scrcpy", "adb", "android", "android-screen"}:
+            return "scrcpy"
         if s in {"auto", "dab"}:
             return s
         return "auto"
@@ -131,6 +136,9 @@ class ScreenCapture:
             source = data.get("source")
             if isinstance(source, str):
                 self._image_source = self._normalize_source(source)
+            scrcpy_device = data.get("scrcpy_device")
+            if isinstance(scrcpy_device, str) and scrcpy_device.strip():
+                self._selected_scrcpy_device = scrcpy_device.strip()
             device = data.get("device")
             if isinstance(device, str) and device.strip():
                 selected = device.strip()
@@ -164,6 +172,7 @@ class ScreenCapture:
             payload = {
                 "source": self._image_source,
                 "device": self._selected_video_device,
+                "scrcpy_device": self._selected_scrcpy_device,
                 "preferred_kind": self._preferred_video_kind,
                 "rotation_degrees": self._rotation_degrees,
             }
@@ -271,6 +280,8 @@ class ScreenCapture:
             return bool(self._config.enable_hdmi_capture)
         if k == "camera":
             return bool(self._config.enable_camera_capture)
+        if k == "scrcpy":
+            return bool(getattr(self._config, "enable_scrcpy_capture", True))
         return True
 
     @staticmethod
@@ -328,6 +339,7 @@ class ScreenCapture:
         *,
         source: Optional[str] = None,
         device: Optional[str] = None,
+        scrcpy_device: Optional[str] = None,
         preferred_kind: Optional[str] = None,
         rotation_degrees: Optional[int] = None,
         persist: bool = True,
@@ -335,6 +347,7 @@ class ScreenCapture:
         """Set capture source/device preference and re-open capture session."""
         with self._session_lock:
             previous_selected_device = self._selected_video_device
+            previous_scrcpy_device = self._selected_scrcpy_device
             previous_source = self._image_source
             previous_kind = self._preferred_video_kind
             previous_rotation = self._rotation_degrees
@@ -350,16 +363,22 @@ class ScreenCapture:
                     "camera",
                     "camera-capture",
                     "webcam",
+                    "scrcpy",
+                    "adb",
+                    "android",
+                    "android-screen",
                 }
                 if raw not in allowed:
                     raise ValueError("Unsupported capture source")
                 normalized = self._normalize_source(source)
-                if normalized not in {"auto", "dab", "hdmi-capture", "camera-capture"}:
+                if normalized not in {"auto", "dab", "hdmi-capture", "camera-capture", "scrcpy"}:
                     raise ValueError("Unsupported capture source")
                 if normalized == "hdmi-capture" and not self._config.enable_hdmi_capture:
                     raise ValueError("HDMI capture is disabled by ENABLE_HDMI_CAPTURE=false")
                 if normalized == "camera-capture" and not self._config.enable_camera_capture:
                     raise ValueError("Camera capture is disabled by ENABLE_CAMERA_CAPTURE=false")
+                if normalized == "scrcpy" and not getattr(self._config, "enable_scrcpy_capture", True):
+                    raise ValueError("Scrcpy/ADB capture is disabled by ENABLE_SCRCPY_CAPTURE=false")
                 self._image_source = normalized
 
             if preferred_kind is not None:
@@ -376,6 +395,8 @@ class ScreenCapture:
                     raise ValueError("device is not capture-capable (requires /dev/video* index0)")
                 self._selected_video_device = dev or None
                 self._strict_selected_video_device = bool(dev)
+            if scrcpy_device is not None:
+                self._selected_scrcpy_device = str(scrcpy_device or "").strip() or None
             elif source is not None and previous_source != self._image_source and self._selected_video_device:
                 # If caller switches capture source without specifying a device,
                 # avoid carrying over a stale explicit selection from the
@@ -406,6 +427,7 @@ class ScreenCapture:
 
             selection_changed = (
                 previous_selected_device != self._selected_video_device
+                or previous_scrcpy_device != self._selected_scrcpy_device
                 or previous_source != self._image_source
                 or previous_kind != self._preferred_video_kind
                 or previous_rotation != self._rotation_degrees
@@ -449,6 +471,28 @@ class ScreenCapture:
         self._last_stream_jpeg_quality = 0
         self._last_stream_jpeg_ts = 0.0
         self._next_hdmi_probe_ts = time.monotonic() + self._hdmi_release_grace_s
+
+    def _init_scrcpy_session(self) -> Optional[ScrcpyStreamSession]:
+        if self._image_source != "scrcpy":
+            return None
+        if not getattr(self._config, "enable_scrcpy_capture", True):
+            self._last_hdmi_error = "Scrcpy/ADB capture disabled by ENABLE_SCRCPY_CAPTURE=false"
+            return None
+        device_id = str(self._selected_scrcpy_device or getattr(self._config, "scrcpy_device_id", "") or "").strip()
+        if not device_id:
+            self._last_hdmi_error = "No Android ADB device selected for scrcpy capture"
+            return None
+        session = ScrcpyStreamSession(
+            adb_device_id=device_id,
+            adb_path=getattr(self._config, "scrcpy_adb_path", "adb"),
+            fps=float(getattr(self._config, "scrcpy_capture_fps", 5.0) or 5.0),
+            jpeg_quality=int(getattr(self._config, "hdmi_stream_jpeg_quality", 80) or 80),
+        )
+        if not session.available():
+            self._last_hdmi_error = session.last_error
+            return None
+        self._last_hdmi_error = None
+        return session
 
     def _reset_capture_session_locked(self, *, probe_delay_s: float = 0.0) -> None:
         if self._hdmi is not None:
@@ -680,7 +724,10 @@ class ScreenCapture:
             image_b64: Optional[str] = None
             source = "error"
 
-            if self._image_source in {"hdmi-capture", "camera-capture"}:
+            if self._image_source == "scrcpy":
+                image_b64 = self._capture_from_scrcpy()
+                source = "scrcpy" if image_b64 else "error"
+            elif self._image_source in {"hdmi-capture", "camera-capture"}:
                 image_b64 = self._capture_from_hdmi()
                 source = self._image_source if image_b64 else "error"
             elif self._image_source == "auto":
@@ -703,8 +750,12 @@ class ScreenCapture:
         healthy.
         """
         async with self._capture_lock:
-            image_b64 = self._capture_from_hdmi()
-            source = (self._image_source if self._image_source != "auto" else "hdmi-capture") if image_b64 else "error"
+            if self._image_source == "scrcpy":
+                image_b64 = self._capture_from_scrcpy()
+                source = "scrcpy" if image_b64 else "error"
+            else:
+                image_b64 = self._capture_from_hdmi()
+                source = (self._image_source if self._image_source != "auto" else "hdmi-capture") if image_b64 else "error"
             return CaptureResult(image_b64=image_b64, ocr_text=None, source=source)
 
     async def _capture_from_dab(self) -> Optional[str]:
@@ -747,9 +798,26 @@ class ScreenCapture:
                 self._hdmi_stream_miss_count = 0
             return image_b64
 
+    def _capture_from_scrcpy(self) -> Optional[str]:
+        with self._session_lock:
+            if self._scrcpy is None:
+                self._scrcpy = self._init_scrcpy_session()
+            if self._scrcpy is None:
+                return None
+            image_b64 = self._scrcpy.capture_png_base64()
+            if image_b64 is None:
+                self._last_hdmi_error = self._scrcpy.last_error or "Scrcpy/ADB capture failed"
+            else:
+                self._last_hdmi_error = None
+            return image_b64
+
     def ensure_hdmi_session(self, force: bool = False) -> bool:
         """Best-effort ensure the shared HDMI/camera session is open."""
         with self._session_lock:
+            if self._image_source == "scrcpy":
+                if self._scrcpy is None:
+                    self._scrcpy = self._init_scrcpy_session()
+                return self._scrcpy is not None
             self._drop_stale_session_locked()
             if self._hdmi is not None:
                 return True
@@ -763,9 +831,12 @@ class ScreenCapture:
     def capture_source_status(self, include_devices: bool = True) -> Dict[str, Any]:
         """Return capture source state for API/UI diagnostics."""
         with self._session_lock:
-            hdmi_available = self._hdmi is not None
+            scrcpy_available = self._scrcpy is not None
+            hdmi_available = self._hdmi is not None or scrcpy_available
             hdmi_info = self._hdmi.device_info() if self._hdmi else {}
-            hdmi_device = self._hdmi.device if self._hdmi else None
+            if self._scrcpy is not None:
+                hdmi_info = self._scrcpy.device_info()
+            hdmi_device = self._hdmi.device if self._hdmi else (self._selected_scrcpy_device if self._scrcpy else None)
             configured_source = self._image_source
             selected_video_device = self._selected_video_device
             preferred_video_kind = self._preferred_video_kind
@@ -790,7 +861,7 @@ class ScreenCapture:
 
         return {
             "configured_source": configured_source,
-            "hdmi_configured": configured_source in {"auto", "hdmi-capture", "camera-capture"},
+            "hdmi_configured": configured_source in {"auto", "hdmi-capture", "camera-capture", "scrcpy"},
             "hdmi_available": hdmi_available,
             "hdmi_device": hdmi_device,
             "hdmi_info": hdmi_info,
@@ -798,7 +869,11 @@ class ScreenCapture:
             "rotation_degrees": rotation_degrees,
             "enable_hdmi_capture": bool(self._config.enable_hdmi_capture),
             "enable_camera_capture": bool(self._config.enable_camera_capture),
+            "enable_scrcpy_capture": bool(getattr(self._config, "enable_scrcpy_capture", True)),
             "selected_video_device": selected_video_device,
+            "selected_scrcpy_device": self._selected_scrcpy_device,
+            "scrcpy_available": scrcpy_available,
+            "scrcpy_device": self._selected_scrcpy_device,
             "strict_selected_video_device": bool(self._strict_selected_video_device),
             "preferred_video_kind": preferred_video_kind,
             "effective_preferred_kind": effective_preferred_kind,
@@ -812,6 +887,17 @@ class ScreenCapture:
     def get_hdmi_stream_frame_jpeg(self, quality: Optional[int] = None) -> Optional[bytes]:
         """Capture one HDMI frame encoded as JPEG for MJPEG web streaming."""
         with self._session_lock:
+            if self._image_source == "scrcpy":
+                if self._scrcpy is None:
+                    self._scrcpy = self._init_scrcpy_session()
+                if self._scrcpy is None:
+                    return None
+                frame = self._scrcpy.capture_jpeg_bytes(quality=quality)
+                if frame is None:
+                    self._last_hdmi_error = self._scrcpy.last_error or "Scrcpy/ADB stream frame unavailable"
+                else:
+                    self._last_hdmi_error = None
+                return frame
             self._drop_stale_session_locked()
             if self._hdmi is None:
                 now = time.monotonic()
@@ -876,6 +962,9 @@ class ScreenCapture:
     def close(self) -> None:
         """Release optional capture resources."""
         with self._session_lock:
+            if self._scrcpy is not None:
+                self._scrcpy.close()
+                self._scrcpy = None
             if self._hdmi is not None:
                 logger.info("Closing active HDMI/camera capture session: device=%s", self._hdmi.device)
                 self._hdmi.close()

@@ -94,6 +94,12 @@ class Config:
     hdmi_audio_channels: int = field(default_factory=lambda: int(os.environ.get("HDMI_AUDIO_CHANNELS", "2")))
     hdmi_audio_bitrate: str = field(default_factory=lambda: os.environ.get("HDMI_AUDIO_BITRATE", "128k"))
     hdmi_audio_chunk_bytes: int = field(default_factory=lambda: int(os.environ.get("HDMI_AUDIO_CHUNK_BYTES", "4096")))
+    enable_scrcpy_capture: bool = field(
+        default_factory=lambda: os.environ.get("ENABLE_SCRCPY_CAPTURE", "true").lower() == "true"
+    )
+    scrcpy_adb_path: str = field(default_factory=lambda: os.environ.get("SCRCPY_ADB_PATH", os.environ.get("ADB_PATH", "adb")))
+    scrcpy_capture_fps: float = field(default_factory=lambda: float(os.environ.get("SCRCPY_CAPTURE_FPS", "12.0")))
+    scrcpy_device_id: str = field(default_factory=lambda: os.environ.get("SCRCPY_DEVICE_ID", ""))
 
     # Planner/Orchestrator cadence
     planner_capture_interval_steps: int = field(

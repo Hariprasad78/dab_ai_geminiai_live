@@ -867,6 +867,7 @@
     .yts-job-item.active { border-color:rgba(161, 161, 170, 0.46); background:linear-gradient(180deg, rgba(34, 34, 37, 0.98), rgba(19, 19, 21, 0.98)); }
     .yts-job-meta { font-size:0.75rem; color:var(--text-muted); margin-top:0.25rem; }
     .yts-job-title { font-size:0.82rem; color:#e2e8f0; word-break:break-word; }
+    .yts-job-summary { margin-top:0.45rem; font-size:0.76rem; line-height:1.35; color:var(--text); background:var(--surface-2); border:1px solid var(--border); border-radius:0.65rem; padding:0.45rem 0.55rem; }
     .yts-job-links { display:flex; flex-wrap:wrap; gap:0.4rem; margin-top:0.5rem; }
     .yts-status-badge { display:inline-block; padding:0.18rem 0.5rem; border-radius:999px; font-size:0.72rem; font-weight:600; }
     .yts-status-running { background:rgba(113, 113, 122, 0.18); color:var(--info); }
@@ -1234,6 +1235,7 @@
             <option value="auto">auto</option>
             <option value="hdmi-capture">hdmi-capture</option>
             <option value="camera-capture">camera-capture</option>
+            <option value="scrcpy">scrcpy / Android UI</option>
             <option value="dab">dab</option>
           </select>
           <select id="capture-kind-select">
@@ -1252,6 +1254,7 @@
         </div>
         <div id="capture-switch-status" class="capture-switch-status"></div>
         <div class="btn-row" style="margin-top:0; margin-bottom:0.75rem;">
+          <button class="secondary" id="scrcpy-stream-btn" onclick="startScrcpyStreamForActiveDevice()">Android UI</button>
           <button class="secondary" id="stream-toggle-btn" onclick="toggleHdmiStream()">Start Stream</button>
           <button class="secondary" id="floating-stream-toggle-btn" onclick="toggleFloatingStreamWindow()" disabled>Float Window</button>
           <button class="secondary" id="audio-toggle-btn" onclick="toggleAudioStream()">Start Audio</button>
@@ -1576,9 +1579,9 @@
   <span id="api-url"></span>
 </div>
 
-<div id="floating-stream-window" class="floating-stream-window hidden" aria-label="Floating HDMI stream">
+<div id="floating-stream-window" class="floating-stream-window hidden" aria-label="Floating TV UI stream">
   <div class="floating-stream-head">
-    <div class="floating-stream-title">HDMI Stream</div>
+    <div class="floating-stream-title">TV UI Stream</div>
     <div class="floating-stream-actions">
       <button class="secondary mini-btn" onclick="hideFloatingStreamWindow()">Hide</button>
       <button class="secondary mini-btn" onclick="closeFloatingStreamWindow()">Close</button>
@@ -3717,7 +3720,7 @@
     const resultEl = document.getElementById('manual-result');
     const wasStreaming = hdmiStreamRunning;
     const requestedSource = modeSel ? modeSel.value : 'auto';
-    const requestedDevice = activeDeviceContext?.cameraPath || (devSel ? String(devSel.value || '').trim() : '');
+    const requestedDevice = requestedSource === 'scrcpy' ? '' : (activeDeviceContext?.cameraPath || (devSel ? String(devSel.value || '').trim() : ''));
     const prevApplyLabel = setCaptureSelectionBusy(true, wasStreaming ? 'Switching camera…' : 'Applying capture settings…');
     try {
       if (wasStreaming && streamBox) {
@@ -3725,8 +3728,8 @@
         setHdmiStreamOverlay('Switching camera…');
       }
       await api('/capture/select', 'POST', {
-        source: activeDeviceContext?.videoSource || requestedSource,
-        preferred_kind: activeDeviceContext?.cameraPath ? (activeDeviceContext?.videoSource === 'hdmi-capture' ? 'hdmi' : 'camera') : (kindSel ? kindSel.value : 'auto'),
+        source: requestedSource === 'scrcpy' ? 'scrcpy' : (activeDeviceContext?.videoSource || requestedSource),
+        preferred_kind: requestedSource === 'scrcpy' ? 'auto' : (activeDeviceContext?.cameraPath ? (activeDeviceContext?.videoSource === 'hdmi-capture' ? 'hdmi' : 'camera') : (kindSel ? kindSel.value : 'auto')),
         device: requestedDevice,
         persist: true,
       });
@@ -3772,6 +3775,70 @@
       if (streamBox) streamBox.classList.remove('switching');
     } finally {
       setCaptureSelectionBusy(false, '', prevApplyLabel);
+    }
+  }
+
+  async function startScrcpyStreamForActiveDevice() {
+    if (captureSelectionBusy) return;
+    const resultEl = document.getElementById('manual-result');
+    const streamBox = document.getElementById('hdmi-stream-container');
+    const deviceId = getActiveLiveStreamDeviceId() || getSelectedDabDeviceId();
+    if (!isValidDabDeviceId(deviceId)) {
+      if (resultEl) {
+        resultEl.textContent = '✗ Select a DAB device first.';
+        setUiColor(resultEl, '--error');
+      }
+      return;
+    }
+
+    const prevApplyLabel = setCaptureSelectionBusy(true, 'Starting Android UI stream…');
+    const scrcpyBtn = document.getElementById('scrcpy-stream-btn');
+    if (scrcpyBtn) {
+      scrcpyBtn.disabled = true;
+      scrcpyBtn.textContent = 'Starting…';
+    }
+    try {
+      if (streamBox) {
+        streamBox.classList.add('switching');
+        setHdmiStreamOverlay('Starting Android UI stream…');
+      }
+      const data = await api('/stream/scrcpy/start', 'POST', {
+        device_id: deviceId,
+        persist: true,
+      });
+      if (!data.success) {
+        const detail = data.status?.hdmi_last_error || data.status?.last_error || 'ADB scrcpy capture is not ready.';
+        throw new Error(detail);
+      }
+      if (data.context) {
+        activeDeviceContext = data.context;
+        renderActiveDeviceContextPanel();
+      }
+      await startHdmiStream({
+        smooth: true,
+        overlayText: 'Connecting Android UI stream…',
+        forceRestart: true,
+      });
+      setCaptureSwitchStatus(`✓ Android UI stream active: ${data.device_id || deviceId}`);
+      if (resultEl) {
+        resultEl.textContent = `✓ Android UI stream active for ${data.device_id || deviceId}`;
+        setUiColor(resultEl, '--success');
+      }
+      void Promise.allSettled([loadCaptureSource(), refreshStreamDiagnostics()]);
+    } catch (e) {
+      if (resultEl) {
+        resultEl.textContent = `✗ ${e.message}`;
+        setUiColor(resultEl, '--error');
+      }
+      setCaptureSwitchStatus(`✗ ${e.message}`, true);
+      if (streamBox) streamBox.classList.remove('switching');
+      clearHdmiStreamOverlay();
+    } finally {
+      setCaptureSelectionBusy(false, '', prevApplyLabel);
+      if (scrcpyBtn) {
+        scrcpyBtn.disabled = false;
+        scrcpyBtn.textContent = 'Android UI';
+      }
     }
   }
 
@@ -4154,7 +4221,7 @@
     hdmiStreamStartupTimer = window.setTimeout(() => {
       if (token !== hdmiStreamTransitionToken) return;
       setHdmiStreamOverlay('Waiting for first frame from selected camera…');
-    }, 1800);
+    }, 900);
     document.getElementById('stream-toggle-btn').textContent = 'Stop Stream';
     document.getElementById('stream-toggle-btn').className = 'danger';
     hdmiStreamRunning = true;
@@ -4240,9 +4307,10 @@
     const applyBtn = document.getElementById('capture-apply-btn');
     const refreshBtn = document.getElementById('capture-refresh-btn');
     const streamBtn = document.getElementById('stream-toggle-btn');
+    const scrcpyBtn = document.getElementById('scrcpy-stream-btn');
 
     const previousLabel = applyBtn ? applyBtn.textContent : 'Apply';
-    [modeSel, kindSel, devSel, applyBtn, refreshBtn, streamBtn].forEach(el => {
+    [modeSel, kindSel, devSel, applyBtn, refreshBtn, streamBtn, scrcpyBtn].forEach(el => {
       if (el) el.disabled = !!isBusy;
     });
     if (applyBtn) {
@@ -4274,16 +4342,16 @@
     const targetDevice = String(device || '').trim();
     const previousDevice = String(previousActiveDevice || '').trim();
     const targetKind = String(preferredKind || 'auto').trim().toLowerCase();
-    const requiresVideo = ['auto', 'hdmi-capture', 'camera-capture', 'hdmi', 'camera', 'capture-card', 'webcam'].includes(normalizedSource);
+    const requiresVideo = ['auto', 'hdmi-capture', 'camera-capture', 'hdmi', 'camera', 'capture-card', 'webcam', 'scrcpy', 'adb', 'android'].includes(normalizedSource);
     const deadline = Date.now() + Math.max(500, Number(timeoutMs) || 4000);
 
     while (Date.now() < deadline) {
       const data = await api('/capture/source').catch(() => null);
       if (data) {
-        const activeDevice = String(data.hdmi_device || '').trim();
-        const selectedDevice = String(data.selected_video_device || '').trim();
+        const activeDevice = String(data.hdmi_device || data.scrcpy_device || '').trim();
+        const selectedDevice = String(data.selected_video_device || data.selected_scrcpy_device || '').trim();
         const selectedMatches = !targetDevice || selectedDevice === targetDevice || activeDevice === targetDevice;
-        const sourceMatches = !normalizedSource || String(data.configured_source || '').toLowerCase() === normalizedSource || (normalizedSource === 'hdmi' && data.configured_source === 'hdmi-capture') || (normalizedSource === 'camera' && data.configured_source === 'camera-capture');
+        const sourceMatches = !normalizedSource || String(data.configured_source || '').toLowerCase() === normalizedSource || (normalizedSource === 'hdmi' && data.configured_source === 'hdmi-capture') || (normalizedSource === 'camera' && data.configured_source === 'camera-capture') || (['adb', 'android'].includes(normalizedSource) && data.configured_source === 'scrcpy');
         const effectiveKind = String(data.effective_preferred_kind || data.preferred_video_kind || '').toLowerCase();
         const kindMatches = targetKind === 'auto' || !targetKind || effectiveKind === targetKind;
         const switchedDevice = !previousDevice || !activeDevice || activeDevice !== previousDevice || selectedMatches;
@@ -5408,6 +5476,7 @@
       if (item.video_file_name && (item.video_recording_status || '') !== 'unavailable' && (item.video_recording_status || '') !== 'failed') {
         links.push(`<a class="yts-download-link secondary" href="${apiOrigin}/yts/command/live/${encodeURIComponent(commandId)}/video" download="${escHtml(item.video_file_name)}" onclick="event.stopPropagation()">Video</a>`);
       }
+      const resultSummary = String(item.result_summary || '').trim();
       return `
         <div class="yts-job-item ${isActive ? 'active' : ''}" onclick="openYtsCommandHistoryItem(${JSON.stringify(commandId)})">
           <div style="display:flex; align-items:center; justify-content:space-between; gap:0.5rem;">
@@ -5416,6 +5485,7 @@
           </div>
           <div class="yts-job-meta">Updated: ${escHtml(updatedAt)}</div>
           <div class="yts-job-meta">${escHtml(commandText)}</div>
+          ${resultSummary ? `<div class="yts-job-summary">${escHtml(resultSummary)}</div>` : ''}
           <div class="yts-job-meta">Artifacts: ${escHtml(artifactBits.join(' · '))}</div>
           <div class="yts-job-links">${links.join(' ')}</div>
         </div>
@@ -5465,6 +5535,7 @@
       created_at: data.created_at,
       returncode: data.returncode,
       artifacts_dir: data.artifacts_dir,
+      result_summary: data.result_summary,
     };
     const index = ytsCommandHistory.findIndex(item => item.command_id === data.command_id);
     if (index >= 0) {
@@ -5527,6 +5598,9 @@
     let output = `<strong>Command:</strong> ${escHtml(data.command || '(starting...)')}\n\n`;
     output += `<strong>Job ID:</strong> ${escHtml(data.command_id || '(unknown)')}\n`;
     output += `<strong>Last Updated:</strong> ${escHtml(data.updated_at || '(unknown)')}\n\n`;
+    if (data.result_summary) {
+      output += `<strong>Past Result Summary:</strong>\n${escHtml(data.result_summary)}\n\n`;
+    }
     if (data.record_video) {
       output += `<strong>Video Recording:</strong> ${escHtml(data.video_recording_status || 'pending')}\n`;
       output += `<strong>Audio Recording:</strong> ${escHtml(data.audio_recording_status || 'disabled')}\n`;
