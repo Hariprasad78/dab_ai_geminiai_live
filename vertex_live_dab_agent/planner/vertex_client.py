@@ -25,10 +25,7 @@ class VertexPlannerClient:
         self._use_api_key = bool(self._api_key)
         self._project = str(project or "").strip()
         self._location = str(location or "").strip()
-        # Planner model selection is intentionally disabled. The planner uses
-        # the same Gemini Live model as the live controller so prompt behavior
-        # stays aligned with the camera/audio control loop.
-        self._model_name = GEMINI_LIVE_MODEL
+        self._model_name = str(model or GEMINI_LIVE_MODEL).strip() or GEMINI_LIVE_MODEL
 
         if not self._use_api_key:
             import vertexai
@@ -83,6 +80,25 @@ class VertexPlannerClient:
             http_options={"api_version": "v1beta"},
             api_key=self._api_key,
         )
+
+        if "live" not in self._model_name.lower():
+            contents: Any = prompt or "."
+            if screenshot_b64:
+                image_bytes = base64.b64decode(screenshot_b64)
+                contents = [
+                    prompt or ".",
+                    types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
+                ]
+            response = await client.aio.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=types.GenerateContentConfig(temperature=0.1),
+            )
+            response_text = str(getattr(response, "text", "") or response).strip()
+            if session_id:
+                self._chat_sessions[session_id] = [{"role": "model", "parts": [{"text": response_text}]}]
+            return response_text
+
         live_config = types.LiveConnectConfig(
             response_modalities=["AUDIO"],
             media_resolution="MEDIA_RESOLUTION_MEDIUM",
