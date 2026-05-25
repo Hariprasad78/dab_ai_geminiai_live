@@ -10,6 +10,7 @@ import com.dabcontrol.app.data.api.YtsLiveCommandRequestDto
 import com.dabcontrol.app.data.api.YtsLiveCommandStateDto
 import com.dabcontrol.app.data.api.YtsLiveCommandSummaryDto
 import com.dabcontrol.app.data.api.YtsTestCatalogItemDto
+import com.dabcontrol.app.data.api.YtsResultsAnalysisRequestDto
 import com.dabcontrol.app.data.preferences.ApiSettingsStore
 import com.dabcontrol.app.data.repo.ControlsRepository
 import com.dabcontrol.app.data.repo.YtsRepository
@@ -66,7 +67,38 @@ class YtsListViewModel @Inject constructor(
         refresh()
         loadCatalog(refresh = false)
         loadRuntimeModels()
+        fetchArtifacts()
         startPolling()
+    }
+
+    fun fetchArtifacts() {
+        viewModelScope.launch {
+            when (val result = ytsRepository.fetchResultArtifacts()) {
+                is ApiResult.Success -> {
+                    _uiState.value = _uiState.value.copy(artifacts = result.data)
+                }
+                else -> Unit
+            }
+        }
+    }
+
+    fun analyzeArtifacts(refs: List<String>) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(analysisLoading = true, analysisReportText = "")
+            val request = YtsResultsAnalysisRequestDto(artifact_refs = refs)
+            when (val result = ytsRepository.analyzeResultArtifacts(request)) {
+                is ApiResult.Success -> {
+                    val msg = result.data["message"]?.jsonPrimitive?.contentOrNull ?: "Analysis complete"
+                    _uiState.value = _uiState.value.copy(
+                        analysisLoading = false,
+                        analysisReportText = msg
+                    )
+                }
+                is ApiResult.HttpError -> _uiState.value = _uiState.value.copy(analysisLoading = false, error = "HTTP ${result.code}")
+                is ApiResult.NetworkError -> _uiState.value = _uiState.value.copy(analysisLoading = false, error = "Network Error")
+                is ApiResult.UnknownError -> _uiState.value = _uiState.value.copy(analysisLoading = false, error = "Unknown Error")
+            }
+        }
     }
 
     fun refresh() {

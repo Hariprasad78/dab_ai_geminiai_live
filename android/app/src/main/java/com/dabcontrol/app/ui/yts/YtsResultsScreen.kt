@@ -50,7 +50,8 @@ import com.dabcontrol.app.ui.common.SectionLabel
 private enum class ResultsTab(val label: String) {
     OVERVIEW("Overview"),
     SESSION_TABLE("Session Table"),
-    ARTIFACT_MATRIX("Artifacts")
+    ARTIFACT_MATRIX("Artifacts"),
+    ANALYSIS("Analysis")
 }
 
 private enum class ResultsStatusFilter(val label: String) {
@@ -125,6 +126,10 @@ fun YtsResultsScreen(
                     onOpenCommand = onOpenCommand,
                     onOpenReport = onOpenReport,
                     onOpenArtifact = onOpenArtifact
+                )
+                ResultsTab.ANALYSIS -> AnalysisTab(
+                    state = state,
+                    onAnalyze = viewModel::analyzeArtifacts
                 )
             }
         }
@@ -677,4 +682,102 @@ private fun matchesSearch(item: YtsLiveCommandSummaryDto, query: String): Boolea
 
 private fun hasReport(item: YtsLiveCommandSummaryDto): Boolean {
     return !item.report_html_name.isNullOrBlank() || !item.report_pdf_name.isNullOrBlank()
+}
+
+@Composable
+private fun AnalysisTab(
+    state: YtsListUiState,
+    onAnalyze: (List<String>) -> Unit
+) {
+    var selectedRefs by rememberSaveable { mutableStateOf(setOf<String>()) }
+    
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        item {
+            ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text("Result Analysis Studio", style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        "Select past result artifacts to generate an AI-driven triage report. This uses the backend's result analysis engine.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    
+                    if (state.artifacts.isEmpty()) {
+                        Text("No artifacts available for analysis.", style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+            }
+        }
+        
+        if (state.artifacts.isNotEmpty()) {
+            items(state.artifacts, key = { it.ref }) { artifact ->
+                val isSelected = selectedRefs.contains(artifact.ref)
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            selectedRefs = if (isSelected) {
+                                selectedRefs - artifact.ref
+                            } else {
+                                selectedRefs + artifact.ref
+                            }
+                        },
+                    color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    shape = MaterialTheme.shapes.small
+                ) {
+                    Row(
+                        modifier = Modifier.padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text(artifact.label, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                            Text("${artifact.command_id} • ${artifact.type}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+            }
+        }
+        
+        item {
+            ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        FilledTonalButton(
+                            enabled = selectedRefs.isNotEmpty() && !state.analysisLoading,
+                            onClick = { onAnalyze(selectedRefs.toList()) }
+                        ) {
+                            if (state.analysisLoading) {
+                                CircularProgressIndicator(modifier = Modifier.padding(end = 8.dp))
+                            }
+                            Text("Analyze Selected (${selectedRefs.size})")
+                        }
+                    }
+                    
+                    if (state.analysisReportText.isNotBlank()) {
+                        HorizontalDivider()
+                        Text("Analysis Result", style = MaterialTheme.typography.titleMedium)
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                            shape = MaterialTheme.shapes.medium,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = state.analysisReportText,
+                                modifier = Modifier.padding(12.dp),
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
