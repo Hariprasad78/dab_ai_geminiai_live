@@ -4258,6 +4258,43 @@ def _get_yts_live_state(command_id: str) -> Optional[Dict[str, Any]]:
     return loaded
 
 
+def _compact_yts_result_summary(state: Dict[str, Any], *, max_len: int = 280) -> str:
+    """Build a short human-readable result line for history cards."""
+    status = str(state.get("status") or "").strip()
+    returncode = state.get("returncode")
+    revalidation = list(state.get("revalidation") or [])
+    verdict_bits: List[str] = []
+    for item in revalidation[:4]:
+        verdict = str(item.get("verdict") or "").strip()
+        condition = str(item.get("condition") or item.get("condition_id") or "").strip()
+        reason = str(item.get("reason") or item.get("observed") or "").strip()
+        bit = " ".join(part for part in (verdict, condition, reason) if part)
+        if bit:
+            verdict_bits.append(bit)
+    if verdict_bits:
+        text = " | ".join(verdict_bits)
+    else:
+        logs = list(state.get("logs") or [])
+        interesting = [
+            str(entry.get("message") or "").strip()
+            for entry in reversed(logs)
+            if str(entry.get("stream") or "").lower() in {"system", "stdout", "stderr"}
+            and str(entry.get("message") or "").strip()
+        ]
+        text = interesting[0] if interesting else ""
+    if not text:
+        stdout_tail = str(state.get("stdout") or "").strip().splitlines()
+        stderr_tail = str(state.get("stderr") or "").strip().splitlines()
+        lines = [line.strip() for line in (stdout_tail[-3:] + stderr_tail[-3:]) if line.strip()]
+        text = lines[-1] if lines else ""
+    prefix = f"{status or 'unknown'}"
+    if returncode is not None:
+        prefix += f" (exit {returncode})"
+    summary = f"{prefix}: {text}" if text else prefix
+    summary = _strip_terminal_ansi(summary).replace("\n", " ").strip()
+    return summary[: max(40, max_len)].rstrip()
+
+
 def _summarize_yts_live_state(state: Dict[str, Any]) -> Dict[str, Any]:
     normalized = _normalize_yts_live_state(state)
     return {
@@ -4278,6 +4315,7 @@ def _summarize_yts_live_state(state: Dict[str, Any]) -> Dict[str, Any]:
         "created_at": normalized.get("created_at"),
         "returncode": normalized.get("returncode"),
         "artifacts_dir": normalized.get("artifacts_dir"),
+        "result_summary": _compact_yts_result_summary(normalized),
         "log_count": len(normalized.get("logs") or []),
         "response_count": len(normalized.get("responses") or []),
     }
@@ -9915,7 +9953,9 @@ async def get_yts_live_command(command_id: str) -> dict:
     state = _get_yts_live_state(command_id)
     if not state:
         raise HTTPException(status_code=404, detail=f"YTS command {command_id!r} not found")
-    return state
+    payload = dict(state)
+    payload["result_summary"] = _compact_yts_result_summary(state)
+    return payload
 
 
 @app.post("/yts/command/live/{command_id}/stop")
@@ -10450,7 +10490,10 @@ async def stream_hdmi() -> StreamingResponse:
     config = get_config()
     with contextlib.suppress(Exception):
         await _live_av_stream_manager.stop()
-    status = await asyncio.to_thread(_ensure_active_context_capture_session, force=True)
+    # Do not reopen the capture device for every browser stream connection.
+    # UVC and ADB-backed feeds can take seconds to reinitialize; the frame loop
+    # below already recovers lazily when a feed is actually stale.
+    status = await asyncio.to_thread(_ensure_active_context_capture_session, force=False)
     capture = get_screen_capture()
 
     if not status.get("hdmi_configured"):
@@ -10486,7 +10529,7 @@ async def stream_hdmi() -> StreamingResponse:
                 consecutive_errors += 1
                 if consecutive_errors == 1 or consecutive_errors % 20 == 0:
                     logger.warning("HDMI stream frame capture error (%s): %s", consecutive_errors, exc)
-                await asyncio.sleep(0.12)
+                await asyncio.sleep(0.04)
                 continue
             if frame is None:
                 consecutive_empty_frames += 1
@@ -10506,7 +10549,7 @@ async def stream_hdmi() -> StreamingResponse:
                         force_recover,
                         error,
                     )
-                await asyncio.sleep(0.10)
+                await asyncio.sleep(0.025)
                 continue
             consecutive_errors = 0
             consecutive_empty_frames = 0

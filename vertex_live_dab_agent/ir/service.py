@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -317,7 +318,7 @@ class SamsungIrService:
                 "brand": "samsung",
                 "sender": self._sender_channel,
                 "key": normalized_key,
-                "timeout_seconds": 0.5,
+                "timeout_seconds": 0.2,
             },
             cmd_aliases=["send_ir", "irsend", "send"],
             extra_attempts=[
@@ -326,16 +327,17 @@ class SamsungIrService:
                     "brand": "samsung",
                     "sender": self._sender_channel,
                     "key": normalized_key,
-                    "timeout_seconds": 0.5,
+                    "timeout_seconds": 0.2,
                 },
                 {
                     "command": "send",
                     "brand": "samsung",
                     "sender": self._sender_channel,
                     "key": normalized_key,
-                    "timeout_seconds": 0.5,
+                    "timeout_seconds": 0.2,
                 },
             ],
+            deadline_seconds=0.45,
         )
         if not bool(response.get("success")):
             return response
@@ -387,7 +389,7 @@ class SamsungIrService:
             {
                 "legacy_cmd": sendp_cmd,
                 "expect_prefixes": ["IRSENT:"],
-                "timeout_seconds": 0.35,
+                "timeout_seconds": 0.15,
             }
         )
         if not bool(legacy_sendp.get("success")):
@@ -418,9 +420,13 @@ class SamsungIrService:
                     {
                         "legacy_cmd": command,
                         "expect_prefixes": ["IRSENT:", "IRSEND:", "SENT:"],
-                        "timeout_seconds": 1.0,
+                        "timeout_seconds": 0.2,
                     }
                 )
+                if len(attempts) >= 2:
+                    break
+            if len(attempts) >= 2:
+                break
 
         legacy_sendk: Dict[str, Any] = {"success": False, "error": "No SENDK attempts were made"}
         for attempt in attempts:
@@ -448,7 +454,7 @@ class SamsungIrService:
             "sender": self._sender_channel,
             "key": normalized_key,
             "payload": payload,
-            "timeout_seconds": 0.5,
+            "timeout_seconds": 0.2,
         }
         flat_payload = {
             "cmd": "send",
@@ -460,7 +466,7 @@ class SamsungIrService:
             "bits": payload.get("bits"),
             "raw": payload.get("raw"),
             "value": payload.get("value"),
-            "timeout_seconds": 0.5,
+            "timeout_seconds": 0.2,
         }
         response = self._request_with_unknown_cmd_fallback(
             send_payload,
@@ -477,9 +483,10 @@ class SamsungIrService:
                     "bits": payload.get("bits"),
                     "raw": payload.get("raw"),
                     "value": payload.get("value"),
-                    "timeout_seconds": 0.5,
+                    "timeout_seconds": 0.2,
                 },
             ],
+            deadline_seconds=0.45,
         )
         if not bool(response.get("success")):
             return response
@@ -526,6 +533,7 @@ class SamsungIrService:
         payload: Dict[str, Any],
         cmd_aliases: List[str],
         extra_attempts: Optional[List[Dict[str, Any]]] = None,
+        deadline_seconds: Optional[float] = None,
     ) -> Dict[str, Any]:
         attempts: List[Dict[str, Any]] = [dict(payload)]
         base_cmd = str(payload.get("cmd") or "").strip().lower()
@@ -543,7 +551,10 @@ class SamsungIrService:
                 attempts.append(dict(extra))
 
         last_response: Dict[str, Any] = {"success": False, "error": "IR request failed"}
+        started = time.monotonic()
         for idx, candidate_payload in enumerate(attempts):
+            if deadline_seconds is not None and idx > 0 and (time.monotonic() - started) >= float(deadline_seconds):
+                break
             response = self._transport.request(candidate_payload)
             if bool(response.get("success")):
                 return response

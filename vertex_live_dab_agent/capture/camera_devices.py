@@ -333,7 +333,7 @@ def resolve_context_camera_path(context: DeviceContext) -> str:
     )
     if ranked and ranked[0][1] > 0:
         return ranked[0][0]
-    if len(search_space) == 1:
+    if len(search_space) == 1 and not configured:
         return search_space[0]
     return configured
 

@@ -867,6 +867,7 @@
     .yts-job-item.active { border-color:rgba(161, 161, 170, 0.46); background:linear-gradient(180deg, rgba(34, 34, 37, 0.98), rgba(19, 19, 21, 0.98)); }
     .yts-job-meta { font-size:0.75rem; color:var(--text-muted); margin-top:0.25rem; }
     .yts-job-title { font-size:0.82rem; color:#e2e8f0; word-break:break-word; }
+    .yts-job-summary { margin-top:0.45rem; font-size:0.76rem; line-height:1.35; color:var(--text); background:var(--surface-2); border:1px solid var(--border); border-radius:0.65rem; padding:0.45rem 0.55rem; }
     .yts-job-links { display:flex; flex-wrap:wrap; gap:0.4rem; margin-top:0.5rem; }
     .yts-status-badge { display:inline-block; padding:0.18rem 0.5rem; border-radius:999px; font-size:0.72rem; font-weight:600; }
     .yts-status-running { background:rgba(113, 113, 122, 0.18); color:var(--info); }
@@ -5475,6 +5476,7 @@
       if (item.video_file_name && (item.video_recording_status || '') !== 'unavailable' && (item.video_recording_status || '') !== 'failed') {
         links.push(`<a class="yts-download-link secondary" href="${apiOrigin}/yts/command/live/${encodeURIComponent(commandId)}/video" download="${escHtml(item.video_file_name)}" onclick="event.stopPropagation()">Video</a>`);
       }
+      const resultSummary = String(item.result_summary || '').trim();
       return `
         <div class="yts-job-item ${isActive ? 'active' : ''}" onclick="openYtsCommandHistoryItem(${JSON.stringify(commandId)})">
           <div style="display:flex; align-items:center; justify-content:space-between; gap:0.5rem;">
@@ -5483,6 +5485,7 @@
           </div>
           <div class="yts-job-meta">Updated: ${escHtml(updatedAt)}</div>
           <div class="yts-job-meta">${escHtml(commandText)}</div>
+          ${resultSummary ? `<div class="yts-job-summary">${escHtml(resultSummary)}</div>` : ''}
           <div class="yts-job-meta">Artifacts: ${escHtml(artifactBits.join(' · '))}</div>
           <div class="yts-job-links">${links.join(' ')}</div>
         </div>
@@ -5532,6 +5535,7 @@
       created_at: data.created_at,
       returncode: data.returncode,
       artifacts_dir: data.artifacts_dir,
+      result_summary: data.result_summary,
     };
     const index = ytsCommandHistory.findIndex(item => item.command_id === data.command_id);
     if (index >= 0) {
@@ -5594,6 +5598,9 @@
     let output = `<strong>Command:</strong> ${escHtml(data.command || '(starting...)')}\n\n`;
     output += `<strong>Job ID:</strong> ${escHtml(data.command_id || '(unknown)')}\n`;
     output += `<strong>Last Updated:</strong> ${escHtml(data.updated_at || '(unknown)')}\n\n`;
+    if (data.result_summary) {
+      output += `<strong>Past Result Summary:</strong>\n${escHtml(data.result_summary)}\n\n`;
+    }
     if (data.record_video) {
       output += `<strong>Video Recording:</strong> ${escHtml(data.video_recording_status || 'pending')}\n`;
       output += `<strong>Audio Recording:</strong> ${escHtml(data.audio_recording_status || 'disabled')}\n`;
