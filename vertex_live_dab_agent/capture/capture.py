@@ -84,7 +84,7 @@ class ScreenCapture:
         self._load_capture_preference()
         self._capture_lock = asyncio.Lock()
         self._session_lock = threading.RLock()
-        self._hdmi_reprobe_interval_s = 3.0
+        self._hdmi_reprobe_interval_s = 0.5
         self._next_hdmi_probe_ts = 0.0
         self._dab_capture_cooldown_s = 2.5
         self._next_dab_capture_ts = 0.0
@@ -92,10 +92,10 @@ class ScreenCapture:
         self._warned_no_hdmi = False
         self._last_hdmi_error: Optional[str] = None
         self._hdmi_stream_miss_count = 0
-        self._hdmi_stream_reset_after_misses = 20
+        self._hdmi_stream_reset_after_misses = 8
         self._last_hdmi_reset_ts = 0.0
-        self._hdmi_reset_cooldown_s = 5.0
-        self._hdmi_release_grace_s = 0.75
+        self._hdmi_reset_cooldown_s = 1.0
+        self._hdmi_release_grace_s = 0.1
         self._last_stream_jpeg: Optional[bytes] = None
         self._last_stream_jpeg_quality = 0
         self._last_stream_jpeg_ts = 0.0
@@ -103,9 +103,9 @@ class ScreenCapture:
         self._scrcpy: Optional[ScrcpyStreamSession] = None
         self._busy_video_devices: Dict[str, float] = {}
         try:
-            self._busy_video_quarantine_s = float(os.environ.get("CAMERA_BUSY_QUARANTINE_SECONDS", "30.0"))
+            self._busy_video_quarantine_s = float(os.environ.get("CAMERA_BUSY_QUARANTINE_SECONDS", "3.0"))
         except Exception:
-            self._busy_video_quarantine_s = 30.0
+            self._busy_video_quarantine_s = 3.0
 
     def _normalize_rotation_degrees(self, rotation_degrees: Optional[int]) -> int:
         try:
@@ -456,10 +456,18 @@ class ScreenCapture:
     def _drop_stale_session_locked(self) -> None:
         selected = str(self._selected_video_device or "").strip()
         active = self._hdmi
-        if active is None or not selected:
+        if active is None:
             return
-        if str(active.device or "").strip() == selected:
+            
+        # Fast fail if the device physically disappeared (unplugged)
+        if active.device and not os.path.exists(active.device):
+            logger.warning("Active capture device %s disappeared. Resetting session.", active.device)
+            self._reset_capture_session_locked(probe_delay_s=0.0)
             return
+            
+        if not selected or str(active.device or "").strip() == selected:
+            return
+            
         logger.info(
             "Closing stale capture session after source switch: active=%s selected=%s",
             active.device,

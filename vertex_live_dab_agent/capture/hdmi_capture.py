@@ -318,12 +318,14 @@ class HdmiCaptureSession:
         self._last_error: Optional[str] = None
         self._last_frame: Optional[Any] = None
         self._last_frame_ts: float = 0.0
-        self._max_cached_frame_age_s: float = 2.0
+        self._max_cached_frame_age_s: float = 0.05
         self._opened_at: float = 0.0
         self._reader_stop = threading.Event()
         self._frame_ready = threading.Event()
         self._reader_thread: Optional[threading.Thread] = None
         self._device_lock = _device_operation_lock(device)
+        self._consecutive_read_failures = 0
+        self._max_consecutive_failures = 6
 
     @staticmethod
     def normalize_rotation_degrees(rotation_degrees: int) -> int:
@@ -613,8 +615,13 @@ class HdmiCaptureSession:
             with self._capture_io_lock:
                 if self._reader_stop.is_set():
                     break
-                with _suppress_native_jpeg_stderr():
-                    ok, frame = cap.read()
+                
+                # Fast fail if the device file disappeared (e.g. unplugged)
+                if not os.path.exists(self.device):
+                    ok, frame = False, None
+                else:
+                    with _suppress_native_jpeg_stderr():
+                        ok, frame = cap.read()
             if ok and frame is not None:
                 try:
                     rotated = self._rotate_frame(frame)
@@ -627,16 +634,19 @@ class HdmiCaptureSession:
                     self._last_frame_ts = time.monotonic()
                     self._last_error = None
                     self._frame_ready.set()
+                    self._consecutive_read_failures = 0
                 consecutive_failures = 0
                 continue
 
             consecutive_failures += 1
-            if consecutive_failures >= 12:
+            with self._lock:
+                self._consecutive_read_failures = consecutive_failures
+            if consecutive_failures >= self._max_consecutive_failures:
                 with self._lock:
                     self._last_frame = None
                     self._last_frame_ts = 0.0
                     self._last_error = "Failed to read frame"
-            time.sleep(0.04 if cv2 is not None else 0.08)
+            time.sleep(0.01 if cv2 is not None else 0.02)
 
     def read_frame(self) -> Optional[Any]:
         """Read one frame from the HDMI input."""
@@ -661,18 +671,14 @@ class HdmiCaptureSession:
                 return None
 
         if self._last_frame is None:
-            self._frame_ready.wait(timeout=0.45)
+            self._frame_ready.wait(timeout=0.1)
         frame: Optional[Any] = None
         with self._lock:
             frame_age = time.monotonic() - self._last_frame_ts if self._last_frame_ts else 999.0
-            if self._last_frame is not None and frame_age <= self._max_cached_frame_age_s:
+            if self._last_frame is not None:
                 frame = self._copy_frame(self._last_frame)
-            elif self._last_frame is not None:
-                self._last_frame = None
-                self._last_frame_ts = 0.0
-                self._last_error = "Capture frame is stale"
             elif (time.monotonic() - self._opened_at) > 1.5:
-                self._last_error = self._last_error or "Failed to read frame"
+                self._last_error = self._last_error or f"No frame after 1.5s (failures={self._consecutive_read_failures})"
         return frame
 
     def capture_png_base64(self) -> Optional[str]:
