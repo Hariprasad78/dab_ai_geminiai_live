@@ -227,7 +227,8 @@ fun DabControlRoot() {
                         onOpenReport = { commandId -> navController.navigate(NavRoutes.ytsReport(commandId)) },
                         onOpenArtifact = { commandId, artifactType ->
                             navController.navigate(NavRoutes.ytsArtifact(commandId, artifactType))
-                        }
+                        },
+                        onOpenResultsAnalysis = { navController.navigatePrimary(NavRoutes.YTS_RESULTS) }
                     )
                 }
                 composable(NavRoutes.YTS_RESULTS) {

@@ -1,8 +1,8 @@
 package com.dabcontrol.app.data.api
 
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 
 @Serializable
@@ -99,7 +99,7 @@ data class YtsResultArtifactItemDto(
     val command: String? = null,
     val status: String? = null,
     val updated_at: String? = null,
-    val result_summary: JsonObject? = null,
+    val result_summary: JsonElement? = null,
     val ref: String = "",
     val type: String = "",
     val label: String = "",
@@ -112,4 +112,19 @@ data class YtsResultsAnalysisRequestDto(
     val include_zip_base64: Boolean = true,
     val analysis_model: String? = null,
     val triage_level: String = "deep"
+)
+
+@Serializable
+data class YtsResultsAnalysisResponseDto(
+    val report_id: String = "",
+    val txt_name: String = "",
+    val pdf_name: String = "",
+    val artifact_refs: List<String> = emptyList(),
+    val created_at: String = "",
+    val summary: String = "",
+    val analysis_model: String = "",
+    val triage_level: String = "",
+    val total_tests: Int = 0,
+    val failed_tests: Int = 0,
+    val failed_reasons: List<String> = emptyList()
 )

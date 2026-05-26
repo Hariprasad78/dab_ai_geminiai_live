@@ -74,7 +74,7 @@ interface DabApiService {
     @POST("yts/results/analyze")
     suspend fun analyzeYtsResultArtifacts(
         @Body request: YtsResultsAnalysisRequestDto
-    ): Response<JsonObject>
+    ): Response<YtsResultsAnalysisResponseDto>
 
     @GET("yts/results/analysis/{reportId}/txt")
     suspend fun ytsResultsAnalysisTxt(@Path("reportId") reportId: String): Response<JsonObject>
@@ -135,6 +135,12 @@ interface DabApiService {
 
     @POST("actions/batch")
     suspend fun manualActionsBatch(@Body request: ManualActionBatchRequestDto): Response<ManualActionBatchResponseDto>
+
+    @POST("stream/scrcpy/start")
+    suspend fun startScrcpyStream(@Body request: ScrcpyStreamStartRequestDto): Response<JsonObject>
+
+    @POST("screenshot")
+    suspend fun captureScreenshot(): Response<JsonObject>
 
     @GET("ir/status")
     suspend fun irStatus(): Response<JsonObject>

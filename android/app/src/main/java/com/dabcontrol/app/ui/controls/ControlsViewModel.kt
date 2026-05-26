@@ -15,8 +15,9 @@ import com.dabcontrol.app.data.api.ManualActionBatchRequestDto
 import com.dabcontrol.app.data.api.ManualActionBatchResponseDto
 import com.dabcontrol.app.data.api.ManualActionRequestDto
 import com.dabcontrol.app.data.api.ManualActionResponseDto
-import com.dabcontrol.app.data.api.PlannerDebugRequestDto
+import com.dabcontrol.app.data.api.ScrcpyStreamStartRequestDto
 import com.dabcontrol.app.data.api.TaskMacroRequestDto
+import com.dabcontrol.app.data.api.PlannerDebugRequestDto
 import com.dabcontrol.app.data.preferences.ApiSettingsStore
 import com.dabcontrol.app.data.repo.ControlsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -136,6 +137,25 @@ class ControlsViewModel @Inject constructor(
                 "Starting HDMI audio stream..."
             }
         )
+    }
+
+    fun startScrcpyStream() {
+        stopStream(clearFrame = false)
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(streamStatus = "Starting Android UI (scrcpy) stream...")
+            val req = ScrcpyStreamStartRequestDto(
+                device_id = _uiState.value.selectedDeviceId.ifBlank { null },
+                persist = false
+            )
+            when (val res = controlsRepository.startScrcpyStream(req)) {
+                is ApiResult.Success -> {
+                    startStream()
+                }
+                is ApiResult.HttpError -> _uiState.value = _uiState.value.copy(streamStatus = "Scrcpy start failed: HTTP ${res.code}")
+                is ApiResult.NetworkError -> _uiState.value = _uiState.value.copy(streamStatus = "Scrcpy start failed: network")
+                is ApiResult.UnknownError -> _uiState.value = _uiState.value.copy(streamStatus = "Scrcpy start failed")
+            }
+        }
     }
 
     fun onAudioPlaybackReady() {
@@ -618,16 +638,52 @@ class ControlsViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(plannerOcrText = value)
     }
 
+    fun captureScreenshot() {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isScreenshotting = true, plannerResult = "Capturing screenshot...")
+            when (val res = controlsRepository.captureScreenshot()) {
+                is ApiResult.Success -> {
+                    val b64 = res.data["image_b64"]?.jsonPrimitive?.content
+                    val ocr = res.data["ocr_text"]?.jsonPrimitive?.content
+                    _uiState.value = _uiState.value.copy(
+                        isScreenshotting = false,
+                        capturedScreenshotB64 = b64,
+                        plannerOcrText = ocr ?: _uiState.value.plannerOcrText,
+                        plannerResult = "Screenshot captured successfully."
+                    )
+                }
+                is ApiResult.HttpError -> _uiState.value = _uiState.value.copy(
+                    isScreenshotting = false,
+                    plannerResult = "Screenshot failed: HTTP ${res.code}"
+                )
+                is ApiResult.NetworkError -> _uiState.value = _uiState.value.copy(
+                    isScreenshotting = false,
+                    plannerResult = "Screenshot failed: network error"
+                )
+                is ApiResult.UnknownError -> _uiState.value = _uiState.value.copy(
+                    isScreenshotting = false,
+                    plannerResult = "Screenshot failed: unknown error"
+                )
+            }
+        }
+    }
+
     fun runPlannerDebug() {
         viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(plannerResult = "Analyzing...", isAnalyzing = true)
             val req = PlannerDebugRequestDto(
                 goal = _uiState.value.plannerGoal,
                 device_id = _uiState.value.selectedDeviceId.ifBlank { null },
                 ocr_text = _uiState.value.plannerOcrText.ifBlank { null },
+                screenshot_b64 = _uiState.value.capturedScreenshotB64,
+                use_live_capture = _uiState.value.capturedScreenshotB64 == null,
                 current_app = _uiState.value.plannerCurrentApp.ifBlank { null },
                 current_screen = _uiState.value.plannerCurrentScreen.ifBlank { null }
             )
-            _uiState.value = _uiState.value.copy(plannerResult = preview(controlsRepository.plannerDebug(req)))
+            _uiState.value = _uiState.value.copy(
+                plannerResult = preview(controlsRepository.plannerDebug(req)),
+                isAnalyzing = false
+            )
         }
     }
 

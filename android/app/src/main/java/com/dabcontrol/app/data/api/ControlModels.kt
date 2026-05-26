@@ -124,6 +124,12 @@ data class IrTrainRequestDto(
 )
 
 @Serializable
+data class ScrcpyStreamStartRequestDto(
+    val device_id: String? = null,
+    val persist: Boolean = true
+)
+
+@Serializable
 data class IrDevicesResponseDto(
     val brand: String? = null,
     val active_device_id: String? = null,
@@ -152,6 +158,9 @@ data class PlannerDebugRequestDto(
     val goal: String = "",
     val device_id: String? = null,
     val ocr_text: String? = null,
+    val screenshot_b64: String? = null,
+    val use_live_capture: Boolean = false,
     val current_app: String? = null,
-    val current_screen: String? = null
+    val current_screen: String? = null,
+    val last_actions: List<String>? = null
 )

@@ -56,6 +56,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.background
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.IntOffset
@@ -149,6 +151,7 @@ fun ControlsScreen(
                     onAudioPlaybackError = viewModel::onAudioPlaybackError,
                     onRemoteModeChanged = viewModel::onRemoteModeChanged,
                     onToggleStream = viewModel::toggleStream,
+                    onStartScrcpyStream = viewModel::startScrcpyStream,
                     onRefreshStream = viewModel::refreshStream,
                     onSendRemoteAction = viewModel::sendRemoteAction
                 )
@@ -169,7 +172,11 @@ fun ControlsScreen(
                     onPlannerAppChanged = viewModel::onPlannerAppChanged,
                     onPlannerScreenChanged = viewModel::onPlannerScreenChanged,
                     onPlannerOcrChanged = viewModel::onPlannerOcrChanged,
-                    onRunPlannerDebug = viewModel::runPlannerDebug
+                    onRunPlannerDebug = viewModel::runPlannerDebug,
+                    onCaptureScreenshot = viewModel::captureScreenshot,
+                    capturedScreenshotB64 = state.capturedScreenshotB64,
+                    isScreenshotting = state.isScreenshotting,
+                    isAnalyzing = state.isAnalyzing
                 )
             }
         }
@@ -510,6 +517,7 @@ private fun LiveControlCard(
     onAudioPlaybackError: (String) -> Unit,
     onRemoteModeChanged: (ControlsRemoteMode) -> Unit,
     onToggleStream: () -> Unit,
+    onStartScrcpyStream: () -> Unit,
     onRefreshStream: () -> Unit,
     onSendRemoteAction: (String) -> Unit
 ) {
@@ -556,8 +564,8 @@ private fun LiveControlCard(
     }
 
     SectionCard(
-        title = "Live Stream & Remote",
-        subtitle = "Operate the device while keeping the HDMI video and audio streams available for the selected device."
+        title = "Live Video & Remote",
+        subtitle = "Operate the device while viewing the video stream (HDMI or Android UI) and audio."
     ) {
         if (selectedDeviceId.isNotBlank()) {
             StatusStrip(
@@ -583,18 +591,32 @@ private fun LiveControlCard(
                 Text("IR Remote")
             }
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            FilledTonalButton(onClick = onToggleStream) {
-                Text(if (isStreaming) "Stop Stream" else "Start Stream")
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+            if (isStreaming) {
+                FilledTonalButton(onClick = onToggleStream, modifier = Modifier.weight(1f)) {
+                    Text("Stop Video")
+                }
+            } else {
+                FilledTonalButton(onClick = onToggleStream, modifier = Modifier.weight(1f)) {
+                    Text("HDMI Capture")
+                }
+                FilledTonalButton(onClick = onStartScrcpyStream, modifier = Modifier.weight(1f)) {
+                    Text("Android UI")
+                }
             }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
             FilledTonalButton(
                 onClick = onToggleAudioStream,
-                enabled = audioSource?.enabled != false && audioSource?.ffmpegAvailable != false
+                enabled = audioSource?.enabled != false && audioSource?.ffmpegAvailable != false,
+                modifier = Modifier.weight(1f)
             ) {
                 Text(if (isAudioStreaming) "Stop Audio" else "Start Audio")
             }
-            OutlinedButton(onClick = onRefreshStream) {
-                Text("Reconnect")
+            if (isStreaming || isAudioStreaming) {
+                OutlinedButton(onClick = onRefreshStream, modifier = Modifier.weight(1f)) {
+                    Text("Reconnect Stream")
+                }
             }
         }
 
@@ -612,7 +634,7 @@ private fun LiveControlCard(
                 ) {
                     Image(
                         bitmap = frameBitmap,
-                        contentDescription = "Live HDMI stream",
+                        contentDescription = "Live video stream",
                         modifier = Modifier
                             .fillMaxWidth()
                             .aspectRatio(16f / 9f)
@@ -631,7 +653,7 @@ private fun LiveControlCard(
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        if (isStreaming) "Waiting for HDMI video..." else "HDMI stream is stopped.",
+                        if (isStreaming) "Waiting for video frames..." else "Video stream is stopped.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
@@ -918,64 +940,91 @@ private fun AutomationLabCard(
     onPlannerAppChanged: (String) -> Unit,
     onPlannerScreenChanged: (String) -> Unit,
     onPlannerOcrChanged: (String) -> Unit,
-    onRunPlannerDebug: () -> Unit
+    onRunPlannerDebug: () -> Unit,
+    onCaptureScreenshot: () -> Unit,
+    capturedScreenshotB64: String?,
+    isScreenshotting: Boolean,
+    isAnalyzing: Boolean
 ) {
     SectionCard(
-        title = "Automation Lab",
-        subtitle = "Prototype macros and planner requests without leaving the control surface."
+        title = "AI UI Validation & Deep Analysis",
+        subtitle = "Capture device screen and perform deep AI-driven UI validation or analysis."
     ) {
-        Text("Task Macro", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Medium)
-        OutlinedTextField(
-            value = macroInstruction,
-            onValueChange = onMacroInstructionChanged,
-            label = { Text("Instruction") },
-            modifier = Modifier.fillMaxWidth(),
-            minLines = 2
-        )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text("Execute immediately")
-            Switch(checked = macroExecute, onCheckedChange = { onToggleMacroExecute() })
+        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            // Screenshot capture
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Visual Context", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                FilledTonalButton(
+                    onClick = onCaptureScreenshot,
+                    enabled = !isScreenshotting && !isAnalyzing
+                ) {
+                    Text(if (isScreenshotting) "Capturing..." else "Take Screenshot")
+                }
+            }
+
+            if (capturedScreenshotB64 != null) {
+                val bitmapBytes = android.util.Base64.decode(capturedScreenshotB64, android.util.Base64.DEFAULT)
+                val bitmap = android.graphics.BitmapFactory.decodeByteArray(bitmapBytes, 0, bitmapBytes.size)?.asImageBitmap()
+                if (bitmap != null) {
+                    Image(
+                        bitmap = bitmap,
+                        contentDescription = "Captured Screenshot",
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(16f / 9f)
+                            .background(Color.Black, MaterialTheme.shapes.medium),
+                        contentScale = ContentScale.Fit
+                    )
+                }
+            }
+
+            // Planner goal/prompt
+            OutlinedTextField(
+                value = plannerGoal,
+                onValueChange = onPlannerGoalChanged,
+                label = { Text("Validation Prompt / Analysis Goal") },
+                modifier = Modifier.fillMaxWidth(),
+                minLines = 3,
+                placeholder = { Text("e.g. Validate that the login button is present and clickable") }
+            )
+
+            // Analysis button
+            Button(
+                onClick = onRunPlannerDebug,
+                enabled = !isAnalyzing,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (isAnalyzing) "Analyzing UI..." else "Deep Analyze UI")
+            }
+
+            PreviewBlock(title = "Analysis Result", value = plannerResult)
+
+            HorizontalDivider()
+
+            // Automation Macro (Kept below analysis as a secondary feature)
+            Text("Task Macro", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            OutlinedTextField(
+                value = macroInstruction,
+                onValueChange = onMacroInstructionChanged,
+                label = { Text("Macro Instruction") },
+                modifier = Modifier.fillMaxWidth(),
+                minLines = 2
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Execute immediately")
+                Switch(checked = macroExecute, onCheckedChange = { onToggleMacroExecute() })
+            }
+            FilledTonalButton(onClick = onRunMacro) { Text("Run Macro") }
+            PreviewBlock(title = "Macro Result", value = macroResult)
         }
-        FilledTonalButton(onClick = onRunMacro) { Text("Run Macro") }
-        PreviewBlock(title = "Macro Result", value = macroResult)
-
-        HorizontalDivider()
-
-        Text("Planner Debug", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Medium)
-        OutlinedTextField(
-            value = plannerGoal,
-            onValueChange = onPlannerGoalChanged,
-            label = { Text("Goal") },
-            modifier = Modifier.fillMaxWidth(),
-            minLines = 2
-        )
-        OutlinedTextField(
-            value = plannerCurrentApp,
-            onValueChange = onPlannerAppChanged,
-            label = { Text("Current App (optional)") },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true
-        )
-        OutlinedTextField(
-            value = plannerCurrentScreen,
-            onValueChange = onPlannerScreenChanged,
-            label = { Text("Current Screen (optional)") },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true
-        )
-        OutlinedTextField(
-            value = plannerOcrText,
-            onValueChange = onPlannerOcrChanged,
-            label = { Text("OCR Text (optional)") },
-            modifier = Modifier.fillMaxWidth(),
-            minLines = 3
-        )
-        FilledTonalButton(onClick = onRunPlannerDebug) { Text("Run Planner Debug") }
-        PreviewBlock(title = "Planner Result", value = plannerResult)
     }
 }
 

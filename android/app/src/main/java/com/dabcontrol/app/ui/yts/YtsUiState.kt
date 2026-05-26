@@ -9,7 +9,8 @@ import com.dabcontrol.app.data.api.YtsResultArtifactItemDto
 enum class YtsWorkspaceTab {
     CREATE_JOB,
     RUNNING_SESSION,
-    PAST_RESULTS
+    PAST_RESULTS,
+    AI_ANALYSIS
 }
 
 data class YtsListUiState(
@@ -24,6 +25,10 @@ data class YtsListUiState(
     val activeCommand: YtsLiveCommandStateDto? = null,
     val artifacts: List<YtsResultArtifactItemDto> = emptyList(),
     val analysisReportText: String = "",
+    val analysisStatus: String = "No analysis submitted yet.",
+    val analysisReportId: String = "",
+    val analysisTxtName: String = "",
+    val analysisPdfName: String = "",
     val analysisLoading: Boolean = false,
     val promptInput: String = "",
     val sessionStatus: String = "No active YTS session.",

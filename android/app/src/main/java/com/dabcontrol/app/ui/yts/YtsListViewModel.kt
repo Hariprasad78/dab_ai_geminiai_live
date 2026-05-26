@@ -75,28 +75,89 @@ class YtsListViewModel @Inject constructor(
         viewModelScope.launch {
             when (val result = ytsRepository.fetchResultArtifacts()) {
                 is ApiResult.Success -> {
-                    _uiState.value = _uiState.value.copy(artifacts = result.data)
+                    _uiState.value = _uiState.value.copy(
+                        artifacts = result.data,
+                        analysisStatus = "Loaded ${result.data.size} artifact option${if (result.data.size == 1) "" else "s"}."
+                    )
                 }
-                else -> Unit
+                is ApiResult.HttpError -> _uiState.value = _uiState.value.copy(
+                    analysisStatus = "Artifact load failed: HTTP ${result.code}",
+                    error = "HTTP ${result.code}: ${result.message}"
+                )
+                is ApiResult.NetworkError -> _uiState.value = _uiState.value.copy(
+                    analysisStatus = "Artifact load failed: network",
+                    error = "Network error: ${result.throwable.message}"
+                )
+                is ApiResult.UnknownError -> _uiState.value = _uiState.value.copy(
+                    analysisStatus = "Artifact load failed",
+                    error = "Unknown error: ${result.throwable.message}"
+                )
             }
         }
     }
 
-    fun analyzeArtifacts(refs: List<String>) {
+    fun analyzeArtifacts(refs: List<String>, includeZipBase64: Boolean = true) {
+        if (refs.isEmpty()) {
+            _uiState.value = _uiState.value.copy(analysisStatus = "Select at least one artifact first.")
+            return
+        }
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(analysisLoading = true, analysisReportText = "")
-            val request = YtsResultsAnalysisRequestDto(artifact_refs = refs)
+            _uiState.value = _uiState.value.copy(
+                analysisLoading = true,
+                analysisReportText = "Analyzing selected result JSON, terminal logs, and DAB logs...",
+                analysisStatus = "Gemini is analyzing selected artifacts...",
+                analysisReportId = "",
+                analysisTxtName = "",
+                analysisPdfName = ""
+            )
+            val request = YtsResultsAnalysisRequestDto(
+                artifact_refs = refs,
+                include_zip_base64 = includeZipBase64,
+                analysis_model = "gemini-3.1-pro-preview",
+                triage_level = "deep"
+            )
             when (val result = ytsRepository.analyzeResultArtifacts(request)) {
                 is ApiResult.Success -> {
-                    val msg = result.data["message"]?.jsonPrimitive?.contentOrNull ?: "Analysis complete"
+                    val report = result.data
+                    val failedReasons = report.failed_reasons.ifEmpty { listOf("No failed reasons found by heuristic scan.") }
+                    val text = buildString {
+                        appendLine("Report: ${report.report_id.ifBlank { "-" }}")
+                        appendLine("Model: ${report.analysis_model.ifBlank { "gemini-3.1-pro-preview" }}")
+                        appendLine("Triage level: ${report.triage_level.ifBlank { "deep" }}")
+                        appendLine("Total tests found: ${report.total_tests}")
+                        appendLine("Failed tests count: ${report.failed_tests}")
+                        appendLine()
+                        appendLine("Failed reasons:")
+                        failedReasons.forEach { appendLine(it) }
+                        appendLine()
+                        appendLine("Gemini summary:")
+                        appendLine(report.summary.ifBlank { "-" })
+                    }
                     _uiState.value = _uiState.value.copy(
                         analysisLoading = false,
-                        analysisReportText = msg
+                        analysisReportText = text,
+                        analysisStatus = "Deep triage complete - ${report.analysis_model.ifBlank { "Gemini Pro" }} - failed tests: ${report.failed_tests}",
+                        analysisReportId = report.report_id,
+                        analysisTxtName = report.txt_name,
+                        analysisPdfName = report.pdf_name
                     )
+                    refresh()
                 }
-                is ApiResult.HttpError -> _uiState.value = _uiState.value.copy(analysisLoading = false, error = "HTTP ${result.code}")
-                is ApiResult.NetworkError -> _uiState.value = _uiState.value.copy(analysisLoading = false, error = "Network Error")
-                is ApiResult.UnknownError -> _uiState.value = _uiState.value.copy(analysisLoading = false, error = "Unknown Error")
+                is ApiResult.HttpError -> _uiState.value = _uiState.value.copy(
+                    analysisLoading = false,
+                    analysisStatus = "Analysis failed: HTTP ${result.code}",
+                    error = "HTTP ${result.code}: ${result.message}"
+                )
+                is ApiResult.NetworkError -> _uiState.value = _uiState.value.copy(
+                    analysisLoading = false,
+                    analysisStatus = "Analysis failed: network",
+                    error = "Network error: ${result.throwable.message}"
+                )
+                is ApiResult.UnknownError -> _uiState.value = _uiState.value.copy(
+                    analysisLoading = false,
+                    analysisStatus = "Analysis failed",
+                    error = "Unknown error: ${result.throwable.message}"
+                )
             }
         }
     }
@@ -137,6 +198,7 @@ class YtsListViewModel @Inject constructor(
                 )
             }
         }
+        fetchArtifacts()
     }
 
     fun selectTab(tab: YtsWorkspaceTab) {

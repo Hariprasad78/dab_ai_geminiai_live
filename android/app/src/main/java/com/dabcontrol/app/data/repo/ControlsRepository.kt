@@ -17,6 +17,7 @@ import com.dabcontrol.app.data.api.ManualActionRequestDto
 import com.dabcontrol.app.data.api.ManualActionResponseDto
 import com.dabcontrol.app.data.api.PlannerDebugRequestDto
 import com.dabcontrol.app.data.api.TaskMacroRequestDto
+import com.dabcontrol.app.data.api.ScrcpyStreamStartRequestDto
 import com.dabcontrol.app.data.api.safeApiCall
 import com.dabcontrol.app.data.preferences.ApiSettingsStore
 import javax.inject.Inject
@@ -66,10 +67,21 @@ class ControlsRepository @Inject constructor(
     suspend fun manualAction(request: ManualActionRequestDto): ApiResult<ManualActionResponseDto> =
         safeApiCall { service().manualAction(request) }
 
-    suspend fun manualBatch(request: ManualActionBatchRequestDto): ApiResult<ManualActionBatchResponseDto> =
-        safeApiCall { service().manualActionsBatch(request) }
+    suspend fun manualBatch(request: ManualActionBatchRequestDto): ApiResult<ManualActionBatchResponseDto> {
+        return safeApiCall { service().manualActionsBatch(request) }
+    }
 
-    suspend fun irStatus(): ApiResult<JsonObject> = safeApiCall { service().irStatus() }
+    suspend fun startScrcpyStream(request: ScrcpyStreamStartRequestDto): ApiResult<JsonObject> {
+        return safeApiCall { service().startScrcpyStream(request) }
+    }
+
+    suspend fun captureScreenshot(): ApiResult<JsonObject> {
+        return safeApiCall { service().captureScreenshot() }
+    }
+
+    suspend fun irStatus(): ApiResult<JsonObject> {
+        return safeApiCall { service().irStatus() }
+    }
 
     suspend fun irDevices(): ApiResult<IrDevicesResponseDto> = safeApiCall { service().irDevices() }
 

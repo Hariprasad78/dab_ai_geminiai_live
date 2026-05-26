@@ -89,6 +89,9 @@ data class ControlsUiState(
     val plannerCurrentScreen: String = "",
     val plannerOcrText: String = "",
     val plannerResult: String = "--",
+    val capturedScreenshotB64: String? = null,
+    val isScreenshotting: Boolean = false,
+    val isAnalyzing: Boolean = false,
     val refreshStatus: String = "Not refreshed yet.",
     val error: String? = null
 )

@@ -86,6 +86,7 @@ fun YtsListScreen(
     onOpenCommand: (String) -> Unit,
     onOpenReport: (String) -> Unit,
     onOpenArtifact: (String, String) -> Unit,
+    onOpenResultsAnalysis: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: YtsListViewModel = hiltViewModel()
 ) {
@@ -104,6 +105,7 @@ fun YtsListScreen(
                 YtsWorkspaceTab.CREATE_JOB -> createListState
                 YtsWorkspaceTab.RUNNING_SESSION -> runnerListState
                 YtsWorkspaceTab.PAST_RESULTS -> resultsListState
+                YtsWorkspaceTab.AI_ANALYSIS -> resultsListState
             }
             currentState.firstVisibleItemIndex == 0 && currentState.firstVisibleItemScrollOffset < 20
         }
@@ -190,7 +192,20 @@ fun YtsListScreen(
                         onToggleCommandCenter = { showCommandCenter = !showCommandCenter },
                         onOpenDetail = onOpenCommand,
                         onOpenReport = onOpenReport,
-                        onOpenArtifact = onOpenArtifact
+                        onOpenArtifact = onOpenArtifact,
+                        onOpenResultsAnalysis = onOpenResultsAnalysis
+                    )
+                    YtsWorkspaceTab.AI_ANALYSIS -> YtsResultsAnalysisPanel(
+                        artifacts = state.artifacts,
+                        analysisReportText = state.analysisReportText,
+                        analysisStatus = state.analysisStatus,
+                        analysisReportId = state.analysisReportId,
+                        analysisTxtName = state.analysisTxtName,
+                        analysisPdfName = state.analysisPdfName,
+                        apiBaseUrl = state.apiBaseUrl,
+                        analysisLoading = state.analysisLoading,
+                        onAnalyze = viewModel::analyzeArtifacts,
+                        onRefreshArtifacts = viewModel::fetchArtifacts
                     )
                 }
             }
@@ -233,7 +248,8 @@ private fun WorkspaceTabs(
     val tabs = listOf(
         YtsWorkspaceTab.CREATE_JOB to "Create Job",
         YtsWorkspaceTab.RUNNING_SESSION to "Test Runner",
-        YtsWorkspaceTab.PAST_RESULTS to "Past Results"
+        YtsWorkspaceTab.PAST_RESULTS to "Past Results",
+        YtsWorkspaceTab.AI_ANALYSIS to "AI Analysis"
     )
     ScrollableTabRow(
         selectedTabIndex = tabs.indexOfFirst { it.first == activeTab },
@@ -881,7 +897,8 @@ private fun ResultsWindow(
     onToggleCommandCenter: () -> Unit,
     onOpenDetail: (String) -> Unit,
     onOpenReport: (String) -> Unit,
-    onOpenArtifact: (String, String) -> Unit
+    onOpenArtifact: (String, String) -> Unit,
+    onOpenResultsAnalysis: () -> Unit
 ) {
     val completedItems = state.items.filter { it.status in terminalStates }
     LazyColumn(
@@ -907,6 +924,9 @@ private fun ResultsWindow(
                 )
                 FilledTonalButton(onClick = onRefresh) {
                     Text("Refresh Results")
+                }
+                OutlinedButton(onClick = onOpenResultsAnalysis) {
+                    Text("Open AI Results Analysis")
                 }
             }
         }

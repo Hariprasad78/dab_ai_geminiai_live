@@ -1,5 +1,7 @@
 package com.dabcontrol.app.ui.yts
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -8,11 +10,13 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -38,11 +42,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.dabcontrol.app.data.api.YtsResultArtifactItemDto
 import com.dabcontrol.app.data.api.YtsLiveCommandSummaryDto
 import com.dabcontrol.app.ui.common.PremiumBackdrop
 import com.dabcontrol.app.ui.common.SectionLabel
@@ -50,8 +57,8 @@ import com.dabcontrol.app.ui.common.SectionLabel
 private enum class ResultsTab(val label: String) {
     OVERVIEW("Overview"),
     SESSION_TABLE("Session Table"),
-    ARTIFACT_MATRIX("Artifacts"),
-    ANALYSIS("Analysis")
+    AI_ANALYSIS("AI Analysis"),
+    FILES("Files & Artifacts")
 }
 
 private enum class ResultsStatusFilter(val label: String) {
@@ -121,15 +128,21 @@ fun YtsResultsScreen(
                     onOpenReport = onOpenReport,
                     onOpenArtifact = onOpenArtifact
                 )
-                ResultsTab.ARTIFACT_MATRIX -> ArtifactMatrixTab(
-                    items = filteredItems,
-                    onOpenCommand = onOpenCommand,
-                    onOpenReport = onOpenReport,
-                    onOpenArtifact = onOpenArtifact
+                ResultsTab.AI_ANALYSIS -> YtsResultsAnalysisPanel(
+                    artifacts = state.artifacts,
+                    analysisReportText = state.analysisReportText,
+                    analysisStatus = state.analysisStatus,
+                    analysisReportId = state.analysisReportId,
+                    analysisTxtName = state.analysisTxtName,
+                    analysisPdfName = state.analysisPdfName,
+                    apiBaseUrl = state.apiBaseUrl,
+                    analysisLoading = state.analysisLoading,
+                    onAnalyze = viewModel::analyzeArtifacts,
+                    onRefreshArtifacts = viewModel::fetchArtifacts
                 )
-                ResultsTab.ANALYSIS -> AnalysisTab(
-                    state = state,
-                    onAnalyze = viewModel::analyzeArtifacts
+                ResultsTab.FILES -> ResultsFilesTab(
+                    items = filteredItems,
+                    onOpenArtifact = onOpenArtifact
                 )
             }
         }
@@ -303,82 +316,292 @@ private fun ResultsTableTab(
     onOpenReport: (String) -> Unit,
     onOpenArtifact: (String, String) -> Unit
 ) {
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
-            TableHeaderRow()
+            ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Session Table", style = MaterialTheme.typography.titleLarge)
+                    Text("Comprehensive list of all past execution sessions.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
         }
         items(items, key = { it.command_id }) { item ->
-            SessionTableRow(
-                item = item,
-                onOpenCommand = onOpenCommand,
-                onOpenReport = onOpenReport,
-                onOpenArtifact = onOpenArtifact
-            )
+            SessionTableRow(item = item, onOpenCommand = onOpenCommand, onOpenReport = onOpenReport, onOpenArtifact = onOpenArtifact)
         }
     }
 }
 
 @Composable
-private fun ArtifactMatrixTab(
-    items: List<YtsLiveCommandSummaryDto>,
-    onOpenCommand: (String) -> Unit,
-    onOpenReport: (String) -> Unit,
-    onOpenArtifact: (String, String) -> Unit
+internal fun YtsResultsAnalysisPanel(
+    artifacts: List<YtsResultArtifactItemDto>,
+    analysisReportText: String,
+    analysisStatus: String,
+    analysisReportId: String,
+    analysisTxtName: String,
+    analysisPdfName: String,
+    apiBaseUrl: String,
+    analysisLoading: Boolean,
+    onAnalyze: (List<String>, Boolean) -> Unit,
+    onRefreshArtifacts: () -> Unit
 ) {
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    var selectedRefs by rememberSaveable { mutableStateOf(setOf<String>()) }
+    var includeZipBase64 by rememberSaveable { mutableStateOf(true) }
+    val groupedArtifacts = remember(artifacts) { artifacts.groupBy { it.command_id.ifBlank { "unknown" } } }
+    val latestCommandId = artifacts.firstOrNull { it.command_id.isNotBlank() }?.command_id
+    val context = LocalContext.current
+    val baseUrl = apiBaseUrl.trimEnd('/')
+
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
             ElevatedCard(modifier = Modifier.fillMaxWidth()) {
-                Column(
-                    modifier = Modifier.padding(18.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Text("Artifact Matrix", style = MaterialTheme.typography.titleLarge)
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("YTS Results Gemini Analysis", style = MaterialTheme.typography.titleLarge)
                     Text(
-                        "Each row shows whether the backend has produced the expected evidence bundle for that session.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        "Select result artifacts and ask the backend Gemini analysis engine to correlate JSON results, terminal logs, and DAB/device evidence into a triage report.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodyMedium
                     )
-                }
-            }
-        }
-        items(items, key = { it.command_id }) { item ->
-            ElevatedCard(modifier = Modifier.fillMaxWidth()) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Row(
+
+                    Surface(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                        shape = MaterialTheme.shapes.small
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(item.command ?: item.command_id, fontWeight = FontWeight.SemiBold)
-                            Text(item.command_id, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            text = analysisStatus,
+                            modifier = Modifier.padding(12.dp),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = includeZipBase64,
+                            onCheckedChange = { includeZipBase64 = it }
+                        )
+                        Text("Include DAB ZIP base64 in Gemini prompt")
+                    }
+
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        FilledTonalButton(
+                            onClick = { onAnalyze(selectedRefs.toList(), includeZipBase64) },
+                            enabled = !analysisLoading && selectedRefs.isNotEmpty(),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(if (analysisLoading) "Analyzing..." else "Analyze ${selectedRefs.size} Selected")
                         }
-                        StatusBadge(item.status)
+                        OutlinedButton(onClick = onRefreshArtifacts) {
+                            Text("Refresh")
+                        }
                     }
-                    ArtifactStatusRow("Structured Result", item.result_file_name) {
-                        onOpenArtifact(item.command_id, YtsArtifactViewModel.TYPE_RESULT)
-                    }
-                    ArtifactStatusRow("HTML Summary", item.report_html_name) {
-                        onOpenArtifact(item.command_id, YtsArtifactViewModel.TYPE_REPORT_HTML)
-                    }
-                    ArtifactStatusRow("PDF Summary", item.report_pdf_name) {
-                        onOpenArtifact(item.command_id, YtsArtifactViewModel.TYPE_REPORT_PDF)
-                    }
-                    ArtifactStatusRow("Session Video", item.video_file_name)
+
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        FilledTonalButton(onClick = { onOpenCommand(item.command_id) }) {
-                            Text("Open Session")
+                        OutlinedButton(
+                            enabled = latestCommandId != null,
+                            onClick = {
+                                latestCommandId?.let { commandId ->
+                                    selectedRefs = coreArtifactRefs(groupedArtifacts[commandId].orEmpty())
+                                }
+                            }
+                        ) { Text("Latest Core") }
+                        OutlinedButton(onClick = { selectedRefs = emptySet() }) {
+                            Text("Clear")
                         }
-                        if (hasReport(item)) {
-                            OutlinedButton(onClick = { onOpenReport(item.command_id) }) {
-                                Text("Open Report")
+                    }
+
+                    if (analysisReportText.isNotBlank()) {
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 200.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                            shape = MaterialTheme.shapes.medium
+                        ) {
+                            Text(
+                                text = analysisReportText,
+                                modifier = Modifier.padding(12.dp),
+                                fontFamily = FontFamily.Monospace,
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
+
+                    if (analysisReportId.isNotBlank() && baseUrl.isNotBlank()) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(
+                                onClick = {
+                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(analysisDownloadUrl(baseUrl, analysisReportId, "txt"))))
+                                }
+                            ) {
+                                Text(analysisTxtName.ifBlank { "Open TXT" })
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(analysisDownloadUrl(baseUrl, analysisReportId, "pdf"))))
+                                }
+                            ) {
+                                Text(analysisPdfName.ifBlank { "Open PDF" })
                             }
                         }
                     }
                 }
             }
+        }
+
+        item {
+            Text(
+                "Available Artifacts (${artifacts.size}) - ${selectedRefs.size} selected",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(start = 4.dp)
+            )
+        }
+
+        if (artifacts.isEmpty()) {
+            item {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                    shape = MaterialTheme.shapes.medium
+                ) {
+                    Text(
+                        "No result artifacts found yet. Run a YTS session, then refresh artifacts.",
+                        modifier = Modifier.padding(16.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        groupedArtifacts.forEach { (commandId, commandArtifacts) ->
+            item(key = "job-$commandId") {
+                ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        val first = commandArtifacts.firstOrNull()
+                        Text(commandId, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            listOfNotNull(first?.status, first?.updated_at, first?.command).filter { it.isNotBlank() }.joinToString(" - ").ifBlank { "YTS result artifacts" },
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = { selectedRefs = coreArtifactRefs(commandArtifacts) }) {
+                                Text("Core")
+                            }
+                            OutlinedButton(onClick = { selectedRefs = commandArtifacts.map { it.ref }.toSet() }) {
+                                Text("All")
+                            }
+                        }
+                    }
+                }
+            }
+            items(commandArtifacts, key = { it.ref }) { artifact ->
+                AnalysisArtifactRow(
+                    artifact = artifact,
+                    selected = selectedRefs.contains(artifact.ref),
+                    onSelectedChanged = { selected ->
+                        selectedRefs = if (selected) selectedRefs + artifact.ref else selectedRefs - artifact.ref
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AnalysisArtifactRow(
+    artifact: YtsResultArtifactItemDto,
+    selected: Boolean,
+    onSelectedChanged: (Boolean) -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onSelectedChanged(!selected) },
+        color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        shape = MaterialTheme.shapes.small
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Checkbox(checked = selected, onCheckedChange = onSelectedChanged)
+            Column(modifier = Modifier.weight(1f)) {
+                Text(artifact.label.ifBlank { artifact.ref }, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "${artifact.type.ifBlank { "artifact" }} - ${artifact.status ?: "--"}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    summarizeArtifact(artifact),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ResultsFilesTab(
+    items: List<YtsLiveCommandSummaryDto>,
+    onOpenArtifact: (String, String) -> Unit
+) {
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        item {
+            ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Artifact Explorer", style = MaterialTheme.typography.titleLarge)
+                    Text("Direct access to generated files and output evidence from recent sessions.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+        items(items, key = { it.command_id }) { item ->
+            ResultArtifactsList(item = item, onOpenArtifact = onOpenArtifact)
+        }
+    }
+}
+
+@Composable
+private fun ResultArtifactsList(
+    item: YtsLiveCommandSummaryDto,
+    onOpenArtifact: (String, String) -> Unit
+) {
+    ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(item.command ?: item.command_id, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(item.command_id, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            ArtifactStatusRow(
+                label = "Saved Result",
+                value = item.result_file_name,
+                onOpen = { onOpenArtifact(item.command_id, YtsArtifactViewModel.TYPE_RESULT) }
+            )
+            ArtifactStatusRow(
+                label = "HTML Report",
+                value = item.report_html_name,
+                onOpen = { onOpenArtifact(item.command_id, YtsArtifactViewModel.TYPE_REPORT_HTML) }
+            )
+            ArtifactStatusRow(
+                label = "PDF Report",
+                value = item.report_pdf_name,
+                onOpen = { onOpenArtifact(item.command_id, YtsArtifactViewModel.TYPE_REPORT_PDF) }
+            )
+            ArtifactStatusRow(
+                label = "Video Evidence",
+                value = item.video_file_name,
+                onOpen = null
+            )
         }
     }
 }
@@ -684,100 +907,20 @@ private fun hasReport(item: YtsLiveCommandSummaryDto): Boolean {
     return !item.report_html_name.isNullOrBlank() || !item.report_pdf_name.isNullOrBlank()
 }
 
-@Composable
-private fun AnalysisTab(
-    state: YtsListUiState,
-    onAnalyze: (List<String>) -> Unit
-) {
-    var selectedRefs by rememberSaveable { mutableStateOf(setOf<String>()) }
-    
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        item {
-            ElevatedCard(modifier = Modifier.fillMaxWidth()) {
-                Column(
-                    modifier = Modifier.padding(18.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Text("Result Analysis Studio", style = MaterialTheme.typography.titleLarge)
-                    Text(
-                        "Select past result artifacts to generate an AI-driven triage report. This uses the backend's result analysis engine.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    
-                    if (state.artifacts.isEmpty()) {
-                        Text("No artifacts available for analysis.", style = MaterialTheme.typography.bodyMedium)
-                    }
-                }
-            }
-        }
-        
-        if (state.artifacts.isNotEmpty()) {
-            items(state.artifacts, key = { it.ref }) { artifact ->
-                val isSelected = selectedRefs.contains(artifact.ref)
-                Surface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable {
-                            selectedRefs = if (isSelected) {
-                                selectedRefs - artifact.ref
-                            } else {
-                                selectedRefs + artifact.ref
-                            }
-                        },
-                    color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                    shape = MaterialTheme.shapes.small
-                ) {
-                    Row(
-                        modifier = Modifier.padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text(artifact.label, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-                            Text("${artifact.command_id} • ${artifact.type}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-                }
-            }
-        }
-        
-        item {
-            ElevatedCard(modifier = Modifier.fillMaxWidth()) {
-                Column(
-                    modifier = Modifier.padding(18.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End
-                    ) {
-                        FilledTonalButton(
-                            enabled = selectedRefs.isNotEmpty() && !state.analysisLoading,
-                            onClick = { onAnalyze(selectedRefs.toList()) }
-                        ) {
-                            if (state.analysisLoading) {
-                                CircularProgressIndicator(modifier = Modifier.padding(end = 8.dp))
-                            }
-                            Text("Analyze Selected (${selectedRefs.size})")
-                        }
-                    }
-                    
-                    if (state.analysisReportText.isNotBlank()) {
-                        HorizontalDivider()
-                        Text("Analysis Result", style = MaterialTheme.typography.titleMedium)
-                        Surface(
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                            shape = MaterialTheme.shapes.medium,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(
-                                text = state.analysisReportText,
-                                modifier = Modifier.padding(12.dp),
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
+private fun coreArtifactRefs(artifacts: List<YtsResultArtifactItemDto>): Set<String> {
+    val coreTypes = setOf("result-json", "terminal-log", "dab-log-summary")
+    return artifacts
+        .filter { it.type in coreTypes || it.ref.substringAfterLast(":") in coreTypes }
+        .map { it.ref }
+        .toSet()
+        .ifEmpty { artifacts.take(1).map { it.ref }.toSet() }
+}
+
+private fun summarizeArtifact(artifact: YtsResultArtifactItemDto): String {
+    val summary = artifact.result_summary?.toString().orEmpty()
+    return summary.ifBlank { artifact.ref }
+}
+
+private fun analysisDownloadUrl(baseUrl: String, reportId: String, kind: String): String {
+    return "$baseUrl/yts/results/analysis/${Uri.encode(reportId)}/$kind"
 }

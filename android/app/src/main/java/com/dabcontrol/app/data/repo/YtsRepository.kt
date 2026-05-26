@@ -12,6 +12,7 @@ import com.dabcontrol.app.data.api.YtsPromptResponseRequest
 import com.dabcontrol.app.data.api.YtsPromptSuggestRequest
 import com.dabcontrol.app.data.api.YtsTestCatalogItemDto
 import com.dabcontrol.app.data.api.YtsResultArtifactItemDto
+import com.dabcontrol.app.data.api.YtsResultsAnalysisResponseDto
 import com.dabcontrol.app.data.api.YtsResultsAnalysisRequestDto
 import com.dabcontrol.app.data.api.safeApiCall
 import com.dabcontrol.app.data.preferences.ApiSettingsStore
@@ -55,7 +56,7 @@ class YtsRepository @Inject constructor(
         return safeApiCall { service().ytsResultsArtifacts(limit) }
     }
 
-    suspend fun analyzeResultArtifacts(request: YtsResultsAnalysisRequestDto): ApiResult<JsonObject> {
+    suspend fun analyzeResultArtifacts(request: YtsResultsAnalysisRequestDto): ApiResult<YtsResultsAnalysisResponseDto> {
         return safeApiCall { service().analyzeYtsResultArtifacts(request) }
     }
 
