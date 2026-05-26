@@ -218,4 +218,6 @@ if __name__ == "__main__":
         port=config.api_port,
         reload=False,
         log_level=uvicorn_log_level,
+        access_log=str(os.environ.get("API_ACCESS_LOG", "false")).strip().lower() in {"1", "true", "yes", "on"},
+        timeout_graceful_shutdown=float(os.environ.get("API_GRACEFUL_SHUTDOWN_TIMEOUT", "1.0")),
     )

@@ -4248,17 +4248,16 @@
       container.classList.remove('switching');
       clearHdmiStreamOverlay();
     }
-    img.onload = () => {
+    const markMjpegVisible = () => {
       if (token !== hdmiStreamTransitionToken) return;
       if (hdmiStreamStartupTimer) {
         window.clearTimeout(hdmiStreamStartupTimer);
         hdmiStreamStartupTimer = null;
       }
       container.classList.remove('switching');
-      window.setTimeout(() => {
-        if (token === hdmiStreamTransitionToken) clearHdmiStreamOverlay();
-      }, 450);
+      clearHdmiStreamOverlay();
     };
+    img.onload = markMjpegVisible;
     img.onerror = () => {
       if (token !== hdmiStreamTransitionToken) return;
       if (hdmiStreamStartupTimer) {
@@ -4272,9 +4271,10 @@
         window.setTimeout(() => {
           if (token !== hdmiStreamTransitionToken || !hdmiStreamRunning) return;
           img.src = `${apiBase}/stream/hdmi?ts=${Date.now()}`;
-        }, 900);
+        }, 250);
       });
     };
+    void api('/capture/recover', 'POST', {}).catch(() => null);
     if (forceRestart) img.src = '';
     img.src = url;
     floatingStreamMode = 'mjpeg';
@@ -4282,8 +4282,8 @@
     syncFloatingStreamContent();
     hdmiStreamStartupTimer = window.setTimeout(() => {
       if (token !== hdmiStreamTransitionToken) return;
-      setHdmiStreamOverlay('Waiting for first frame from selected camera…');
-    }, 900);
+      markMjpegVisible();
+    }, 700);
     document.getElementById('stream-toggle-btn').textContent = 'Stop Stream';
     document.getElementById('stream-toggle-btn').className = 'danger';
     hdmiStreamRunning = true;
