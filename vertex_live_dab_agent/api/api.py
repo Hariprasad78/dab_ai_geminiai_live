@@ -2727,8 +2727,10 @@ def _ensure_yts_live_db() -> sqlite3.Connection:
         if _yts_live_db_conn is None or _yts_live_db_path != db_path:
             if _yts_live_db_conn is not None:
                 _yts_live_db_conn.close()
-            conn = sqlite3.connect(db_path, check_same_thread=False)
+            conn = sqlite3.connect(db_path, timeout=1.0, check_same_thread=False)
             conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA busy_timeout = 1000")
+            conn.execute("PRAGMA journal_mode = WAL")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS yts_live_commands (
@@ -4220,41 +4222,50 @@ def _persist_yts_live_state(state: Dict[str, Any]) -> Dict[str, Any]:
     state.clear()
     state.update(normalized)
     payload = json.dumps(normalized)
-    with _yts_live_db_lock:
-        conn.execute(
-            """
-            INSERT INTO yts_live_commands (
-                command_id, status, command_text, interactive_ai, created_at, updated_at, state_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(command_id) DO UPDATE SET
-                status = excluded.status,
-                command_text = excluded.command_text,
-                interactive_ai = excluded.interactive_ai,
-                created_at = excluded.created_at,
-                updated_at = excluded.updated_at,
-                state_json = excluded.state_json
-            """,
-            (
-                normalized["command_id"],
-                normalized["status"],
-                normalized.get("command") or "",
-                1 if normalized.get("interactive_ai") else 0,
-                normalized["created_at"],
-                normalized["updated_at"],
-                payload,
-            ),
-        )
-        conn.commit()
+    try:
+        with _yts_live_db_lock:
+            conn.execute(
+                """
+                INSERT INTO yts_live_commands (
+                    command_id, status, command_text, interactive_ai, created_at, updated_at, state_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(command_id) DO UPDATE SET
+                    status = excluded.status,
+                    command_text = excluded.command_text,
+                    interactive_ai = excluded.interactive_ai,
+                    created_at = excluded.created_at,
+                    updated_at = excluded.updated_at,
+                    state_json = excluded.state_json
+                """,
+                (
+                    normalized["command_id"],
+                    normalized["status"],
+                    normalized.get("command") or "",
+                    1 if normalized.get("interactive_ai") else 0,
+                    normalized["created_at"],
+                    normalized["updated_at"],
+                    payload,
+                ),
+            )
+            conn.commit()
+    except sqlite3.OperationalError as exc:
+        with contextlib.suppress(Exception):
+            conn.rollback()
+        logger.warning("Unable to persist YTS live state %s: %s", normalized.get("command_id"), exc)
     return state
 
 
 def _load_yts_live_state(command_id: str) -> Optional[Dict[str, Any]]:
     conn = _ensure_yts_live_db()
-    with _yts_live_db_lock:
-        row = conn.execute(
-            "SELECT state_json FROM yts_live_commands WHERE command_id = ?",
-            (command_id,),
-        ).fetchone()
+    try:
+        with _yts_live_db_lock:
+            row = conn.execute(
+                "SELECT state_json FROM yts_live_commands WHERE command_id = ?",
+                (command_id,),
+            ).fetchone()
+    except sqlite3.OperationalError as exc:
+        logger.warning("Unable to load YTS live state %s: %s", command_id, exc)
+        return None
     if not row:
         return None
     return _normalize_yts_live_state(json.loads(row["state_json"]))
@@ -4685,9 +4696,17 @@ def _list_yts_live_states(limit: int = 10, active_only: bool = False, *, cleanup
         params.append("running")
     query += " ORDER BY updated_at DESC LIMIT ?"
     params.append(capped_limit)
-    with _yts_live_db_lock:
-        rows = conn.execute(query, tuple(params)).fetchall()
-    return [_summarize_yts_live_state(json.loads(row["state_json"])) for row in rows]
+    try:
+        with _yts_live_db_lock:
+            rows = conn.execute(query, tuple(params)).fetchall()
+        return [_summarize_yts_live_state(json.loads(row["state_json"])) for row in rows]
+    except sqlite3.OperationalError as exc:
+        logger.warning("Unable to list YTS live states from sqlite: %s", exc)
+        states = list(_yts_live_commands.values())
+        if active_only:
+            states = [state for state in states if str((state or {}).get("status") or "").lower() == "running"]
+        states.sort(key=lambda state: str((state or {}).get("updated_at") or ""), reverse=True)
+        return [_summarize_yts_live_state(state) for state in states[:capped_limit]]
 
 
 def _mark_stale_yts_live_commands() -> None:
