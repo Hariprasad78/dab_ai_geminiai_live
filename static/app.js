@@ -75,6 +75,7 @@
     try {
       response = await fetch(targetUrl, {
         method,
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: body ? JSON.stringify(body) : null,
       });
@@ -85,6 +86,7 @@
         try {
           const fallbackResponse = await fetch(`${fallbackOrigin}${path}`, {
             method,
+            credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
             body: body ? JSON.stringify(body) : null,
           });
@@ -100,7 +102,7 @@
       }
       let healthHint = '';
       try {
-        const health = await fetch(`${origin}/health`, { cache: 'no-store' });
+        const health = await fetch(`${origin}/health`, { cache: 'no-store', credentials: 'include' });
         healthHint = health.ok ? ` Health is reachable at ${origin}/health.` : ` Health returned HTTP ${health.status} at ${origin}/health.`;
       } catch (_) {
         healthHint = ` Health is not reachable at ${origin}/health.`;
@@ -1392,6 +1394,7 @@
   }
 
   async function initialize() {
+    await window.dabAuth.ready;
     clearBanners();
     initTheme();
     initApiBase();
