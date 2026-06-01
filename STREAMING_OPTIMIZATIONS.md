@@ -41,17 +41,25 @@
   - Accept slightly stale frames vs. blocking
   - Better for real-time streaming
 
+### 5. Android UI / Scrcpy ADB Streaming Fixes (scrcpy_stream.py)
+- Prevented synchronous stream blocking when ADB device is dead/offline.
+- Replaced the hard 4.0s synchronous fallback block with a non-blocking 0.45s wait that yields to the worker thread. 
+- Reduced `adb screencap` internal timeout from 4.0s to 1.5s to fail-fast and auto-recover the connection quickly.
+- Resolves the specific 5-second connection hang during stream startup when using Android UI capture mode.
+
 ## Expected Behavior
 
 ### Before Optimization
 - Device busy errors → 30s wait
 - Stream initialization → 2-5 seconds
+- Android UI (ADB offline) startup delay → 5+ seconds
 - Latency → 200-500ms
 - Reset after error → 5+ seconds
 
 ### After Optimization
 - Device busy errors → 3s recovery
 - Stream initialization → 0.5-1.0 second
+- Android UI (ADB offline) startup delay → fails fast / recovers in < 1 second
 - Latency → 50-100ms
 - Reset after error → 1-2 seconds
 

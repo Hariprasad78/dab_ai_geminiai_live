@@ -19,7 +19,7 @@ from vertex_live_dab_agent.capture.camera_devices import (
     validate_camera_devices,
 )
 from vertex_live_dab_agent.capture.hdmi_capture import HdmiCaptureSession
-from vertex_live_dab_agent.capture.scrcpy_stream import ScrcpyStreamSession
+from vertex_live_dab_agent.capture.scrcpy_stream import ScrcpyStreamSession, get_pooled_scrcpy_session
 
 logger = logging.getLogger(__name__)
 
@@ -490,7 +490,7 @@ class ScreenCapture:
         if not device_id:
             self._last_hdmi_error = "No Android ADB device selected for scrcpy capture"
             return None
-        session = ScrcpyStreamSession(
+        session = get_pooled_scrcpy_session(
             adb_device_id=device_id,
             adb_path=getattr(self._config, "scrcpy_adb_path", "adb"),
             fps=float(getattr(self._config, "scrcpy_capture_fps", 5.0) or 5.0),

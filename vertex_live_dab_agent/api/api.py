@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 import uuid as uuidlib
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
@@ -66,7 +66,16 @@ from vertex_live_dab_agent.api.models import (
     TaskMacroResponse,
 )
 from vertex_live_dab_agent.api.tts_service import GoogleTTSService
+from vertex_live_dab_agent.api.auth import (
+    GoogleAuthSettings,
+    GoogleSessionMiddleware,
+    create_session_cookie,
+    request_user,
+    verify_google_credential,
+    websocket_user,
+)
 from vertex_live_dab_agent.capture.capture import ScreenCapture
+from vertex_live_dab_agent.capture.scrcpy_stream import close_pooled_scrcpy_sessions, get_pooled_scrcpy_session
 from vertex_live_dab_agent.capture.camera_devices import (
     DeviceContext,
     find_device_context,
@@ -124,6 +133,10 @@ _YTS_LIVE_VISUAL_MONITOR_INTERVAL_SECONDS = float(os.environ.get("YTS_LIVE_VISUA
 _YTS_LIVE_VISUAL_MONITOR_STALE_SECONDS = float(os.environ.get("YTS_LIVE_VISUAL_MONITOR_STALE_SECONDS", "2.5"))
 _YTS_LIVE_VISUAL_HISTORY_LIMIT = 60
 _YTS_LIVE_VISUAL_EVENT_LIMIT = 180
+_YTS_LIVE_RUNTIME_LOG_LIMIT = int(os.environ.get("YTS_LIVE_RUNTIME_LOG_LIMIT", "1200"))
+_YTS_LIVE_RUNTIME_TEXT_LIMIT = int(os.environ.get("YTS_LIVE_RUNTIME_TEXT_LIMIT", "200000"))
+_YTS_LIVE_STREAM_PERSIST_INTERVAL_SECONDS = float(os.environ.get("YTS_LIVE_STREAM_PERSIST_INTERVAL_SECONDS", "1.0"))
+_YTS_LIVE_STREAM_PERSIST_LINE_BATCH = int(os.environ.get("YTS_LIVE_STREAM_PERSIST_LINE_BATCH", "50"))
 _YTS_PROMPT_VISUAL_WAIT_SECONDS = float(os.environ.get("YTS_PROMPT_VISUAL_WAIT_SECONDS", "20.0"))
 _YTS_PROMPT_MIN_VISUAL_FRAMES = int(os.environ.get("YTS_PROMPT_MIN_VISUAL_FRAMES", "12"))
 _YTS_PLAYBACK_PROMPT_SETTLE_SECONDS = float(os.environ.get("YTS_PLAYBACK_PROMPT_SETTLE_SECONDS", "2.5"))
@@ -151,6 +164,7 @@ def _env_csv(name: str) -> List[str]:
 
 _SERVE_FRONTEND = _env_bool("SERVE_FRONTEND", True)
 _CORS_ALLOW_ORIGINS = _env_csv("CORS_ALLOW_ORIGINS") or ["*"]
+_GOOGLE_AUTH_SETTINGS = GoogleAuthSettings.from_env()
 
 app = FastAPI(
     title="Vertex Live DAB Agent",
@@ -163,7 +177,9 @@ app.add_middleware(
     allow_origins=_CORS_ALLOW_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_credentials=_GOOGLE_AUTH_SETTINGS.enabled and _CORS_ALLOW_ORIGINS != ["*"],
 )
+app.add_middleware(GoogleSessionMiddleware, settings=_GOOGLE_AUTH_SETTINGS)
 
 # ---------------------------------------------------------------------------
 # Shared singleton clients (lazy-initialised)
@@ -483,19 +499,70 @@ def _coerce_scrcpy_adb_device_id(value: Any) -> str:
     return candidate
 
 
+_ADB_DEVICE_LIST_CACHE: tuple[float, List[Dict[str, str]]] = (0.0, [])
+
+
+def _connected_adb_devices(max_age_seconds: float = 10.0) -> List[Dict[str, str]]:
+    global _ADB_DEVICE_LIST_CACHE
+    now = time.monotonic()
+    cached_at, cached = _ADB_DEVICE_LIST_CACHE
+    if cached and now - cached_at <= max_age_seconds:
+        return cached
+    try:
+        result = subprocess.run(["adb", "devices", "-l"], capture_output=True, text=True, timeout=1.5, check=False)
+    except Exception:
+        return cached
+    devices: List[Dict[str, str]] = []
+    for line in result.stdout.splitlines()[1:]:
+        parts = line.split()
+        if len(parts) < 2 or parts[1] != "device":
+            continue
+        item: Dict[str, str] = {"serial": parts[0]}
+        for part in parts[2:]:
+            if ":" in part:
+                key, value = part.split(":", 1)
+                item[key] = value
+        devices.append(item)
+    _ADB_DEVICE_LIST_CACHE = (now, devices)
+    return devices
+
+
+def _prefer_usb_adb_device_id(adb_device_id: str) -> str:
+    if os.environ.get("SCRCPY_PREFER_USB_ADB", "true").strip().lower() not in {"1", "true", "yes", "on"}:
+        return adb_device_id
+    if not _is_ip_port(adb_device_id):
+        return adb_device_id
+    devices = _connected_adb_devices()
+    current = next((item for item in devices if item.get("serial") == adb_device_id), None)
+    model = str((current or {}).get("model") or "").strip()
+    product = str((current or {}).get("product") or "").strip()
+    device = str((current or {}).get("device") or "").strip()
+    if not any((model, product, device)):
+        return adb_device_id
+    for item in devices:
+        serial = str(item.get("serial") or "")
+        if not serial or _is_ip_port(serial):
+            continue
+        if model and item.get("model") == model:
+            return serial
+        if product and device and item.get("product") == product and item.get("device") == device:
+            return serial
+    return adb_device_id
+
+
 def _resolve_context_scrcpy_device_id(context) -> str:
     """Return a cached/configured ADB serial to use for Android UI streaming."""
     if context is None:
         return ""
     adb_value = _coerce_scrcpy_adb_device_id(getattr(context, "adbDeviceId", ""))
     if adb_value:
-        return adb_value
+        return _prefer_usb_adb_device_id(adb_value)
     discovered = _get_cached_yts_discovery_for_context(context)
     if discovered:
         for key in ("adb", "ip"):
             adb_value = _coerce_scrcpy_adb_device_id(discovered.get(key))
             if adb_value:
-                return adb_value
+                return _prefer_usb_adb_device_id(adb_value)
     return ""
 
 
@@ -561,14 +628,14 @@ async def _resolve_context_scrcpy_device_id_live(context: DeviceContext) -> str:
     if adb_value:
         return adb_value
 
-    discovered_yts = await _get_yts_discovery_for_context(context, max_age_seconds=0.0)
+    discovered_yts = await _get_yts_discovery_for_context(context, max_age_seconds=30.0)
     if discovered_yts:
         for key in ("adb", "ip"):
             adb_value = _coerce_scrcpy_adb_device_id(discovered_yts.get(key))
             if adb_value:
                 return adb_value
 
-    devices, _warning = await _discover_dab_devices(max_age_seconds=0.0)
+    devices, _warning = await _discover_dab_devices(max_age_seconds=30.0)
     for item in devices:
         if not isinstance(item, dict) or not _dab_discovered_item_matches_context(item, context):
             continue
@@ -1083,6 +1150,276 @@ class LiveAVStreamManager:
 
 
 _live_av_stream_manager = LiveAVStreamManager()
+_stream_warmer_task: Optional[asyncio.Task] = None
+_device_stream_captures: Dict[str, ScreenCapture] = {}
+_device_stream_captures_lock = threading.RLock()
+_active_stream_source_override: Optional[str] = None
+_active_stream_scrcpy_device: str = ""
+_STREAM_WARM_ALL_DEVICE_CAMERAS = os.environ.get("STREAM_WARM_ALL_DEVICE_CAMERAS", "true").strip().lower() in {"1", "true", "yes", "on"}
+_STREAM_WARM_DEVICE_SCRCPY = os.environ.get("STREAM_WARM_DEVICE_SCRCPY", "false").strip().lower() in {"1", "true", "yes", "on"}
+_SCRCPY_STREAM_STALE_FALLBACK_SECONDS = max(1.0, float(os.environ.get("SCRCPY_STREAM_STALE_FALLBACK_SECONDS", "15.0")))
+
+
+def _stream_context_key(context: Optional[DeviceContext], *, source: str = "", scrcpy_device: str = "") -> str:
+    if context is None:
+        return "global"
+    normalized_source = str(source or context.videoSource or "auto").strip().lower()
+    if normalized_source in {"scrcpy", "adb", "android", "android-screen"}:
+        adb_id = str(scrcpy_device or _resolve_context_scrcpy_device_id(context) or "").strip()
+        return f"{context.contextId}:scrcpy:{adb_id}"
+    camera_path = str(resolve_context_camera_path(context) or context.cameraPath or "").strip()
+    return f"{context.contextId}:{context.videoSource}:{camera_path}"
+
+
+def _configure_stream_capture_for_context(
+    capture: ScreenCapture,
+    context: DeviceContext,
+    *,
+    source: str = "",
+    scrcpy_device: str = "",
+) -> Dict[str, Any]:
+    normalized_source = str(source or context.videoSource or "auto").strip().lower()
+    if normalized_source in {"scrcpy", "adb", "android", "android-screen"}:
+        adb_id = str(scrcpy_device or _resolve_context_scrcpy_device_id(context) or "").strip()
+        return capture.set_capture_preference(
+            source="scrcpy",
+            scrcpy_device=adb_id,
+            preferred_kind="auto",
+            persist=False,
+        )
+    camera_path = resolve_context_camera_path(context)
+    return capture.set_capture_preference(
+        source=context.videoSource,
+        device=camera_path,
+        preferred_kind="hdmi" if context.videoSource == "hdmi-capture" else "camera",
+        persist=False,
+    )
+
+
+def _get_stream_capture_for_context(
+    context: Optional[DeviceContext],
+    *,
+    source: str = "",
+    scrcpy_device: str = "",
+) -> ScreenCapture:
+    if context is None:
+        return get_screen_capture()
+    key = _stream_context_key(context, source=source, scrcpy_device=scrcpy_device)
+    with _device_stream_captures_lock:
+        capture = _device_stream_captures.get(key)
+        if capture is None:
+            capture = ScreenCapture(get_dab_client())
+            _configure_stream_capture_for_context(capture, context, source=source, scrcpy_device=scrcpy_device)
+            _device_stream_captures[key] = capture
+        return capture
+
+
+def _discard_stream_capture(context: DeviceContext, *, source: str = "", scrcpy_device: str = "") -> None:
+    key = _stream_context_key(context, source=source, scrcpy_device=scrcpy_device)
+    with _device_stream_captures_lock:
+        capture = _device_stream_captures.pop(key, None)
+    if capture is not None:
+        with contextlib.suppress(Exception):
+            capture.close()
+
+
+def _scrcpy_stream_status_is_stale(status: Dict[str, Any]) -> bool:
+    info = status.get("hdmi_info") or {}
+    last_error = str(info.get("last_error") or "").strip().lower()
+    frame_age_ms = info.get("last_frame_age_ms")
+    try:
+        if frame_age_ms is not None and float(frame_age_ms) > _SCRCPY_STREAM_STALE_FALLBACK_SECONDS * 1000.0:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return frame_age_ms is None and "timed out" in last_error
+
+
+def _active_stream_capture() -> tuple[ScreenCapture, Dict[str, Any], Optional[DeviceContext]]:
+    global _active_stream_source_override, _active_stream_scrcpy_device
+
+    context = _active_device_context()
+    if context is None:
+        capture = get_screen_capture()
+        return capture, capture.capture_source_status(include_devices=False), None
+    if _active_stream_source_override == "scrcpy":
+        scrcpy_device = _active_stream_scrcpy_device
+        capture = _get_stream_capture_for_context(context, source="scrcpy", scrcpy_device=scrcpy_device)
+        status = capture.capture_source_status(include_devices=False)
+        if _scrcpy_stream_status_is_stale(status):
+            logger.warning("Discarding stale scrcpy stream for context=%s device=%s", context.contextId, scrcpy_device)
+            _active_stream_source_override = None
+            _active_stream_scrcpy_device = ""
+            _discard_stream_capture(context, source="scrcpy", scrcpy_device=scrcpy_device)
+            capture = _get_stream_capture_for_context(context)
+            status = capture.capture_source_status(include_devices=False)
+            status["scrcpy_fallback_reason"] = "stale_scrcpy_stream"
+    else:
+        capture = _get_stream_capture_for_context(context)
+        status = capture.capture_source_status(include_devices=False)
+    status["stream_context_id"] = context.contextId
+    status["stream_dab_device_id"] = context.dabDeviceId
+    return capture, status, context
+
+
+def _stream_capture_for_yts_command(command_id: str) -> tuple[ScreenCapture, Dict[str, Any], Optional[DeviceContext]]:
+    state = _get_yts_live_state(command_id) or {}
+    for value in (
+        state.get("dab_device_id"),
+        state.get("context_id"),
+        state.get("configured_yts_device_id"),
+        state.get("device_id"),
+    ):
+        context = find_device_context(str(value or "").strip())
+        if context is not None:
+            capture = _get_stream_capture_for_context(context)
+            status = capture.capture_source_status(include_devices=False)
+            status["stream_context_id"] = context.contextId
+            status["stream_dab_device_id"] = context.dabDeviceId
+            status["yts_command_id"] = command_id
+            return capture, status, context
+    return _active_stream_capture()
+
+
+def _close_device_stream_captures() -> None:
+    with _device_stream_captures_lock:
+        captures = list(_device_stream_captures.values())
+        _device_stream_captures.clear()
+    for capture in captures:
+        with contextlib.suppress(Exception):
+            capture.close()
+
+
+def _warm_all_device_stream_captures_once() -> None:
+    if not _STREAM_WARM_ALL_DEVICE_CAMERAS:
+        return
+    seen_camera_paths: set[str] = set()
+    for context in load_device_contexts():
+        camera_path = str(resolve_context_camera_path(context) or "").strip()
+        if not camera_path or camera_path in seen_camera_paths or not os.path.exists(camera_path):
+            continue
+        seen_camera_paths.add(camera_path)
+        capture = _get_stream_capture_for_context(context)
+        capture.ensure_hdmi_session(force=False)
+        capture.get_hdmi_stream_frame_jpeg(quality=_STREAM_WARMUP_JPEG_QUALITY if "_STREAM_WARMUP_JPEG_QUALITY" in globals() else 80)
+        if _STREAM_WARM_DEVICE_SCRCPY:
+            adb_id = _resolve_context_scrcpy_device_id(context)
+            if adb_id:
+                scrcpy_capture = _get_stream_capture_for_context(context, source="scrcpy", scrcpy_device=adb_id)
+                scrcpy_capture.ensure_hdmi_session(force=False)
+
+_STREAM_WARMUP_ENABLED = os.environ.get("STREAM_WARMUP_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+_STREAM_WARMUP_INTERVAL_SECONDS = max(0.2, float(os.environ.get("STREAM_WARMUP_INTERVAL_SECONDS", "0.75")))
+_STREAM_WARMUP_JPEG_QUALITY = max(35, min(90, int(os.environ.get("STREAM_WARMUP_JPEG_QUALITY", os.environ.get("HDMI_STREAM_JPEG_QUALITY", "80")))))
+_STREAM_SCRCPY_AUTO_FALLBACK = os.environ.get("STREAM_SCRCPY_AUTO_FALLBACK", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _selected_camera_fallback_status(capture, *, persist: bool = True) -> Dict[str, Any]:
+    status = capture.capture_source_status(include_devices=False)
+    selected = str(status.get("selected_video_device") or "").strip()
+    if not selected or not os.path.exists(selected):
+        return status
+    return capture.set_capture_preference(
+        source="camera-capture",
+        device=selected,
+        preferred_kind="camera",
+        persist=persist,
+    )
+
+
+def _iter_scrcpy_warmup_device_ids() -> List[str]:
+    config = get_config()
+    current = get_screen_capture().capture_source_status(include_devices=False)
+    selected = _prefer_usb_adb_device_id(
+        str(current.get("selected_scrcpy_device") or current.get("scrcpy_device") or "").strip()
+    )
+    ids: List[str] = []
+    if selected:
+        ids.append(selected)
+
+    warm_configured = os.environ.get("SCRCPY_WARM_CONFIGURED_DEVICE", "false").strip().lower() in {"1", "true", "yes", "on"}
+    configured = _prefer_usb_adb_device_id(str(getattr(config, "scrcpy_device_id", "") or "").strip())
+    if warm_configured and configured and configured not in ids:
+        ids.append(configured)
+
+    warm_all = os.environ.get("SCRCPY_WARM_ALL_DEVICES", "false").strip().lower() in {"1", "true", "yes", "on"}
+    if warm_all:
+        for context in load_device_contexts():
+            adb_id = _resolve_context_scrcpy_device_id(context)
+            if adb_id and adb_id not in ids:
+                ids.append(adb_id)
+    return ids
+
+
+def _warm_scrcpy_pool_once() -> None:
+    config = get_config()
+    for adb_id in _iter_scrcpy_warmup_device_ids():
+        session = get_pooled_scrcpy_session(
+            adb_device_id=adb_id,
+            adb_path=getattr(config, "scrcpy_adb_path", "adb"),
+            fps=float(getattr(config, "scrcpy_capture_fps", 5.0) or 5.0),
+            jpeg_quality=_STREAM_WARMUP_JPEG_QUALITY,
+        )
+        if session.available():
+            session.capture_jpeg_bytes(quality=_STREAM_WARMUP_JPEG_QUALITY)
+
+
+async def _warm_active_stream_once() -> Dict[str, Any]:
+    await asyncio.to_thread(_warm_all_device_stream_captures_once)
+    capture, status, _context = await asyncio.to_thread(_active_stream_capture)
+    configured_source = str(status.get("configured_source") or "").strip().lower()
+
+    if configured_source == "scrcpy":
+        await asyncio.to_thread(_warm_scrcpy_pool_once)
+        frame = await asyncio.to_thread(
+            capture.get_hdmi_stream_frame_jpeg,
+            quality=_STREAM_WARMUP_JPEG_QUALITY,
+        )
+        status = capture.capture_source_status(include_devices=False)
+        misses = int(getattr(_warm_active_stream_once, "_scrcpy_misses", 0) or 0)
+        if frame is None:
+            misses += 1
+        else:
+            misses = 0
+        setattr(_warm_active_stream_once, "_scrcpy_misses", misses)
+        if frame is None and _STREAM_SCRCPY_AUTO_FALLBACK and misses >= 4:
+            error = str(status.get("hdmi_last_error") or "").lower()
+            if any(token in error for token in ("timed out", "closed", "adb", "screencap")):
+                logger.warning(
+                    "Scrcpy stream is not producing fresh frames after %s warmup attempts; keeping per-device camera stream hot: error=%s",
+                    misses,
+                    status.get("hdmi_last_error") or "unknown",
+                )
+                setattr(_warm_active_stream_once, "_scrcpy_misses", 0)
+        return status
+
+    await asyncio.to_thread(capture.ensure_hdmi_session, False)
+    await asyncio.to_thread(
+        capture.get_hdmi_stream_frame_jpeg,
+        quality=_STREAM_WARMUP_JPEG_QUALITY,
+    )
+    return capture.capture_source_status(include_devices=False)
+
+
+async def _stream_warmer_loop() -> None:
+    if not _STREAM_WARMUP_ENABLED:
+        logger.info("Stream warmup disabled (STREAM_WARMUP_ENABLED=false)")
+        return
+    logger.info("Stream warmup task started: interval=%.2fs", _STREAM_WARMUP_INTERVAL_SECONDS)
+    try:
+        while True:
+            try:
+                status = await _warm_active_stream_once()
+                if not status.get("hdmi_available"):
+                    logger.debug("Stream warmup waiting for source: %s", status.get("hdmi_last_error") or "not ready")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("Stream warmup failed: %s", exc)
+            await asyncio.sleep(_STREAM_WARMUP_INTERVAL_SECONDS)
+    except asyncio.CancelledError:
+        logger.info("Stream warmup task cancelled")
+        raise
 
 
 def _shared_ai_prompt_preamble() -> str:
@@ -2200,8 +2537,16 @@ async def _apply_selected_device_context(device_id: Optional[str], persist: bool
     config = get_config()
     if resolved:
         config.dab_device_id = resolved
-    if context is not None and context.audioDevice:
-        config.hdmi_audio_device = context.audioDevice
+    if context is not None:
+        camera_path = resolve_context_camera_path(context)
+        config.image_source = context.videoSource
+        if camera_path:
+            config.hdmi_capture_device = camera_path
+        if context.audioDevice:
+            config.hdmi_audio_device = context.audioDevice
+        adb_device_id = _resolve_context_scrcpy_device_id(context)
+        if adb_device_id:
+            config.scrcpy_device_id = adb_device_id
 
     old_dab = _dab_client
     _dab_client = None
@@ -2240,23 +2585,15 @@ async def _apply_selected_device_context(device_id: Optional[str], persist: bool
         _save_device_context_state(state)
     if context is not None:
         try:
-            capture = get_screen_capture()
-            camera_path = resolve_context_camera_path(context)
-            if camera_path:
-                capture.set_capture_preference(
-                    source=context.videoSource,
-                    device=camera_path,
-                    preferred_kind="hdmi" if context.videoSource == "hdmi-capture" else "camera",
-                    persist=True,
-                )
+            stream_capture = _get_stream_capture_for_context(context)
 
             async def _warm_capture_session() -> None:
                 with contextlib.suppress(Exception):
-                    await asyncio.to_thread(capture.ensure_hdmi_session, False)
+                    await asyncio.to_thread(stream_capture.ensure_hdmi_session, False)
 
             asyncio.create_task(_warm_capture_session())
         except Exception as exc:
-            logger.warning("Unable to apply capture selection for context %s: %s", context.contextId, exc)
+            logger.warning("Unable to warm stream capture for context %s: %s", context.contextId, exc)
         _log_selected_device_context(context)
     return state
 
@@ -2360,7 +2697,7 @@ async def _validate_active_device_context(*, require_ready: bool = False) -> Dic
 
     capture_status: Dict[str, Any] = {}
     try:
-        capture_status = get_screen_capture().capture_source_status(include_devices=False)
+        _capture, capture_status, _capture_context = _active_stream_capture()
     except Exception as exc:
         issues.append(f"Capture status unavailable: {exc}")
     selected_stream = str(capture_status.get("selected_video_device") or "").strip()
@@ -2642,13 +2979,33 @@ async def _refresh_discovered_device_capabilities_cache(
     selected_before = _resolve_selected_device_id()
     captured_at = _utc_now_iso()
 
+    previous_by_device = (
+        (_device_capabilities_cache.get("devices") if isinstance(_device_capabilities_cache, dict) else {})
+        or (_load_device_capabilities_cache().get("devices") if not force else {})
+        or {}
+    )
     by_device: Dict[str, Any] = {}
     for item in devices:
         device_id = str(item.get("device_id") or "").strip()
         if not _is_valid_discovered_device_id(device_id):
             continue
+        if device_id != selected_before:
+            cached = previous_by_device.get(device_id) if isinstance(previous_by_device, dict) else None
+            if isinstance(cached, dict):
+                by_device[device_id] = cached
+            else:
+                by_device[device_id] = {
+                    "device_id": device_id,
+                    "captured_at": captured_at,
+                    "operations": [],
+                    "keys": [],
+                    "settings": [],
+                    "settings_schema": {},
+                    "counts": {"operations": 0, "keys": 0, "settings": 0},
+                    "errors": ["Skipped background capability probe to avoid changing the active live stream context."],
+                }
+            continue
         try:
-            await _apply_selected_device_context(device_id, persist=False)
             by_device[device_id] = await _collect_selected_device_capabilities(device_id)
         except Exception as exc:
             by_device[device_id] = {
@@ -2661,12 +3018,6 @@ async def _refresh_discovered_device_capabilities_cache(
                 "counts": {"operations": 0, "keys": 0, "settings": 0},
                 "errors": [str(exc)],
             }
-
-    if _is_valid_discovered_device_id(selected_before):
-        try:
-            await _apply_selected_device_context(selected_before, persist=False)
-        except Exception:
-            pass
 
     payload: Dict[str, Any] = {
         "captured_at": captured_at,
@@ -2807,10 +3158,34 @@ def _new_yts_live_state(command_id: str, interactive_ai: bool = False) -> Dict[s
     }
 
 
+def _trim_yts_live_runtime_state(state: Dict[str, Any]) -> None:
+    """Keep live polling state bounded so chatty YTS runs do not stall the API."""
+    log_limit = max(100, int(_YTS_LIVE_RUNTIME_LOG_LIMIT or 1200))
+    text_limit = max(10000, int(_YTS_LIVE_RUNTIME_TEXT_LIMIT or 200000))
+
+    for key in ("stdout", "stderr"):
+        value = state.get(key)
+        if isinstance(value, str) and len(value) > text_limit:
+            state[key] = value[-text_limit:]
+
+    logs = state.get("logs")
+    if isinstance(logs, list) and len(logs) > log_limit:
+        state["logs"] = logs[-log_limit:]
+
+    visual_history = state.get("visual_monitor_history")
+    if isinstance(visual_history, list) and len(visual_history) > _YTS_LIVE_VISUAL_HISTORY_LIMIT:
+        state["visual_monitor_history"] = visual_history[-_YTS_LIVE_VISUAL_HISTORY_LIMIT:]
+
+    visual_events = state.get("visual_event_timeline")
+    if isinstance(visual_events, list) and len(visual_events) > _YTS_LIVE_VISUAL_EVENT_LIMIT:
+        state["visual_event_timeline"] = visual_events[-_YTS_LIVE_VISUAL_EVENT_LIMIT:]
+
+
 def _normalize_yts_live_state(state: Dict[str, Any]) -> Dict[str, Any]:
     command_id = str(state.get("command_id") or uuid.uuid4())
     normalized = _new_yts_live_state(command_id, bool(state.get("interactive_ai")))
     normalized.update(state)
+    _trim_yts_live_runtime_state(normalized)
     normalized["command_id"] = command_id
     normalized["logs"] = list(normalized.get("logs") or [])
     normalized["prompts"] = list(normalized.get("prompts") or [])
@@ -4002,8 +4377,11 @@ async def _run_yts_post_revalidation(state: Dict[str, Any]) -> None:
     )
 
 
-def _resolve_yts_recording_device() -> Optional[str]:
-    status = get_screen_capture().capture_source_status(include_devices=False)
+def _resolve_yts_recording_device(command_id: str = "") -> Optional[str]:
+    try:
+        _capture, status, _context = _stream_capture_for_yts_command(command_id) if command_id else _active_stream_capture()
+    except Exception:
+        status = get_screen_capture().capture_source_status(include_devices=False)
     selected = str(status.get("selected_video_device") or "").strip()
     active = str(status.get("hdmi_device") or "").strip()
     return selected or active or None
@@ -4072,8 +4450,9 @@ async def _start_yts_video_recording(command_id: str) -> None:
         _persist_yts_live_state(state)
         return
 
-    video_device, capture_status = _resolve_active_capture_video_device()
-    if not video_device:
+    _record_capture, capture_status, _record_context = _stream_capture_for_yts_command(command_id)
+    video_device = str(capture_status.get("selected_video_device") or capture_status.get("hdmi_device") or "").strip()
+    if not video_device or not video_device.startswith("/dev/"):
         state["video_recording_status"] = "unavailable"
         if state.get("record_audio"):
             state["audio_recording_status"] = "unavailable"
@@ -4423,11 +4802,33 @@ async def _stop_yts_dab_log_collection(command_id: str, state: Dict[str, Any]) -
     _persist_yts_live_state(state)
 
 
+def _compact_yts_command_text(command: Any, *, max_len: int = 180) -> str:
+    text = _strip_terminal_ansi(str(command or "")).replace("\n", " ").strip()
+    if len(text) <= max_len:
+        return text
+    return text[: max(20, max_len - 1)].rstrip() + "..."
+
+
+def _summarize_yts_analysis_report(report: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(report, dict):
+        return None
+    return {
+        "report_id": report.get("report_id"),
+        "created_at": report.get("created_at"),
+        "txt_name": report.get("txt_name"),
+        "pdf_name": report.get("pdf_name"),
+        "total_tests": report.get("total_tests"),
+        "failed_tests": report.get("failed_tests"),
+        "summary": _compact_yts_command_text(report.get("summary"), max_len=220),
+    }
+
+
 def _summarize_yts_live_state(state: Dict[str, Any]) -> Dict[str, Any]:
     normalized = _normalize_yts_live_state(state)
     return {
         "command_id": normalized.get("command_id"),
-        "command": normalized.get("command"),
+        "command": _compact_yts_command_text(normalized.get("command")),
+        "command_full_length": len(str(normalized.get("command") or "")),
         "status": normalized.get("status"),
         "interactive_ai": normalized.get("interactive_ai"),
         "record_video": normalized.get("record_video"),
@@ -4442,7 +4843,8 @@ def _summarize_yts_live_state(state: Dict[str, Any]) -> Dict[str, Any]:
         "dab_log_zip_name": normalized.get("dab_log_zip_name"),
         "dab_log_summary_name": normalized.get("dab_log_summary_name"),
         "dab_log_collection_error": normalized.get("dab_log_collection_error"),
-        "analysis_reports": normalized.get("analysis_reports") or [],
+        "analysis_report_count": len(normalized.get("analysis_reports") or []),
+        "latest_analysis_report": _summarize_yts_analysis_report((normalized.get("analysis_reports") or [None])[0]),
         "awaiting_input": normalized.get("awaiting_input"),
         "updated_at": normalized.get("updated_at"),
         "created_at": normalized.get("created_at"),
@@ -4463,7 +4865,7 @@ def _iter_yts_result_artifacts(limit: int = 100) -> List[Dict[str, Any]]:
             continue
         base = {
             "command_id": command_id,
-            "command": item.get("command"),
+            "command": _compact_yts_command_text(item.get("command")),
             "status": item.get("status"),
             "updated_at": item.get("updated_at"),
             "result_summary": item.get("result_summary"),
@@ -6338,9 +6740,11 @@ async def _capture_yts_visual_context(command_id: str, force_fresh: bool = False
     try:
         with contextlib.suppress(Exception):
             await _live_av_stream_manager.stop()
-        capture = get_screen_capture()
-
-        capture_status = await asyncio.to_thread(_ensure_active_context_capture_session, force=force_fresh)
+        capture, capture_status, _context = await asyncio.to_thread(_stream_capture_for_yts_command, command_id)
+        if not capture_status.get("hdmi_available"):
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(capture.ensure_hdmi_session, force_fresh)
+                capture_status = capture.capture_source_status(include_devices=False)
         mismatch_detected = _is_hdmi_capture_device_mismatch(capture_status)
         live_stream_available = bool(capture_status.get("hdmi_configured")) and hasattr(capture, "capture_live_stream_frame")
         for attempt in range(_YTS_INTERACTIVE_CAPTURE_ATTEMPTS):
@@ -6365,7 +6769,9 @@ async def _capture_yts_visual_context(command_id: str, force_fresh: bool = False
             except TypeError:
                 latest_status = capture.capture_source_status()
             if not latest_status.get("hdmi_available") and attempt < (_YTS_INTERACTIVE_CAPTURE_ATTEMPTS - 1):
-                latest_status = await asyncio.to_thread(_ensure_active_context_capture_session, force=force_fresh)
+                with contextlib.suppress(Exception):
+                    await asyncio.to_thread(capture.ensure_hdmi_session, force_fresh)
+                    latest_status = capture.capture_source_status(include_devices=False)
             mismatch_now = _is_hdmi_capture_device_mismatch(latest_status)
             mismatch_detected = mismatch_detected or mismatch_now
             if mismatch_now:
@@ -6523,8 +6929,11 @@ def get_vertex_live_visual_client() -> Optional[VertexPlannerClient]:
 async def _capture_yts_live_monitor_frame(command_id: str) -> Dict[str, Any]:
     with contextlib.suppress(Exception):
         await _live_av_stream_manager.stop()
-    capture = get_screen_capture()
-    capture_status = await asyncio.to_thread(_ensure_active_context_capture_session, force=True)
+    capture, capture_status, _context = await asyncio.to_thread(_stream_capture_for_yts_command, command_id)
+    if not capture_status.get("hdmi_available"):
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(capture.ensure_hdmi_session, False)
+            capture_status = capture.capture_source_status(include_devices=False)
     if _is_hdmi_capture_device_mismatch(capture_status):
         return {
             "source": "capture-mismatch",
@@ -7641,6 +8050,14 @@ async def _append_yts_stream_output(command_id: str, stream_name: str, stream) -
     if stream is None:
         return
 
+    last_persist_at = time.monotonic()
+    pending_lines = 0
+
+    def _should_persist_now() -> bool:
+        if pending_lines >= max(1, int(_YTS_LIVE_STREAM_PERSIST_LINE_BATCH or 50)):
+            return True
+        return (time.monotonic() - last_persist_at) >= max(0.1, float(_YTS_LIVE_STREAM_PERSIST_INTERVAL_SECONDS or 1.0))
+
     while True:
         chunk = await stream.readline()
         if not chunk:
@@ -7655,6 +8072,7 @@ async def _append_yts_stream_output(command_id: str, stream_name: str, stream) -
             "stream": stream_name,
             "message": cleaned_text,
         })
+        pending_lines += 1
         stripped = cleaned_text.strip()
         option_value = _parse_yts_prompt_option(stripped)
         interactive_line = _is_interactive_yts_prompt(stripped)
@@ -7692,6 +8110,8 @@ async def _append_yts_stream_output(command_id: str, stream_name: str, stream) -
             )
             _merge_yts_prompt_entry(prompt_entry, stripped, stream_name)
             _persist_yts_live_state(state)
+            last_persist_at = time.monotonic()
+            pending_lines = 0
 
             prompt_age = _yts_prompt_age_seconds(prompt_entry)
             required_playback_settle_seconds = _required_yts_playback_prompt_settle_seconds(str(prompt_entry.get("text") or ""))
@@ -7708,6 +8128,7 @@ async def _append_yts_stream_output(command_id: str, stream_name: str, stream) -
                     f"Gemini is waiting {max(0.0, remaining):.1f}s for the YTS playback checkpoint before answering..."
                 )
                 _persist_yts_live_state(state)
+                last_persist_at = time.monotonic()
                 await asyncio.sleep(max(0.2, min(remaining, required_playback_settle_seconds)))
                 prompt_entry = (_get_yts_live_state(command_id) or state).get("pending_prompt") or prompt_entry
                 playback_prompt_settled = True
@@ -7764,7 +8185,15 @@ async def _append_yts_stream_output(command_id: str, stream_name: str, stream) -
                     logger.exception("Unable to auto-answer YTS prompt for %s", command_id)
                     _update_yts_prompt_entry(command_id, prompt_id, ai_error=str(exc))
             continue
-        _persist_yts_live_state(state)
+        if _should_persist_now():
+            _persist_yts_live_state(state)
+            last_persist_at = time.monotonic()
+            pending_lines = 0
+
+    if pending_lines:
+        state = _get_yts_live_state(command_id)
+        if state:
+            _persist_yts_live_state(state)
 
 
 async def _run_yts_command_live(command_id: str, request: "YtsCommandRequest") -> None:
@@ -8786,7 +9215,7 @@ async def _stop_livekit_agent() -> None:
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
-    global _selected_device_id_override, _device_capabilities_cache, _device_capabilities_cache_at
+    global _selected_device_id_override, _device_capabilities_cache, _device_capabilities_cache_at, _stream_warmer_task
 
     await asyncio.to_thread(validate_camera_devices)
     contexts = load_device_contexts()
@@ -8797,6 +9226,8 @@ async def _lifespan(_app: FastAPI):
     if contexts:
         active_context = _active_device_context() or contexts[0]
         await _apply_selected_device_context(active_context.contextId, persist=False)
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(_warm_all_device_stream_captures_once)
 
     await asyncio.to_thread(_mark_stale_yts_live_commands)
     await asyncio.to_thread(_refresh_yts_test_catalog, _catalog_path_for_mode(False), False, False)
@@ -8812,14 +9243,19 @@ async def _lifespan(_app: FastAPI):
             _device_capabilities_cache_at = time.monotonic()
     except Exception:
         pass
-    try:
-        await _refresh_discovered_device_capabilities_cache(force=True)
-    except Exception as exc:
-        logger.warning("Startup capability cache warmup failed: %s", exc)
+    # Capability refresh performs live DAB calls and applies each context, which can
+    # reopen camera devices. Keep startup and polling fast; callers can refresh
+    # /dab/capabilities/cache explicitly when they need a fresh capability scan.
+    _stream_warmer_task = asyncio.create_task(_stream_warmer_loop())
     await _maybe_start_livekit_agent()
     try:
         yield
     finally:
+        if _stream_warmer_task is not None:
+            _stream_warmer_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await _stream_warmer_task
+            _stream_warmer_task = None
         for command_id, task in list(_yts_live_visual_tasks.items()):
             if not task.done():
                 task.cancel()
@@ -8838,6 +9274,14 @@ async def _lifespan(_app: FastAPI):
             _yts_live_tasks.pop(command_id, None)
         await _close_all_webrtc_peers()
         await _live_av_stream_manager.stop()
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(_close_device_stream_captures)
+        with contextlib.suppress(Exception):
+            capture = _screen_capture
+            if capture is not None:
+                await asyncio.to_thread(capture.close)
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(close_pooled_scrcpy_sessions)
         await _stop_livekit_agent()
         await asyncio.to_thread(_close_yts_live_db)
 
@@ -8936,6 +9380,54 @@ async def serve_frontend():
     return _frontend_file_response("index.html")
 
 
+@app.get("/auth.js", include_in_schema=False)
+async def serve_frontend_auth_js() -> FileResponse:
+    if not _SERVE_FRONTEND:
+        raise HTTPException(status_code=404, detail="Frontend serving is disabled")
+    return _frontend_file_response("auth.js", media_type="application/javascript")
+
+
+class GoogleLoginRequest(BaseModel):
+    credential: str
+
+
+@app.get("/auth/config", include_in_schema=False)
+async def google_auth_config(request: Request) -> dict:
+    user = request_user(request, _GOOGLE_AUTH_SETTINGS)
+    return {
+        "enabled": _GOOGLE_AUTH_SETTINGS.enabled,
+        "configured": not bool(_GOOGLE_AUTH_SETTINGS.setup_error()),
+        "client_id": _GOOGLE_AUTH_SETTINGS.client_id if _GOOGLE_AUTH_SETTINGS.enabled else "",
+        "user": user,
+    }
+
+
+@app.post("/auth/google", include_in_schema=False)
+async def google_auth_login(request: GoogleLoginRequest, response: Response) -> dict:
+    user = await asyncio.to_thread(verify_google_credential, request.credential, _GOOGLE_AUTH_SETTINGS)
+    response.set_cookie(
+        _GOOGLE_AUTH_SETTINGS.session_cookie,
+        create_session_cookie(user, _GOOGLE_AUTH_SETTINGS),
+        httponly=True,
+        secure=_GOOGLE_AUTH_SETTINGS.secure_cookie,
+        samesite=_GOOGLE_AUTH_SETTINGS.cookie_samesite,
+        max_age=_GOOGLE_AUTH_SETTINGS.session_ttl_seconds,
+        path="/",
+    )
+    return {"success": True, "user": {key: user.get(key, "") for key in ("sub", "email", "name", "picture", "hd")}}
+
+
+@app.post("/auth/logout", include_in_schema=False)
+async def google_auth_logout(response: Response) -> dict:
+    response.delete_cookie(_GOOGLE_AUTH_SETTINGS.session_cookie, path="/")
+    return {"success": True}
+
+
+@app.get("/auth/me", include_in_schema=False)
+async def google_auth_me(request: Request) -> dict:
+    return {"user": request_user(request, _GOOGLE_AUTH_SETTINGS)}
+
+
 @app.get("/app.js", include_in_schema=False)
 async def serve_frontend_app_js() -> FileResponse:
     if not _SERVE_FRONTEND:
@@ -9028,6 +9520,9 @@ async def stream_status_alias() -> dict:
 
 @app.websocket("/ws/status")
 async def ws_status(websocket: WebSocket) -> None:
+    if websocket_user(websocket, _GOOGLE_AUTH_SETTINGS) is None:
+        await websocket.close(code=4401, reason="Google sign-in required")
+        return
     await websocket.accept()
     try:
         while True:
@@ -9039,6 +9534,9 @@ async def ws_status(websocket: WebSocket) -> None:
 
 @app.websocket("/ws/stream/av")
 async def ws_stream_av(websocket: WebSocket) -> None:
+    if websocket_user(websocket, _GOOGLE_AUTH_SETTINGS) is None:
+        await websocket.close(code=4401, reason="Google sign-in required")
+        return
     await websocket.accept()
     queue: Optional[asyncio.Queue[Optional[bytes]]] = None
     try:
@@ -9226,7 +9724,7 @@ async def dab_devices() -> dict:
         selected_device_id = str(devices[0].get("device_id") or "").strip()
         if selected_device_id:
             await _apply_selected_device_context(selected_device_id, persist=True)
-    caps = await _refresh_discovered_device_capabilities_cache(force=False)
+    caps = _device_capabilities_cache or _load_device_capabilities_cache() or {}
     return {
         "success": True,
         "devices": devices,
@@ -9290,6 +9788,7 @@ async def device_context() -> dict:
 @app.post("/device/context/select", response_model=dict)
 async def select_device_context(request: DeviceContextSelectRequest) -> dict:
     """Select one unified device context and apply all bound sources."""
+    global _active_stream_source_override, _active_stream_scrcpy_device
     requested_device_id = str(request.contextId or request.context_id or request.device_id or "").strip()
     if not _is_valid_discovered_device_id(requested_device_id):
         raise HTTPException(status_code=400, detail="device_id or contextId is required")
@@ -9298,14 +9797,35 @@ async def select_device_context(request: DeviceContextSelectRequest) -> dict:
     if requested_context is not None:
         requested_device_id = requested_context.dabDeviceId
 
-    devices, warning = await _discover_dab_devices()
-    discovered_ids = {str(item.get("device_id") or "").strip() for item in devices}
-    if discovered_ids and requested_device_id not in discovered_ids and requested_context is None:
-        raise HTTPException(status_code=400, detail=f"Unknown device_id: {requested_device_id}")
+    if requested_context is not None:
+        devices = list(_discovered_devices_cache)
+        warning = _discovery_warning_cache
+    else:
+        devices, warning = await _discover_dab_devices()
+        discovered_ids = {str(item.get("device_id") or "").strip() for item in devices}
+        if discovered_ids and requested_device_id not in discovered_ids:
+            raise HTTPException(status_code=400, detail=f"Unknown device_id: {requested_device_id}")
 
     state = await _apply_selected_device_context(requested_device_id, persist=bool(request.persist))
+    _active_stream_source_override = None
+    _active_stream_scrcpy_device = ""
     active_context = _active_device_context()
-    validation = await _validate_active_device_context(require_ready=False)
+    if active_context is not None:
+        with contextlib.suppress(Exception):
+            stream_capture = _get_stream_capture_for_context(active_context)
+            asyncio.create_task(asyncio.to_thread(stream_capture.ensure_hdmi_session, False))
+    camera_path = resolve_context_camera_path(active_context) if active_context is not None else ""
+    validation = {
+        **_context_payload(active_context, active=True),
+        "valid": bool(active_context is not None and camera_path and os.path.exists(camera_path)),
+        "dabReady": bool(getattr(active_context, "dabDeviceId", "") if active_context is not None else ""),
+        "ytsReady": bool(getattr(active_context, "ytsDeviceId", "") if active_context is not None else ""),
+        "irReady": bool(getattr(active_context, "irDeviceId", "") if active_context is not None else ""),
+        "cameraReady": bool(camera_path and os.path.exists(camera_path)),
+        "cameraPath": camera_path or "",
+        "streamPreviewSource": camera_path or "",
+        "issues": ([] if camera_path and os.path.exists(camera_path) else ["Selected camera path is not available."]),
+    }
     return {
         "context": _context_payload(active_context, active=True),
         **_context_payload(active_context, active=True),
@@ -9617,15 +10137,21 @@ async def _refresh_device_setting_values_snapshot_safe(device_id: Optional[str] 
 
 @app.get("/capture/source", response_model=CaptureSourceResponse)
 async def capture_source() -> CaptureSourceResponse:
-    """Return capture source mode and HDMI availability diagnostics."""
-    status = _align_capture_preference_to_active_context(include_devices=False)
+    """Return active per-device capture source diagnostics."""
+    capture, status, _context = await asyncio.to_thread(_active_stream_capture)
+    configured_source = str(status.get("configured_source") or "").strip().lower()
+    if configured_source != "scrcpy" and not status.get("hdmi_available"):
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(capture.ensure_hdmi_session, False)
+            status = capture.capture_source_status(include_devices=False)
     return CaptureSourceResponse(**status)
 
 
 @app.get("/capture/devices", response_model=dict)
 async def capture_devices() -> dict:
     """List available /dev/video* devices with kind/readability diagnostics."""
-    status = _align_capture_preference_to_active_context(include_devices=True)
+    capture, _status, _context = await asyncio.to_thread(_active_stream_capture)
+    status = await asyncio.to_thread(capture.capture_source_status, include_devices=True)
     return {
         "configured_source": status.get("configured_source"),
         "selected_video_device": status.get("selected_video_device"),
@@ -9637,13 +10163,15 @@ async def capture_devices() -> dict:
 
 @app.post("/capture/select", response_model=CaptureSourceResponse)
 async def capture_select(request: CaptureSelectRequest) -> CaptureSourceResponse:
-    """Select capture source and /dev/video device (HDMI card or camera)."""
+    """Select the active context capture source and warm its pooled worker."""
+    global _active_stream_source_override, _active_stream_scrcpy_device
+
     try:
         context = _active_device_context()
+        requested_device = str(request.device or "").strip()
+        requested_source = str(request.source or "").strip().lower()
         if context is not None:
             context_camera_path = resolve_context_camera_path(context)
-            requested_device = str(request.device or "").strip()
-            requested_source = str(request.source or "").strip().lower()
             if requested_source in {"scrcpy", "adb", "android", "android-screen"}:
                 adb_device_id = await _resolve_context_scrcpy_device_id_live(context)
                 if not adb_device_id:
@@ -9655,11 +10183,14 @@ async def capture_select(request: CaptureSelectRequest) -> CaptureSourceResponse
                 request.device = None
                 request.scrcpy_device = adb_device_id
                 request.preferred_kind = "auto"
+                _active_stream_source_override = "scrcpy"
+                _active_stream_scrcpy_device = adb_device_id
+                capture = _get_stream_capture_for_context(context, source="scrcpy", scrcpy_device=adb_device_id)
             elif requested_device and requested_device != context_camera_path:
                 raise ValueError(
                     f"Capture device {requested_device} is not mapped to active device context {context.displayName}."
                 )
-            elif requested_source in {"camera", "camera-capture", "hdmi", "hdmi-capture", "capture-card", "auto", ""}:
+            else:
                 if not context_camera_path:
                     raise ValueError(
                         f"Video mapping missing for selected device {context.displayName}. Please configure camera_devices.json."
@@ -9667,7 +10198,11 @@ async def capture_select(request: CaptureSelectRequest) -> CaptureSourceResponse
                 request.source = context.videoSource
                 request.device = context_camera_path
                 request.preferred_kind = "hdmi" if context.videoSource == "hdmi-capture" else "camera"
-        capture = get_screen_capture()
+                _active_stream_source_override = None
+                _active_stream_scrcpy_device = ""
+                capture = _get_stream_capture_for_context(context)
+        else:
+            capture = get_screen_capture()
         previous_status = capture.capture_source_status(include_devices=False)
         status = capture.set_capture_preference(
             source=request.source,
@@ -9684,15 +10219,13 @@ async def capture_select(request: CaptureSelectRequest) -> CaptureSourceResponse
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    # Source/device switch must reset active live stream workers so they do
-    # not keep stale FFmpeg/WebRTC bindings to previous camera/audio nodes.
     if selection_changed:
         with contextlib.suppress(Exception):
             await _live_av_stream_manager.stop()
         with contextlib.suppress(Exception):
             await _close_all_webrtc_peers()
 
-    if selection_changed and bool(status.get("hdmi_configured")):
+    if bool(status.get("hdmi_configured")):
         async def _warm_capture_session() -> None:
             with contextlib.suppress(Exception):
                 await asyncio.to_thread(capture.ensure_hdmi_session, False)
@@ -9704,8 +10237,8 @@ async def capture_select(request: CaptureSelectRequest) -> CaptureSourceResponse
 @app.post("/capture/recover", response_model=CaptureSourceResponse)
 async def capture_recover() -> CaptureSourceResponse:
     """Recover the active context camera without forcing immediate reopen."""
-    _align_capture_preference_to_active_context(include_devices=False)
-    status = await asyncio.to_thread(get_screen_capture().recover_video_session, force=False)
+    capture, _status, _context = await asyncio.to_thread(_active_stream_capture)
+    status = await asyncio.to_thread(capture.recover_video_session, force=False)
     return CaptureSourceResponse(**status)
 
 
@@ -9718,7 +10251,10 @@ async def audio_source(verbose: bool = False) -> dict:
 def _audio_source_payload(*, include_probe_details: bool) -> dict:
     """Return HDMI audio stream diagnostics with optional expensive probe details."""
     c = get_config()
-    capture_status = get_screen_capture().capture_source_status(include_devices=False)
+    try:
+        _capture, capture_status, _context = _active_stream_capture()
+    except Exception:
+        capture_status = get_screen_capture().capture_source_status(include_devices=False)
     guessed_device = _guess_audio_input_for_selected_capture(capture_status=capture_status)
     input_format, device = _resolve_audio_input(capture_status=capture_status)
     follow_active_video = bool(getattr(c, "hdmi_audio_follow_active_video", True))
@@ -9770,13 +10306,19 @@ def _audio_source_payload(*, include_probe_details: bool) -> dict:
 
 @app.get("/stream/status", response_model=dict)
 async def stream_status() -> dict:
-    """Return a consolidated status report for video and audio streaming."""
-    video_status = get_screen_capture().capture_source_status(include_devices=False)
+    """Return a consolidated status report for active per-device streaming."""
+    capture, video_status, _context = await asyncio.to_thread(_active_stream_capture)
+    configured_source = str(video_status.get("configured_source") or "").strip().lower()
+    if configured_source != "scrcpy" and not video_status.get("hdmi_available"):
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(capture.ensure_hdmi_session, False)
+            video_status = capture.capture_source_status(include_devices=False)
     audio_status = _audio_source_payload(include_probe_details=False)
     return {
         "video": video_status,
         "audio": audio_status,
         "av": _live_av_stream_manager.status(),
+        "stream_pool": {"captures": len(_device_stream_captures)},
     }
 
 
@@ -10041,7 +10583,8 @@ async def stream_scrcpy_devices() -> dict:
 
 @app.post("/stream/scrcpy/start", response_model=dict)
 async def stream_scrcpy_start(request: ScrcpyStreamStartRequest) -> dict:
-    """Start Android device UI streaming through the shared live preview path."""
+    """Start Android device UI streaming through the active per-device live preview path."""
+    global _active_stream_source_override, _active_stream_scrcpy_device
     context, adb_device_id = await _resolve_scrcpy_target_context(str(request.device_id or ""))
     if not adb_device_id:
         requested = str(request.device_id or "").strip() or "selected device"
@@ -10054,19 +10597,27 @@ async def stream_scrcpy_start(request: ScrcpyStreamStartRequest) -> dict:
             ),
         )
     if context is not None:
-        await _apply_selected_device_context(context.dabDeviceId, persist=bool(request.persist))
-    capture = get_screen_capture()
-    status = capture.set_capture_preference(
-        source="scrcpy",
-        scrcpy_device=adb_device_id,
-        preferred_kind="auto",
-        persist=bool(request.persist),
-    )
+        active_context = _active_device_context()
+        already_active = active_context is not None and active_context.contextId == context.contextId
+        if not already_active:
+            await _apply_selected_device_context(context.dabDeviceId, persist=bool(request.persist))
+    _active_stream_source_override = "scrcpy"
+    _active_stream_scrcpy_device = adb_device_id
+    capture = _get_stream_capture_for_context(context, source="scrcpy", scrcpy_device=adb_device_id) if context is not None else get_screen_capture()
+    if context is None:
+        status = capture.set_capture_preference(
+            source="scrcpy",
+            scrcpy_device=adb_device_id,
+            preferred_kind="auto",
+            persist=bool(request.persist),
+        )
+    else:
+        status = capture.capture_source_status(include_devices=False)
     with contextlib.suppress(Exception):
         await _live_av_stream_manager.stop()
     with contextlib.suppress(Exception):
         await _close_all_webrtc_peers()
-    capture.ensure_hdmi_session(force=True)
+    await asyncio.to_thread(capture.ensure_hdmi_session, False)
     status = capture.capture_source_status(include_devices=False)
     return {
         "success": bool(status.get("hdmi_available")),
@@ -10080,17 +10631,13 @@ async def stream_scrcpy_start(request: ScrcpyStreamStartRequest) -> dict:
 @app.post("/stream/scrcpy/stop", response_model=dict)
 async def stream_scrcpy_stop() -> dict:
     """Leave scrcpy mode and restore the selected context camera/capture source."""
+    global _active_stream_source_override, _active_stream_scrcpy_device
+    _active_stream_source_override = None
+    _active_stream_scrcpy_device = ""
     context = _active_device_context()
-    capture = get_screen_capture()
-    if context is not None and resolve_context_camera_path(context):
-        capture.set_capture_preference(
-            source=context.videoSource,
-            device=resolve_context_camera_path(context),
-            preferred_kind="hdmi" if context.videoSource == "hdmi-capture" else "camera",
-            persist=True,
-        )
-    else:
-        capture.set_capture_preference(source="auto", persist=True)
+    capture = _get_stream_capture_for_context(context) if context is not None else get_screen_capture()
+    with contextlib.suppress(Exception):
+        await asyncio.to_thread(capture.ensure_hdmi_session, False)
     status = capture.capture_source_status(include_devices=False)
     return {"success": True, "status": status}
 
@@ -10931,11 +11478,13 @@ async def stream_hdmi() -> StreamingResponse:
     config = get_config()
     with contextlib.suppress(Exception):
         await _live_av_stream_manager.stop()
-    # Do not reopen the capture device for every browser stream connection.
-    # UVC and ADB-backed feeds can take seconds to reinitialize; the frame loop
-    # below already recovers lazily when a feed is actually stale.
-    status = await asyncio.to_thread(_ensure_active_context_capture_session, force=False)
-    capture = get_screen_capture()
+    # Route the browser to the already-warmed capture for the selected device.
+    # Stop/start/reclick must not recreate the only global capture object.
+    capture, status, _context = await asyncio.to_thread(_active_stream_capture)
+    if not status.get("hdmi_available") and str(status.get("configured_source") or "").strip().lower() != "scrcpy":
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(capture.ensure_hdmi_session, False)
+            status = capture.capture_source_status(include_devices=False)
 
     if not status.get("hdmi_configured"):
         raise HTTPException(
@@ -10953,12 +11502,24 @@ async def stream_hdmi() -> StreamingResponse:
     # capture helpers below already lazily retry session creation and emit
     # frames as soon as the selected device becomes ready.
 
+    status_fps = (status.get("hdmi_info") or {}).get("fps") if isinstance(status.get("hdmi_info"), dict) else None
+    configured_source = str(status.get("configured_source") or "").strip().lower()
+    fps_source = status_fps if configured_source == "scrcpy" and status_fps else config.hdmi_capture_fps
+    stream_fps = max(1.0, min(30.0, float(fps_source or 15.0)))
+    frame_interval_s = 1.0 / stream_fps
+
     async def frame_generator():
         boundary = b"--frame\r\n"
         consecutive_errors = 0
         consecutive_empty_frames = 0
         last_recovery_ts = 0.0
+        last_frame_sent_ts = 0.0
         while True:
+            now = time.monotonic()
+            if last_frame_sent_ts:
+                sleep_for = frame_interval_s - (now - last_frame_sent_ts)
+                if sleep_for > 0:
+                    await asyncio.sleep(sleep_for)
             try:
                 # Offload the blocking frame capture to a separate thread.
                 frame = await asyncio.to_thread(
@@ -10999,7 +11560,7 @@ async def stream_hdmi() -> StreamingResponse:
                 + f"Content-Length: {len(frame)}\r\n\r\n".encode("ascii")
             )
             yield boundary + headers + frame + b"\r\n"
-            await asyncio.sleep(0.001)
+            last_frame_sent_ts = time.monotonic()
 
     return StreamingResponse(
         frame_generator(),

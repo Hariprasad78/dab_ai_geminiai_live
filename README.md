@@ -209,6 +209,14 @@ pytest tests/ -v
 | `GOOGLE_CLOUD_PROJECT` | `` | GCP project ID for Vertex AI |
 | `GOOGLE_CLOUD_LOCATION` | `asia-south1` | GCP region |
 | `GOOGLE_APPLICATION_CREDENTIALS` | `` | Path to service account JSON |
+| `GOOGLE_AUTH_ENABLED` | `false` | Require Google account sign-in for dashboard APIs, streams, downloads, docs, and WebSockets |
+| `GOOGLE_AUTH_CLIENT_ID` | `` | Google Identity Services web OAuth client ID |
+| `GOOGLE_AUTH_ALLOWED_DOMAINS` | `` | Optional comma-separated Google Workspace domains allowed to sign in |
+| `GOOGLE_AUTH_ALLOWED_EMAILS` | `` | Optional comma-separated individual Google accounts allowed to sign in |
+| `SESSION_SECRET` | `` | Required random secret of at least 32 characters when Google auth is enabled |
+| `GOOGLE_AUTH_SESSION_TTL_SECONDS` | `43200` | Signed browser session lifetime in seconds |
+| `GOOGLE_AUTH_SECURE_COOKIE` | `true` | Send the operator session cookie over HTTPS only |
+| `GOOGLE_AUTH_COOKIE_SAMESITE` | `lax` | Cookie mode: use `lax` for preferred same-origin hosting; use `none` only for HTTPS cross-origin hosting |
 | `VERTEX_LIVE_MODEL` | `gemini-3.1-flash-live-preview` | Gemini Live model used by the planner and LiveKit paths |
 | `LIVEKIT_URL` | `` | LiveKit server WebSocket URL |
 | `LIVEKIT_API_KEY` | `` | LiveKit API key |
@@ -538,6 +546,36 @@ export VERTEX_TEST_MODEL="gemini-2.5-flash"
 # Run real Vertex tests
 RUN_VERTEX_INTEGRATION_TESTS=1 pytest tests/test_vertex_integration.py -v -s
 ```
+
+## Google account authentication
+
+Google account authentication is opt-in so local lab deployments continue to
+work until OAuth credentials are configured. Vertex AI service-account or ADC
+credentials remain separate from browser operator identity.
+
+Create a Google OAuth client of type **Web application**, add the dashboard HTTPS
+origin under **Authorized JavaScript origins**, and run the API with:
+
+```bash
+export GOOGLE_AUTH_ENABLED=true
+export GOOGLE_AUTH_CLIENT_ID="<oauth-client-id>.apps.googleusercontent.com"
+export GOOGLE_AUTH_ALLOWED_DOMAINS="yourcompany.com"
+export SESSION_SECRET="$(openssl rand -hex 32)"
+export CORS_ALLOW_ORIGINS="https://dab-console.example.com"
+python -m vertex_live_dab_agent --api-only --host 0.0.0.0 --port 8081
+```
+
+Prefer an HTTPS reverse proxy that serves the static UI and proxies API traffic
+under the same hostname. This keeps the default `GOOGLE_AUTH_COOKIE_SAMESITE=lax`
+setting and avoids browser third-party-cookie restrictions. If the HTTPS UI and
+HTTPS API must use different sites, set `GOOGLE_AUTH_COOKIE_SAMESITE=none`, keep
+`GOOGLE_AUTH_SECURE_COOKIE=true`, and list the exact UI origin in
+`CORS_ALLOW_ORIGINS`. Plain HTTP IP-address URLs are suitable only while auth is
+disabled.
+
+When enabled, `/health`, `/auth/config`, `/auth/google`, and login assets remain
+public. Device APIs, streams, downloads, API docs, and WebSockets require the
+signed `HttpOnly` operator session cookie.
 
 ## Raspberry Pi API-only backend + remote frontend (recommended)
 

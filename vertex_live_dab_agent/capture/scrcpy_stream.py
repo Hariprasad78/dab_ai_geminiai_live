@@ -8,14 +8,56 @@ the same device id that scrcpy would use (`adb -s <serial>`).
 from __future__ import annotations
 
 import base64
+import contextlib
 import logging
+import os
+import select
 import shutil
 import subprocess
 import threading
 import time
-from typing import Optional
+from typing import Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+_SESSION_POOL: Dict[Tuple[str, str], "ScrcpyStreamSession"] = {}
+_SESSION_POOL_LOCK = threading.Lock()
+
+
+def get_pooled_scrcpy_session(
+    *,
+    adb_device_id: str,
+    adb_path: str = "adb",
+    fps: float = 5.0,
+    jpeg_quality: int = 80,
+) -> "ScrcpyStreamSession":
+    key = (str(adb_path or "adb").strip() or "adb", str(adb_device_id or "").strip())
+    with _SESSION_POOL_LOCK:
+        session = _SESSION_POOL.get(key)
+        if session is None:
+            session = ScrcpyStreamSession(
+                adb_device_id=key[1],
+                adb_path=key[0],
+                fps=fps,
+                jpeg_quality=jpeg_quality,
+            )
+            _SESSION_POOL[key] = session
+        else:
+            session.fps = max(0.5, float(fps or session.fps or 5.0))
+            session.jpeg_quality = max(1, min(100, int(jpeg_quality or session.jpeg_quality or 80)))
+        return session
+
+
+def close_pooled_scrcpy_sessions() -> None:
+    with _SESSION_POOL_LOCK:
+        sessions = list(_SESSION_POOL.values())
+        _SESSION_POOL.clear()
+    for session in sessions:
+        try:
+            session.close()
+        except Exception:
+            pass
+
 
 
 class ScrcpyStreamSession:
@@ -45,6 +87,12 @@ class ScrcpyStreamSession:
         self._worker_stop = threading.Event()
         self._worker_thread: Optional[threading.Thread] = None
         self._worker_quality: int = self.jpeg_quality
+        self._max_cached_jpeg_age_s: float = max(1.0, float(os.environ.get("SCRCPY_MAX_CACHED_JPEG_AGE_SECONDS", "5.0")))
+        self._worker_processes: list[subprocess.Popen] = []
+        # Some Android TV builds buffer `screenrecord --output-format=h264 -`
+        # until the process exits. Keep the reliable screencap worker as the
+        # default, while allowing screenrecord on devices that stream live.
+        self._use_screenrecord = os.environ.get("SCRCPY_USE_SCREENRECORD", "false").strip().lower() in {"1", "true", "yes", "on"}
 
     def available(self) -> bool:
         if not self.adb_device_id:
@@ -165,7 +213,128 @@ class ScrcpyStreamSession:
         self.last_error = ""
         return data
 
+    def _store_jpeg(self, data: bytes, jpeg_quality: int) -> None:
+        if not data:
+            return
+        with self._frame_lock:
+            self._last_jpeg = data
+            self._last_jpeg_quality = jpeg_quality
+            self._last_jpeg_ts = time.monotonic()
+        self.last_error = ""
+
+    def _track_worker_process(self, process: subprocess.Popen) -> None:
+        self._worker_processes.append(process)
+
+    def _terminate_worker_processes(self) -> None:
+        processes = list(self._worker_processes)
+        self._worker_processes = []
+        for process in processes:
+            with contextlib.suppress(Exception):
+                if process.poll() is None:
+                    process.terminate()
+            with contextlib.suppress(Exception):
+                process.wait(timeout=0.5)
+            with contextlib.suppress(Exception):
+                if process.poll() is None:
+                    process.kill()
+
+    def _screenrecord_worker(self, jpeg_quality: int) -> bool:
+        if not self._use_screenrecord or not shutil.which("ffmpeg") or not self.available():
+            return False
+        fps = max(1.0, min(15.0, float(self.fps or 12.0)))
+        qscale = max(2, min(31, int(round(31 - (jpeg_quality / 100.0) * 25))))
+        adb_cmd = [self.adb_path, "-s", self.adb_device_id, "exec-out", "screenrecord", "--output-format=h264", "-"]
+        ffmpeg_cmd = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-fflags",
+            "nobuffer",
+            "-flags",
+            "low_delay",
+            "-f",
+            "h264",
+            "-i",
+            "pipe:0",
+            "-vf",
+            f"fps={fps}",
+            "-f",
+            "image2pipe",
+            "-vcodec",
+            "mjpeg",
+            "-q:v",
+            str(qscale),
+            "pipe:1",
+        ]
+        adb_proc = None
+        ffmpeg_proc = None
+        try:
+            adb_proc = subprocess.Popen(adb_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self._track_worker_process(adb_proc)
+            ffmpeg_proc = subprocess.Popen(
+                ffmpeg_cmd,
+                stdin=adb_proc.stdout,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            self._track_worker_process(ffmpeg_proc)
+            if adb_proc.stdout is not None:
+                with contextlib.suppress(Exception):
+                    adb_proc.stdout.close()
+            buffer = bytearray()
+            frames = 0
+            started_at = time.monotonic()
+            last_output = started_at
+            stdout_fd = ffmpeg_proc.stdout.fileno() if ffmpeg_proc.stdout is not None else -1
+            while not self._worker_stop.is_set():
+                if stdout_fd < 0:
+                    break
+                ready, _, _ = select.select([stdout_fd], [], [], 0.5)
+                if not ready:
+                    if frames == 0 and time.monotonic() - started_at > 3.0:
+                        self.last_error = f"screenrecord produced no live frames for {self.adb_device_id}; falling back to screencap"
+                        break
+                    continue
+                try:
+                    chunk = os.read(stdout_fd, 65536)
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    break
+                last_output = time.monotonic()
+                buffer.extend(chunk)
+                if frames == 0 and time.monotonic() - started_at > 3.0:
+                    self.last_error = f"screenrecord produced no complete JPEG frames for {self.adb_device_id}; falling back to screencap"
+                    break
+                while True:
+                    start = buffer.find(b"\xff\xd8")
+                    if start < 0:
+                        if len(buffer) > 1024 * 1024:
+                            del buffer[:-2]
+                        break
+                    end = buffer.find(b"\xff\xd9", start + 2)
+                    if end < 0:
+                        if start > 0:
+                            del buffer[:start]
+                        break
+                    frame = bytes(buffer[start : end + 2])
+                    del buffer[: end + 2]
+                    self._store_jpeg(frame, jpeg_quality)
+                    frames += 1
+            if frames == 0:
+                self.last_error = self.last_error or f"screenrecord produced no frames for {self.adb_device_id}"
+                return False
+            return True
+        except Exception as exc:
+            self.last_error = f"screenrecord stream failed for {self.adb_device_id}: {exc}"
+            return False
+        finally:
+            self._terminate_worker_processes()
+
     def _capture_worker(self, jpeg_quality: int) -> None:
+        if self._screenrecord_worker(jpeg_quality):
+            return
         interval = max(0.04, 1.0 / max(1.0, self.fps))
         while not self._worker_stop.is_set():
             started = time.monotonic()
@@ -175,7 +344,9 @@ class ScrcpyStreamSession:
 
     def _ensure_worker(self, jpeg_quality: int) -> None:
         with self._worker_lock:
-            if self._worker_thread and self._worker_thread.is_alive() and self._worker_quality == jpeg_quality:
+            if self._worker_thread and self._worker_thread.is_alive():
+                # Keep the warm worker alive. Restarting it on a viewer quality
+                # change makes the first stream request pay ADB startup cost.
                 return
             self._worker_stop.set()
             if self._worker_thread and self._worker_thread.is_alive():
@@ -193,21 +364,25 @@ class ScrcpyStreamSession:
     def capture_jpeg_bytes(self, quality: Optional[int] = None) -> Optional[bytes]:
         jpeg_quality = max(1, min(100, int(quality or self.jpeg_quality)))
         self._ensure_worker(jpeg_quality)
-        now = time.monotonic()
+        
+        # Wait up to 0.45s for the worker to provide a fresh frame without blocking indefinitely
+        for _ in range(9):
+            now = time.monotonic()
+            with self._frame_lock:
+                cached_age = now - self._last_jpeg_ts if self._last_jpeg_ts else 999.0
+                if self._last_jpeg is not None and cached_age <= self._max_cached_jpeg_age_s:
+                    return self._last_jpeg
+            time.sleep(0.05)
+            
         with self._frame_lock:
-            if self._last_jpeg is not None and self._last_jpeg_quality == jpeg_quality:
-                return self._last_jpeg
-        # First frame only: capture synchronously so the stream can start.
-        frame = self._decode_jpeg_once(jpeg_quality, force=True)
-        if frame is not None:
-            return frame
-        with self._frame_lock:
-            if self._last_jpeg is not None and now - self._last_jpeg_ts < 2.0:
+            cached_age = time.monotonic() - self._last_jpeg_ts if self._last_jpeg_ts else 999.0
+            if self._last_jpeg is not None and cached_age <= self._max_cached_jpeg_age_s:
                 return self._last_jpeg
         return None
 
     def close(self) -> None:
         self._worker_stop.set()
+        self._terminate_worker_processes()
         if self._worker_thread and self._worker_thread.is_alive():
             self._worker_thread.join(timeout=0.5)
         self._worker_thread = None

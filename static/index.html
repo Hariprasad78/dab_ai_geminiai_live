@@ -1654,6 +1654,7 @@
 <button id="floating-stream-reopen-btn" class="secondary floating-stream-reopen" onclick="showFloatingStreamWindow()">Reopen Stream</button>
 
 <script src="./config.js"></script>
+<script src="./auth.js"></script>
 <script>
   const API_STORAGE_KEY = 'dab_api_base';
   const DAB_DEVICE_STORAGE_KEY = 'dab_selected_device_id';
@@ -1921,7 +1922,7 @@
     if (!apiBase && isStaticHostMode()) {
       throw new Error('Controller API is not configured. Set the Controller API URL in footer and click Save.');
     }
-    const opts = { method, headers: { 'Content-Type': 'application/json' } };
+    const opts = { method, credentials: 'include', headers: { 'Content-Type': 'application/json' } };
     if (body) opts.body = JSON.stringify(body);
     const targetUrl = apiBase + path;
     let resp;
@@ -1942,7 +1943,7 @@
       }
       let healthHint = '';
       try {
-        const health = await fetch(`${origin}/health`, { cache: 'no-store' });
+        const health = await fetch(`${origin}/health`, { cache: 'no-store', credentials: 'include' });
         healthHint = health.ok ? ` Health is reachable at ${origin}/health.` : ` Health returned HTTP ${health.status} at ${origin}/health.`;
       } catch (_) {
         healthHint = ` Health is not reachable at ${origin}/health.`;
@@ -4248,17 +4249,16 @@
       container.classList.remove('switching');
       clearHdmiStreamOverlay();
     }
-    img.onload = () => {
+    const markMjpegVisible = () => {
       if (token !== hdmiStreamTransitionToken) return;
       if (hdmiStreamStartupTimer) {
         window.clearTimeout(hdmiStreamStartupTimer);
         hdmiStreamStartupTimer = null;
       }
       container.classList.remove('switching');
-      window.setTimeout(() => {
-        if (token === hdmiStreamTransitionToken) clearHdmiStreamOverlay();
-      }, 450);
+      clearHdmiStreamOverlay();
     };
+    img.onload = markMjpegVisible;
     img.onerror = () => {
       if (token !== hdmiStreamTransitionToken) return;
       if (hdmiStreamStartupTimer) {
@@ -4272,9 +4272,10 @@
         window.setTimeout(() => {
           if (token !== hdmiStreamTransitionToken || !hdmiStreamRunning) return;
           img.src = `${apiBase}/stream/hdmi?ts=${Date.now()}`;
-        }, 900);
+        }, 250);
       });
     };
+    void api('/capture/recover', 'POST', {}).catch(() => null);
     if (forceRestart) img.src = '';
     img.src = url;
     floatingStreamMode = 'mjpeg';
@@ -4282,8 +4283,8 @@
     syncFloatingStreamContent();
     hdmiStreamStartupTimer = window.setTimeout(() => {
       if (token !== hdmiStreamTransitionToken) return;
-      setHdmiStreamOverlay('Waiting for first frame from selected camera…');
-    }, 900);
+      markMjpegVisible();
+    }, 700);
     document.getElementById('stream-toggle-btn').textContent = 'Stop Stream';
     document.getElementById('stream-toggle-btn').className = 'danger';
     hdmiStreamRunning = true;
@@ -7388,15 +7389,19 @@
   }
 
   // Init
-  initializeDashboard();
-  startCurrentSettingsRefreshLoop();
-  setInterval(checkHealth, 60000);
-  setInterval(loadRuns, 60000);
-  setInterval(loadCaptureSource, 120000);
-  setInterval(refreshCaptureDevices, 300000);
-  setInterval(refreshStreamDiagnostics, 120000);
-  setInterval(refreshSystemMetrics, 30000);
-  window.addEventListener('resize', drawPerfGraph);
+  async function bootDashboard() {
+    await window.dabAuth.ready;
+    await initializeDashboard();
+    startCurrentSettingsRefreshLoop();
+    setInterval(checkHealth, 60000);
+    setInterval(loadRuns, 60000);
+    setInterval(loadCaptureSource, 120000);
+    setInterval(refreshCaptureDevices, 300000);
+    setInterval(refreshStreamDiagnostics, 120000);
+    setInterval(refreshSystemMetrics, 30000);
+    window.addEventListener('resize', drawPerfGraph);
+  }
+  bootDashboard().catch((error) => console.error('Dashboard startup failed', error));
 </script>
 </body>
 </html>
