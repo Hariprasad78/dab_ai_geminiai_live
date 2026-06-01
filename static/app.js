@@ -276,6 +276,13 @@
 
   function initApiBase() {
     const configured = String(window.__HARNESS_API_BASE__ || '').trim();
+    const queryApi = new URLSearchParams(window.location.search).get('api');
+    if (queryApi !== null) {
+      state.apiBase = String(queryApi || '').trim().replace(/\/+$/, '');
+      localStorage.setItem(API_STORAGE_KEY, state.apiBase);
+      $('api-summary').textContent = `API: ${state.apiBase || `same-origin (${window.location.origin})`}`;
+      return;
+    }
     const stored = String(localStorage.getItem(API_STORAGE_KEY) || '').trim();
     const sameOrigin = ['127.0.0.1', 'localhost'].includes(window.location.hostname);
     state.apiBase = sameOrigin && !configured ? '' : (configured || stored || '');

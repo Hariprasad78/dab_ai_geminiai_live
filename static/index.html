@@ -1654,7 +1654,7 @@
 <button id="floating-stream-reopen-btn" class="secondary floating-stream-reopen" onclick="showFloatingStreamWindow()">Reopen Stream</button>
 
 <script src="./config.js"></script>
-<script src="./auth.js"></script>
+<script src="./auth.js?v=20260601-2"></script>
 <script>
   const API_STORAGE_KEY = 'dab_api_base';
   const DAB_DEVICE_STORAGE_KEY = 'dab_selected_device_id';
@@ -1922,7 +1922,7 @@
     if (!apiBase && isStaticHostMode()) {
       throw new Error('Controller API is not configured. Set the Controller API URL in footer and click Save.');
     }
-    const opts = { method, credentials: 'include', headers: { 'Content-Type': 'application/json' } };
+    const opts = { method, credentials: window.dabAuth?.credentialsMode() || 'same-origin', headers: { 'Content-Type': 'application/json' } };
     if (body) opts.body = JSON.stringify(body);
     const targetUrl = apiBase + path;
     let resp;
@@ -1943,7 +1943,7 @@
       }
       let healthHint = '';
       try {
-        const health = await fetch(`${origin}/health`, { cache: 'no-store', credentials: 'include' });
+        const health = await fetch(`${origin}/health`, { cache: 'no-store', credentials: window.dabAuth?.credentialsMode() || 'same-origin' });
         healthHint = health.ok ? ` Health is reachable at ${origin}/health.` : ` Health returned HTTP ${health.status} at ${origin}/health.`;
       } catch (_) {
         healthHint = ` Health is not reachable at ${origin}/health.`;

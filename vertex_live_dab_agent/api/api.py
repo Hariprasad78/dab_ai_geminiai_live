@@ -3106,6 +3106,9 @@ def _new_yts_live_state(command_id: str, interactive_ai: bool = False) -> Dict[s
     artifacts_dir = str(_get_yts_live_artifacts_dir(command_id))
     return {
         "command_id": command_id,
+        "owner_sub": "",
+        "owner_email": "",
+        "owner_name": "",
         "command": "",
         "status": "running",
         "stdout": "",
@@ -4814,6 +4817,9 @@ def _summarize_yts_analysis_report(report: Any) -> Optional[Dict[str, Any]]:
         return None
     return {
         "report_id": report.get("report_id"),
+        "owner_sub": report.get("owner_sub"),
+        "owner_email": report.get("owner_email"),
+        "owner_name": report.get("owner_name"),
         "created_at": report.get("created_at"),
         "txt_name": report.get("txt_name"),
         "pdf_name": report.get("pdf_name"),
@@ -4827,6 +4833,9 @@ def _summarize_yts_live_state(state: Dict[str, Any]) -> Dict[str, Any]:
     normalized = _normalize_yts_live_state(state)
     return {
         "command_id": normalized.get("command_id"),
+        "owner_sub": normalized.get("owner_sub"),
+        "owner_email": normalized.get("owner_email"),
+        "owner_name": normalized.get("owner_name"),
         "command": _compact_yts_command_text(normalized.get("command")),
         "command_full_length": len(str(normalized.get("command") or "")),
         "status": normalized.get("status"),
@@ -4856,8 +4865,8 @@ def _summarize_yts_live_state(state: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _iter_yts_result_artifacts(limit: int = 100) -> List[Dict[str, Any]]:
-    states = _list_yts_live_states(limit=limit, active_only=False, cleanup_stale=False)
+def _iter_yts_result_artifacts(limit: int = 100, *, owner_sub: str = "") -> List[Dict[str, Any]]:
+    states = _list_yts_live_states(limit=limit, active_only=False, cleanup_stale=False, owner_sub=owner_sub)
     artifacts: List[Dict[str, Any]] = []
     for item in states:
         command_id = str(item.get("command_id") or "").strip()
@@ -4865,6 +4874,9 @@ def _iter_yts_result_artifacts(limit: int = 100) -> List[Dict[str, Any]]:
             continue
         base = {
             "command_id": command_id,
+            "owner_sub": item.get("owner_sub"),
+            "owner_email": item.get("owner_email"),
+            "owner_name": item.get("owner_name"),
             "command": _compact_yts_command_text(item.get("command")),
             "status": item.get("status"),
             "updated_at": item.get("updated_at"),
@@ -4986,6 +4998,7 @@ async def _create_yts_results_analysis(
     include_zip_base64: bool = True,
     analysis_model: Optional[str] = None,
     triage_level: str = "deep",
+    operator: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     cleaned_refs = [str(ref or "").strip() for ref in artifact_refs if str(ref or "").strip()]
     if not cleaned_refs:
@@ -4999,6 +5012,8 @@ async def _create_yts_results_analysis(
         artifact_type = artifact_type.strip()
         if not command_id or not artifact_type:
             continue
+        if operator is not None:
+            _require_yts_state_for_operator(command_id, operator)
         if command_id not in command_ids:
             command_ids.append(command_id)
         label, text = _artifact_text_for_analysis(command_id, artifact_type, include_zip_base64=include_zip_base64)
@@ -5063,6 +5078,9 @@ async def _create_yts_results_analysis(
     pdf_path.write_bytes(_generate_minimal_pdf_bytes(lines))
     report_meta = {
         "report_id": report_id,
+        "owner_sub": _operator_owner_sub(operator or {}),
+        "owner_email": str((operator or {}).get("email") or ""),
+        "owner_name": str((operator or {}).get("name") or ""),
         "txt_name": txt_path.name,
         "pdf_name": pdf_path.name,
         "txt_path": str(txt_path),
@@ -5086,7 +5104,13 @@ async def _create_yts_results_analysis(
     return report_meta
 
 
-def _list_yts_live_states(limit: int = 10, active_only: bool = False, *, cleanup_stale: bool = True) -> List[Dict[str, Any]]:
+def _list_yts_live_states(
+    limit: int = 10,
+    active_only: bool = False,
+    *,
+    cleanup_stale: bool = True,
+    owner_sub: str = "",
+) -> List[Dict[str, Any]]:
     if cleanup_stale:
         _mark_stale_yts_live_commands()
     conn = _ensure_yts_live_db()
@@ -5096,19 +5120,23 @@ def _list_yts_live_states(limit: int = 10, active_only: bool = False, *, cleanup
     if active_only:
         query += " WHERE status = ?"
         params.append("running")
-    query += " ORDER BY updated_at DESC LIMIT ?"
-    params.append(capped_limit)
+    query += " ORDER BY updated_at DESC"
+    if not owner_sub:
+        query += " LIMIT ?"
+        params.append(capped_limit)
     try:
         with _yts_live_db_lock:
             rows = conn.execute(query, tuple(params)).fetchall()
-        return [_summarize_yts_live_state(json.loads(row["state_json"])) for row in rows]
+        states = [json.loads(row["state_json"]) for row in rows]
     except sqlite3.OperationalError as exc:
         logger.warning("Unable to list YTS live states from sqlite: %s", exc)
         states = list(_yts_live_commands.values())
         if active_only:
             states = [state for state in states if str((state or {}).get("status") or "").lower() == "running"]
         states.sort(key=lambda state: str((state or {}).get("updated_at") or ""), reverse=True)
-        return [_summarize_yts_live_state(state) for state in states[:capped_limit]]
+    if owner_sub:
+        states = [state for state in states if str((state or {}).get("owner_sub") or "").strip() == owner_sub]
+    return [_summarize_yts_live_state(state) for state in states[:capped_limit]]
 
 
 def _mark_stale_yts_live_commands() -> None:
@@ -9387,6 +9415,44 @@ async def serve_frontend_auth_js() -> FileResponse:
     return _frontend_file_response("auth.js", media_type="application/javascript")
 
 
+def _operator_for_request(request: Request) -> Dict[str, Any]:
+    user = request_user(request, _GOOGLE_AUTH_SETTINGS)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Google sign-in required")
+    return dict(user)
+
+
+def _operator_owner_sub(user: Dict[str, Any]) -> str:
+    return "" if user.get("auth_disabled") else str(user.get("sub") or "").strip()
+
+
+def _state_belongs_to_operator(state: Dict[str, Any], user: Dict[str, Any]) -> bool:
+    owner_sub = _operator_owner_sub(user)
+    return not owner_sub or str(state.get("owner_sub") or "").strip() == owner_sub
+
+
+def _require_yts_state_for_operator(command_id: str, user: Dict[str, Any]) -> Dict[str, Any]:
+    state = _get_yts_live_state(command_id)
+    if not state or not _state_belongs_to_operator(state, user):
+        raise HTTPException(status_code=404, detail=f"YTS command {command_id!r} not found")
+    return state
+
+
+def _operator_profile_payload(user: Dict[str, Any]) -> Dict[str, Any]:
+    owner_sub = _operator_owner_sub(user)
+    states = _list_yts_live_states(limit=100, active_only=False, owner_sub=owner_sub)
+    artifacts = _iter_yts_result_artifacts(limit=100, owner_sub=owner_sub)
+    return {
+        "user": user,
+        "auth_enabled": _GOOGLE_AUTH_SETTINGS.enabled,
+        "jobs": {
+            "total": len(states),
+            "running": sum(1 for state in states if str(state.get("status") or "").lower() == "running"),
+            "artifacts": len(artifacts),
+        },
+    }
+
+
 class GoogleLoginRequest(BaseModel):
     credential: str
 
@@ -9426,6 +9492,11 @@ async def google_auth_logout(response: Response) -> dict:
 @app.get("/auth/me", include_in_schema=False)
 async def google_auth_me(request: Request) -> dict:
     return {"user": request_user(request, _GOOGLE_AUTH_SETTINGS)}
+
+
+@app.get("/auth/profile", include_in_schema=False)
+async def google_auth_profile(request: Request) -> dict:
+    return await asyncio.to_thread(_operator_profile_payload, _operator_for_request(request))
 
 
 @app.get("/app.js", include_in_schema=False)
@@ -10643,10 +10714,13 @@ async def stream_scrcpy_stop() -> dict:
 
 
 @app.post("/yts/command/live")
-async def yts_live_command(request: YtsCommandRequest) -> dict:
+async def yts_live_command(request: YtsCommandRequest, http_request: Request) -> dict:
     """Start a YTS command and capture live stdout/stderr for polling."""
+    operator = _operator_for_request(http_request)
     await asyncio.to_thread(_clear_detached_active_yts_jobs)
     active_yts_job = _find_active_yts_live_command()
+    if active_yts_job and not _state_belongs_to_operator(active_yts_job, operator):
+        raise HTTPException(status_code=409, detail="Another operator already has an active YTS job on this controller")
     if active_yts_job:
         return {
             "command_id": active_yts_job.get("command_id"),
@@ -10726,6 +10800,9 @@ async def yts_live_command(request: YtsCommandRequest) -> dict:
 
     command_id = str(uuid.uuid4())
     state = _new_yts_live_state(command_id, bool(request.interactive_ai))
+    state["owner_sub"] = _operator_owner_sub(operator)
+    state["owner_email"] = str(operator.get("email") or "")
+    state["owner_name"] = str(operator.get("name") or "")
     state["device_id"] = yts_execution_device_id
     state["configured_yts_device_id"] = active_context.ytsDeviceId
     state["dab_device_id"] = active_context.dabDeviceId
@@ -10777,27 +10854,46 @@ async def yts_live_command(request: YtsCommandRequest) -> dict:
 
 
 @app.get("/yts/command/live")
-async def list_yts_live_commands(limit: int = 10, active_only: bool = False) -> List[dict]:
-    return await asyncio.to_thread(_list_yts_live_states, limit, active_only)
+async def list_yts_live_commands(request: Request, limit: int = 10, active_only: bool = False) -> List[dict]:
+    owner_sub = _operator_owner_sub(_operator_for_request(request))
+    return await asyncio.to_thread(_list_yts_live_states, limit, active_only, owner_sub=owner_sub)
 
 
 @app.get("/yts/results/artifacts")
-async def list_yts_result_artifacts(limit: int = 100) -> List[dict]:
-    return await asyncio.to_thread(_iter_yts_result_artifacts, limit)
+async def list_yts_result_artifacts(request: Request, limit: int = 100) -> List[dict]:
+    owner_sub = _operator_owner_sub(_operator_for_request(request))
+    return await asyncio.to_thread(_iter_yts_result_artifacts, limit, owner_sub=owner_sub)
 
 
 @app.post("/yts/results/analyze")
-async def analyze_yts_result_artifacts(request: YtsResultsAnalysisRequest) -> dict:
+async def analyze_yts_result_artifacts(request: YtsResultsAnalysisRequest, http_request: Request) -> dict:
     return await _create_yts_results_analysis(
         request.artifact_refs,
         include_zip_base64=bool(request.include_zip_base64),
         analysis_model=request.analysis_model,
         triage_level=request.triage_level,
+        operator=_operator_for_request(http_request),
     )
 
 
+def _require_analysis_report_for_operator(report_id: str, user: Dict[str, Any]) -> None:
+    if not _GOOGLE_AUTH_SETTINGS.enabled:
+        return
+    owner_sub = _operator_owner_sub(user)
+    for summary in _list_yts_live_states(limit=100, active_only=False, cleanup_stale=False, owner_sub=owner_sub):
+        command_id = str(summary.get("command_id") or "").strip()
+        state = _get_yts_live_state(command_id) if command_id else None
+        if not state or not _state_belongs_to_operator(state, user):
+            continue
+        for report in state.get("analysis_reports") or []:
+            if str(report.get("report_id") or "") == report_id:
+                return
+    raise HTTPException(status_code=404, detail="Analysis report not found")
+
+
 @app.get("/yts/results/analysis/{report_id}/txt")
-async def download_yts_result_analysis_txt(report_id: str) -> FileResponse:
+async def download_yts_result_analysis_txt(report_id: str, http_request: Request) -> FileResponse:
+    _require_analysis_report_for_operator(report_id, _operator_for_request(http_request))
     safe_id = _safe_artifact_name(report_id, "analysis")
     path = _artifacts_root_path() / "yts_result_analysis" / f"yts-result-analysis-{safe_id}.txt"
     if not path.exists():
@@ -10806,7 +10902,8 @@ async def download_yts_result_analysis_txt(report_id: str) -> FileResponse:
 
 
 @app.get("/yts/results/analysis/{report_id}/pdf")
-async def download_yts_result_analysis_pdf(report_id: str) -> FileResponse:
+async def download_yts_result_analysis_pdf(report_id: str, http_request: Request) -> FileResponse:
+    _require_analysis_report_for_operator(report_id, _operator_for_request(http_request))
     safe_id = _safe_artifact_name(report_id, "analysis")
     path = _artifacts_root_path() / "yts_result_analysis" / f"yts-result-analysis-{safe_id}.pdf"
     if not path.exists():
@@ -10815,10 +10912,8 @@ async def download_yts_result_analysis_pdf(report_id: str) -> FileResponse:
 
 
 @app.get("/yts/command/live/{command_id}/terminal-log")
-async def download_yts_terminal_log(command_id: str) -> FileResponse:
-    state = _get_yts_live_state(command_id)
-    if not state:
-        raise HTTPException(status_code=404, detail=f"YTS command {command_id!r} not found")
+async def download_yts_terminal_log(command_id: str, http_request: Request) -> FileResponse:
+    state = _require_yts_state_for_operator(command_id, _operator_for_request(http_request))
     path = await asyncio.to_thread(_write_yts_terminal_log_artifact, state)
     if path is None or not path.exists():
         raise HTTPException(status_code=404, detail="Terminal log not available")
@@ -10826,10 +10921,8 @@ async def download_yts_terminal_log(command_id: str) -> FileResponse:
 
 
 @app.get("/yts/command/live/{command_id}/video")
-async def download_yts_video_recording(command_id: str) -> FileResponse:
-    state = _get_yts_live_state(command_id)
-    if not state:
-        raise HTTPException(status_code=404, detail=f"YTS command {command_id!r} not found")
+async def download_yts_video_recording(command_id: str, http_request: Request) -> FileResponse:
+    state = _require_yts_state_for_operator(command_id, _operator_for_request(http_request))
     path_raw = state.get("video_file_path")
     path = Path(str(path_raw)) if path_raw else None
     if path is None or not path.exists():
@@ -10838,10 +10931,8 @@ async def download_yts_video_recording(command_id: str) -> FileResponse:
 
 
 @app.get("/yts/command/live/{command_id}/dab-log")
-async def download_yts_dab_log_zip(command_id: str) -> FileResponse:
-    state = _get_yts_live_state(command_id)
-    if not state:
-        raise HTTPException(status_code=404, detail=f"YTS command {command_id!r} not found")
+async def download_yts_dab_log_zip(command_id: str, http_request: Request) -> FileResponse:
+    state = _require_yts_state_for_operator(command_id, _operator_for_request(http_request))
     path_raw = state.get("dab_log_zip_path")
     path = Path(str(path_raw)) if path_raw else None
     if path is None or not path.exists():
@@ -10850,10 +10941,8 @@ async def download_yts_dab_log_zip(command_id: str) -> FileResponse:
 
 
 @app.get("/yts/command/live/{command_id}/dab-log-summary")
-async def download_yts_dab_log_summary(command_id: str) -> FileResponse:
-    state = _get_yts_live_state(command_id)
-    if not state:
-        raise HTTPException(status_code=404, detail=f"YTS command {command_id!r} not found")
+async def download_yts_dab_log_summary(command_id: str, http_request: Request) -> FileResponse:
+    state = _require_yts_state_for_operator(command_id, _operator_for_request(http_request))
     path_raw = state.get("dab_log_summary_path")
     path = Path(str(path_raw)) if path_raw else None
     if path is None or not path.exists():
@@ -10862,10 +10951,8 @@ async def download_yts_dab_log_summary(command_id: str) -> FileResponse:
 
 
 @app.get("/yts/command/live/{command_id}/report-html")
-async def download_yts_html_report(command_id: str) -> FileResponse:
-    state = _get_yts_live_state(command_id)
-    if not state:
-        raise HTTPException(status_code=404, detail=f"YTS command {command_id!r} not found")
+async def download_yts_html_report(command_id: str, http_request: Request) -> FileResponse:
+    state = _require_yts_state_for_operator(command_id, _operator_for_request(http_request))
 
     refreshed = await _ensure_yts_post_revalidation_if_missing(state)
     path_raw = str(state.get("report_html_path") or "").strip()
@@ -10881,10 +10968,8 @@ async def download_yts_html_report(command_id: str) -> FileResponse:
 
 
 @app.get("/yts/command/live/{command_id}/report-view")
-async def view_yts_html_report(command_id: str) -> Response:
-    state = _get_yts_live_state(command_id)
-    if not state:
-        raise HTTPException(status_code=404, detail=f"YTS command {command_id!r} not found")
+async def view_yts_html_report(command_id: str, http_request: Request) -> Response:
+    state = _require_yts_state_for_operator(command_id, _operator_for_request(http_request))
 
     refreshed = await _ensure_yts_post_revalidation_if_missing(state)
     path_raw = str(state.get("report_html_path") or "").strip()
@@ -10901,10 +10986,8 @@ async def view_yts_html_report(command_id: str) -> Response:
 
 
 @app.get("/yts/command/live/{command_id}/report")
-async def download_yts_pdf_report(command_id: str) -> FileResponse:
-    state = _get_yts_live_state(command_id)
-    if not state:
-        raise HTTPException(status_code=404, detail=f"YTS command {command_id!r} not found")
+async def download_yts_pdf_report(command_id: str, http_request: Request) -> FileResponse:
+    state = _require_yts_state_for_operator(command_id, _operator_for_request(http_request))
 
     refreshed = await _ensure_yts_post_revalidation_if_missing(state)
     path_raw = str(state.get("report_pdf_path") or "").strip()
@@ -10920,10 +11003,8 @@ async def download_yts_pdf_report(command_id: str) -> FileResponse:
 
 
 @app.get("/yts/command/live/{command_id}/result")
-async def download_yts_result_file(command_id: str) -> Response:
-    state = _get_yts_live_state(command_id)
-    if not state:
-        raise HTTPException(status_code=404, detail=f"YTS command {command_id!r} not found")
+async def download_yts_result_file(command_id: str, http_request: Request) -> Response:
+    state = _require_yts_state_for_operator(command_id, _operator_for_request(http_request))
     result_content = state.get("result_file_content")
     if not result_content:
         raise HTTPException(status_code=404, detail="Saved result file not available")
@@ -10936,21 +11017,17 @@ async def download_yts_result_file(command_id: str) -> Response:
 
 
 @app.get("/yts/command/live/{command_id}")
-async def get_yts_live_command(command_id: str) -> dict:
+async def get_yts_live_command(command_id: str, http_request: Request) -> dict:
     await asyncio.to_thread(_clear_detached_active_yts_jobs)
-    state = _get_yts_live_state(command_id)
-    if not state:
-        raise HTTPException(status_code=404, detail=f"YTS command {command_id!r} not found")
+    state = _require_yts_state_for_operator(command_id, _operator_for_request(http_request))
     payload = dict(state)
     payload["result_summary"] = _compact_yts_result_summary(state)
     return payload
 
 
 @app.post("/yts/command/live/{command_id}/stop")
-async def stop_yts_live_command(command_id: str) -> dict:
-    state = _get_yts_live_state(command_id)
-    if not state:
-        raise HTTPException(status_code=404, detail=f"YTS command {command_id!r} not found")
+async def stop_yts_live_command(command_id: str, http_request: Request) -> dict:
+    state = _require_yts_state_for_operator(command_id, _operator_for_request(http_request))
 
     process = _yts_live_processes.get(command_id)
     if process and process.returncode is None:
@@ -10984,11 +11061,9 @@ async def stop_yts_live_command(command_id: str) -> dict:
 
 
 @app.post("/yts/command/live/{command_id}/respond")
-async def respond_yts_live_command(command_id: str, request: YtsInteractiveResponseRequest) -> dict:
+async def respond_yts_live_command(command_id: str, http_request: Request, request: YtsInteractiveResponseRequest) -> dict:
     await asyncio.to_thread(_clear_detached_active_yts_jobs)
-    state = _get_yts_live_state(command_id)
-    if not state:
-        raise HTTPException(status_code=404, detail=f"YTS command {command_id!r} not found")
+    state = _require_yts_state_for_operator(command_id, _operator_for_request(http_request))
 
     payload = str(request.response or "").strip()
     if not payload:
@@ -11057,10 +11132,8 @@ async def respond_yts_live_command(command_id: str, request: YtsInteractiveRespo
 
 
 @app.post("/yts/command/live/{command_id}/suggest")
-async def suggest_yts_live_command_response(command_id: str, request: YtsInteractiveSuggestRequest) -> dict:
-    state = _get_yts_live_state(command_id)
-    if not state:
-        raise HTTPException(status_code=404, detail=f"YTS command {command_id!r} not found")
+async def suggest_yts_live_command_response(command_id: str, http_request: Request, request: YtsInteractiveSuggestRequest) -> dict:
+    state = _require_yts_state_for_operator(command_id, _operator_for_request(http_request))
     prompt_entry = state.get("pending_prompt") or (state.get("prompts")[-1] if state.get("prompts") else None)
     if not prompt_entry:
         raise HTTPException(status_code=409, detail="No interactive prompt is waiting for input")
