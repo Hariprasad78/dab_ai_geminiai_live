@@ -113,6 +113,13 @@ def _run_frontend_only(host: str, port: int, backend_url: str) -> None:
                 self.end_headers()
                 self.wfile.write(payload)
 
+        def end_headers(self) -> None:
+            request_path = self.path.split("?", 1)[0]
+            if request_path.endswith((".html", ".js", ".css")) or request_path in {"", "/"}:
+                self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+                self.send_header("Pragma", "no-cache")
+            super().end_headers()
+
         def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
             request_path = self.path.split("?", 1)[0]
             if request_path == "/config.js":

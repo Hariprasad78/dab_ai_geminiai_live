@@ -1,9 +1,30 @@
 (() => {
-  const apiBase = String(window.__HARNESS_API_BASE__ || '').replace(/\/+$/, '');
+  const API_STORAGE_KEY = 'dab_api_base';
+
+  function normalizeApiBase(value) {
+    return String(value || '').trim().replace(/\/+$/, '');
+  }
+
+  function resolveApiBase() {
+    const configured = normalizeApiBase(window.__HARNESS_API_BASE__);
+    const queryApi = new URLSearchParams(window.location.search).get('api');
+    if (queryApi !== null) {
+      const normalized = normalizeApiBase(queryApi);
+      localStorage.setItem(API_STORAGE_KEY, normalized);
+      return normalized;
+    }
+    const stored = normalizeApiBase(localStorage.getItem(API_STORAGE_KEY));
+    const hostname = window.location.hostname || '';
+    const shouldPreferSameOrigin = (hostname === '127.0.0.1' || hostname === 'localhost') && !configured;
+    return shouldPreferSameOrigin ? '' : (configured || stored || '');
+  }
+
+  const apiBase = resolveApiBase();
   const url = (path) => `${apiBase}${path}`;
   let resolveReady;
   let currentUser = null;
   let googleScriptRequested = false;
+  let apiCredentialsMode = 'same-origin';
   const ready = new Promise((resolve) => { resolveReady = resolve; });
 
   function esc(value) {
@@ -42,8 +63,10 @@
       .dab-auth-menu-meta { display:grid; gap:7px; padding:13px 0; color:#b0b0b5; font-size:12px; }
       .dab-auth-menu-row { display:flex; justify-content:space-between; gap:10px; }
       .dab-auth-menu-row strong { color:#d4d4d8; font-weight:600; }
-      #dab-auth-logout { width:100%; padding:8px 10px; border:1px solid #52525b; border-radius:6px; background:#27272a; color:#fafafa; cursor:pointer; font:inherit; font-weight:600; }
+      #dab-auth-logout, #dab-auth-login-status { width:100%; padding:8px 10px; border:1px solid #52525b; border-radius:6px; background:#27272a; color:#fafafa; cursor:pointer; font:inherit; font-weight:600; }
       #dab-auth-logout:hover { background:#3f3f46; }
+      #dab-auth-login-status { color:#b0b0b5; cursor:default; font-size:12px; line-height:1.4; }
+      #dab-auth-login-status.hidden, #dab-auth-logout.hidden { display:none; }
       @media (max-width:760px) { #dab-auth-trigger-email { display:none; } }
     `;
     document.head.appendChild(style);
@@ -86,10 +109,13 @@
           <div class="dab-auth-menu-copy"><div class="dab-auth-menu-name" id="dab-auth-name"></div><div class="dab-auth-menu-email" id="dab-auth-email"></div></div>
         </div>
         <div class="dab-auth-menu-meta">
-          <div class="dab-auth-menu-row"><span>Account</span><strong>Google</strong></div>
+          <div class="dab-auth-menu-row"><span>Account</span><strong id="dab-auth-account">Google</strong></div>
           <div class="dab-auth-menu-row"><span>Access</span><strong id="dab-auth-domain">Authorized operator</strong></div>
-          <div class="dab-auth-menu-row"><span>Session</span><strong>Active</strong></div>
+          <div class="dab-auth-menu-row"><span>Session</span><strong id="dab-auth-session">Active</strong></div>
+          <div class="dab-auth-menu-row"><span>Jobs</span><strong id="dab-auth-job-count">0</strong></div>
+          <div class="dab-auth-menu-row"><span>Artifacts</span><strong id="dab-auth-artifact-count">0</strong></div>
         </div>
+        <button type="button" id="dab-auth-login-status" class="hidden" disabled>Google sign-in is not configured on this controller.</button>
         <button type="button" id="dab-auth-logout">Sign out</button>
       </section>`;
     document.body.appendChild(profile);
@@ -113,16 +139,35 @@
     ensureUi();
     document.getElementById('dab-auth-overlay').classList.add('hidden');
     const profile = document.getElementById('dab-auth-profile');
-    if (!user || user.auth_disabled) { profile.classList.add('hidden'); return; }
+    if (!user) { profile.classList.add('hidden'); return; }
+    const localMode = Boolean(user.auth_disabled);
     const email = String(user.email || '');
-    const domain = email.includes('@') ? email.split('@').pop() : 'Authorized operator';
+    const domain = localMode ? 'Google auth disabled' : (email.includes('@') ? email.split('@').pop() : 'Authorized operator');
     document.getElementById('dab-auth-trigger-avatar').innerHTML = avatarMarkup(user);
     document.getElementById('dab-auth-menu-avatar').innerHTML = avatarMarkup(user, true);
-    document.getElementById('dab-auth-trigger-email').textContent = email || user.name || 'Google account';
-    document.getElementById('dab-auth-name').textContent = user.name || 'Google account';
-    document.getElementById('dab-auth-email').textContent = email;
+    document.getElementById('dab-auth-trigger-email').textContent = email || user.name || 'Local operator';
+    document.getElementById('dab-auth-name').textContent = user.name || (localMode ? 'Local operator' : 'Google account');
+    document.getElementById('dab-auth-email').textContent = email || 'Controller-local session';
+    document.getElementById('dab-auth-account').textContent = localMode ? 'Local mode' : 'Google';
     document.getElementById('dab-auth-domain').textContent = domain;
+    document.getElementById('dab-auth-session').textContent = 'Active';
+    document.getElementById('dab-auth-logout').classList.toggle('hidden', localMode);
+    document.getElementById('dab-auth-login-status').classList.toggle('hidden', !localMode);
     profile.classList.remove('hidden');
+    void refreshProfile();
+  }
+
+  async function refreshProfile() {
+    try {
+      const response = await fetch(url('/auth/profile'), { credentials: apiCredentialsMode, cache: 'no-store' });
+      if (!response.ok) return;
+      const profile = await response.json();
+      const jobs = profile.jobs || {};
+      document.getElementById('dab-auth-job-count').textContent = String(jobs.total || 0);
+      document.getElementById('dab-auth-artifact-count').textContent = String(jobs.artifacts || 0);
+    } catch (_) {
+      // The account menu remains useful even if profile totals are temporarily unavailable.
+    }
   }
 
   function showLogin(message = '') {
@@ -160,16 +205,28 @@
 
   async function bootstrap() {
     ensureUi();
+    const authConfigUrl = url('/auth/config');
+    if (window.location.protocol === 'https:' && authConfigUrl.startsWith('http://')) {
+      showLogin(`This HTTPS page cannot call the HTTP controller at ${authConfigUrl}. Open http://10.99.57.66:5173/index.html on the lab network, or expose the controller through HTTPS.`);
+      return;
+    }
     try {
-      const response = await fetch(url('/auth/config'), { credentials: 'include', cache: 'no-store' });
-      const config = await response.json();
+      let response = await fetch(url('/auth/config'), { credentials: 'same-origin', cache: 'no-store' });
+      let config = await response.json();
       if (!config.enabled) { showUser(config.user); resolveReady(config.user); return; }
+      apiCredentialsMode = 'include';
+      if (config.configured && apiBase) {
+        response = await fetch(url('/auth/config'), { credentials: 'include', cache: 'no-store' });
+        config = await response.json();
+      }
       if (config.user) { showUser(config.user); resolveReady(config.user); return; }
       showLogin(config.configured ? '' : 'Google authentication is enabled but the backend configuration is incomplete.');
       if (config.client_id) loadGoogleButton(config.client_id);
-    } catch (error) { showLogin(`Authentication service unavailable: ${error.message || error}`); }
+    } catch (error) {
+      showLogin(`Authentication service unavailable at ${url('/auth/config')}: ${error.message || error}`);
+    }
   }
 
-  window.dabAuth = { ready, currentUser: () => currentUser, logout, toggleProfileMenu };
+  window.dabAuth = { ready, currentUser: () => currentUser, credentialsMode: () => apiCredentialsMode, logout, toggleProfileMenu };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bootstrap, { once: true }); else bootstrap();
 })();
