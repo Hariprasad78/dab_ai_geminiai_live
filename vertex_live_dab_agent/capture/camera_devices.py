@@ -54,6 +54,18 @@ class DeviceContext:
         return payload
 
 
+def camera_devices_config_path() -> Path:
+    return _default_camera_config_path()
+
+
+def clear_device_context_cache() -> None:
+    global _cached_config, _cached_contexts, _cached_config_path, _warned_missing_config_path
+    _cached_config = None
+    _cached_contexts = None
+    _cached_config_path = None
+    _warned_missing_config_path = None
+
+
 def _default_camera_config_path() -> Path:
     override = (os.environ.get("CAMERA_DEVICES_CONFIG") or "").strip()
     if override:
@@ -180,8 +192,8 @@ def _load_camera_device_config() -> Dict[str, str]:
                     DeviceContext(
                         contextId=key,
                         displayName=camera_label(key),
-                        dabDeviceId="sony" if key == "sonytv" else ("adt-4" if key == "adt4" else key),
-                        ytsDeviceId="sony" if key == "sonytv" else ("adt-4" if key == "adt4" else key),
+                        dabDeviceId=key,
+                        ytsDeviceId=key,
                         irDeviceId=f"{key}_ir",
                         cameraId=f"{key}_cam",
                         cameraPath=value.strip(),
@@ -230,13 +242,13 @@ def find_device_context(value: str) -> Optional[DeviceContext]:
 def get_camera_path(camera_name: str) -> str:
     """Return camera path from env override or camera_devices.json mapping."""
     key = str(camera_name or "").strip().lower()
-    if key not in CAMERA_DEVICE_KEYS:
+    if not key:
         return ""
 
-    env_name = _CAMERA_ENV_OVERRIDES[key]
-    env_value = (os.environ.get(env_name) or "").strip()
-    if env_value:
-        return env_value
+    if key in _CAMERA_ENV_OVERRIDES:
+        env_value = (os.environ.get(_CAMERA_ENV_OVERRIDES[key]) or "").strip()
+        if env_value:
+            return env_value
 
     config = _load_camera_device_config()
     return (config.get(key) or "").strip()
@@ -244,7 +256,62 @@ def get_camera_path(camera_name: str) -> str:
 
 def get_camera_device_mapping() -> Dict[str, str]:
     """Return full effective camera mapping (including env overrides)."""
-    return {key: get_camera_path(key) for key in CAMERA_DEVICE_KEYS}
+    mapping = dict(_load_camera_device_config())
+    for key in CAMERA_DEVICE_KEYS:
+        path = get_camera_path(key)
+        if path:
+            mapping[key] = path
+    return mapping
+
+
+def save_device_contexts(contexts: List[DeviceContext]) -> Path:
+    """Persist configured logical hardware contexts."""
+    path = _default_camera_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload: Dict[str, Any] = {}
+    if path.exists():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                payload.update(loaded)
+        except Exception:
+            pass
+    payload["devices"] = [context.to_dict() for context in contexts]
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    clear_device_context_cache()
+    return path
+
+
+def upsert_device_context_binding(context_id: str, updates: Dict[str, Any]) -> DeviceContext:
+    """Update one logical context binding without relying on model names."""
+    target = str(context_id or "").strip()
+    if not target:
+        raise ValueError("contextId is required")
+    contexts = load_device_contexts()
+    existing = find_device_context(target)
+    base: Dict[str, Any] = existing.to_dict() if existing is not None else {"contextId": target, "displayName": target, "dabDeviceId": target, "ytsDeviceId": target}
+    writable = {
+        "contextId", "displayName", "dabDeviceId", "ytsDeviceId", "adbDeviceId",
+        "irDeviceId", "cameraId", "cameraPath", "videoSource", "audioDevice", "active",
+    }
+    for key, value in updates.items():
+        if key in writable and value is not None:
+            base[key] = str(value).strip() if key != "active" else bool(value)
+    updated = _context_from_raw(base)
+    if updated is None:
+        raise ValueError("Updated context must include contextId and dabDeviceId")
+    replaced = False
+    out: List[DeviceContext] = []
+    for context in contexts:
+        if context.contextId == updated.contextId:
+            out.append(updated)
+            replaced = True
+        else:
+            out.append(context)
+    if not replaced:
+        out.append(updated)
+    save_device_contexts(out)
+    return updated
 
 
 def camera_label(camera_name: str) -> str:
@@ -341,21 +408,31 @@ def resolve_context_camera_path(context: DeviceContext) -> str:
 def validate_camera_devices() -> bool:
     """Validate configured camera paths and log logical->real mapping."""
     ok = True
+    contexts = load_device_contexts()
+    if contexts:
+        for context in contexts:
+            path = str(context.cameraPath or "").strip()
+            label = context.displayName or context.contextId
+            if not path:
+                logger.warning("[WARN] Camera path not configured for %s (%s)", label, context.contextId)
+                ok = False
+                continue
+            resolved = os.path.realpath(path) if path else ""
+            if os.path.exists(path):
+                logger.info("[INFO] Camera mapping: %s -> %s (real=%s)", context.contextId, path, resolved)
+            else:
+                logger.error("[ERROR] Missing camera path for %s (%s): %s", label, context.contextId, path)
+                ok = False
+        return ok
+
     for key, path in get_camera_device_mapping().items():
         label = camera_label(key)
         if not path:
             logger.error("[ERROR] Camera path not configured for %s", label)
             ok = False
             continue
-
-        exists = os.path.exists(path)
-        resolved = ""
-        try:
-            resolved = os.path.realpath(path)
-        except Exception:
-            resolved = path
-
-        if exists:
+        resolved = os.path.realpath(path) if path else ""
+        if os.path.exists(path):
             logger.info("[INFO] Camera mapping: %s -> %s (real=%s)", key, path, resolved)
         else:
             logger.error("[ERROR] Missing camera path for %s: %s", label, path)

@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from vertex_live_dab_agent.yts_agent.decision_engine import decide_yts_response
-from vertex_live_dab_agent.yts_agent.expectation_extractor import heuristic_extract_expectation
+from vertex_live_dab_agent.yts_agent.expectation_extractor import heuristic_extract_expectation, normalize_expectation
 from vertex_live_dab_agent.yts_agent.memory_store import YtsMemoryStore
 from vertex_live_dab_agent.yts_agent.prompt_parser import parse_yts_prompt
 from vertex_live_dab_agent.yts_agent.prompt_parser import classify_yts_prompt_kind
@@ -192,6 +192,76 @@ def test_pass_blocked_when_playback_test_has_no_active_video():
     assert "playback" in " ".join(gate["missing_evidence"]).lower()
 
 
+def test_visual_evidence_does_not_treat_no_ads_summary_as_visible_ad():
+    evidence = build_visual_evidence(
+        {
+            "captured_at": "2026-05-07T00:00:02+00:00",
+            "source": "hdmi-capture",
+            "summary": "No ads or overlays are blocking the content.",
+            "analysis": {
+                "summary": "No ads or overlays are blocking the content.",
+                "detected_app_context": "YouTube",
+                "screen_type": "video_playback",
+                "youtube_active": True,
+                "video_playback_active": True,
+                "ad_or_interstitial_visible": False,
+                "requirement_seen": True,
+                "recommended_result": "pass",
+                "confidence": 0.95,
+            },
+        }
+    )
+
+    assert evidence["latest_observation"]["ad_or_interstitial_visible"] is False
+
+
+def test_pass_allowed_after_previous_ad_clears_on_latest_frame():
+    expectation = _playback_expectation()
+    evidence = build_visual_evidence(
+        {
+            "timeline": [
+                {
+                    "captured_at": "2026-05-07T00:00:01+00:00",
+                    "fresh_after_prompt": True,
+                    "source": "hdmi-capture",
+                    "summary": "Sponsored ad with Skip Ad countdown is visible.",
+                    "analysis": {
+                        "detected_app_context": "YouTube",
+                        "screen_type": "ad_interstitial",
+                        "youtube_active": True,
+                        "video_playback_active": True,
+                        "ad_or_interstitial_visible": True,
+                        "recommended_result": "fail",
+                        "confidence": 0.95,
+                    },
+                },
+                {
+                    "captured_at": "2026-05-07T00:00:02+00:00",
+                    "fresh_after_prompt": True,
+                    "source": "hdmi-capture",
+                    "summary": "Expected 21:9 test video is playing with normal black bars.",
+                    "analysis": {
+                        "detected_app_context": "YouTube",
+                        "screen_type": "video_playback",
+                        "youtube_active": True,
+                        "video_playback_active": True,
+                        "ad_or_interstitial_visible": False,
+                        "requirement_seen": True,
+                        "recommended_result": "pass",
+                        "confidence": 0.95,
+                    },
+                },
+            ],
+            "continuous_frame_count": 2,
+        }
+    )
+
+    gate = validate_decision_gate(expectation, evidence, {"selected_option": "1", "selected_label": "Pass", "confidence": 0.95})
+
+    assert gate["allowed"] is True
+    assert gate["safety_blocked_pass"] is False
+
+
 def test_memory_created_for_every_run(tmp_path: Path):
     store = YtsMemoryStore(tmp_path / "yts_memory")
     store.start_run("run-1", test_name="Example", command="yts test adt-4 Example")
@@ -280,6 +350,11 @@ def test_missing_evidence_string_is_not_split_into_characters():
     assert normalize_missing_evidence("Confirm playback is visible") == ["Confirm playback is visible"]
 
 
+def test_missing_evidence_semantic_none_is_empty():
+    assert normalize_missing_evidence("none") == []
+    assert normalize_missing_evidence(["N/A", "Confirm playback is visible"]) == ["Confirm playback is visible"]
+
+
 def test_option_one_done_is_not_treated_as_pass():
     prompt = parse_yts_prompt("Previous Selection: FAILED\n1: Done\n2: Retry", ["1", "2"])
     expectation = heuristic_extract_expectation(prompt)
@@ -301,3 +376,26 @@ def test_retry_prompt_is_classified_separately():
     expectation = heuristic_extract_expectation(prompt)
     assert expectation["test_type"] == "control"
     assert expectation["visual_requirements"][0]["evidence_required"] is False
+
+
+def test_model_expectation_keeps_terminal_numeric_option_mapping():
+    prompt = parse_yts_prompt(
+        "Validate video playback.\n1: Pass\n2: Fail\n3: Skip",
+        ["1", "2", "3"],
+    )
+    expectation = normalize_expectation(
+        {
+            "allowed_answers": [
+                {"option": "pass", "label": "pass"},
+                {"option": "fail", "label": "fail"},
+                {"option": "skip", "label": "skip"},
+            ]
+        },
+        prompt,
+    )
+
+    assert expectation["allowed_answers"] == [
+        {"option": "1", "label": "pass"},
+        {"option": "2", "label": "fail"},
+        {"option": "3", "label": "skip"},
+    ]

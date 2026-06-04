@@ -15,10 +15,15 @@ _AD_SIGNAL_RE = re.compile(
     r"\bwww\.[a-z0-9.-]+\.[a-z]{2,}\b",
     re.IGNORECASE,
 )
+_NEGATED_AD_SIGNAL_RE = re.compile(
+    r"\b(?:no|without|free\s+of)\s+(?:visible\s+)?(?:ads?|advertisements?|sponsored\s+(?:content|screens?)|promos?)\b"
+    r"(?:\s+(?:or|and)\s+(?:blocking\s+)?overlays?)?",
+    re.IGNORECASE,
+)
 
 
 def _contains_ad_signal(*values: Any) -> bool:
-    return any(_AD_SIGNAL_RE.search(str(value or "")) for value in values)
+    return any(_AD_SIGNAL_RE.search(_NEGATED_AD_SIGNAL_RE.sub("", str(value or ""))) for value in values)
 
 
 def _label_for_option(option: str, expectation: Dict[str, Any]) -> str:
@@ -140,17 +145,6 @@ def validate_decision_gate(expectation: Dict[str, Any], evidence: Dict[str, Any]
         screen_type,
         observed_target,
     )
-    if not ad_detected:
-        for item in list(evidence.get("observations") or [])[-5:]:
-            if bool(item.get("ad_or_interstitial_visible")) or _contains_ad_signal(
-                item.get("visual_summary"),
-                item.get("detected_text"),
-                item.get("detected_app_context"),
-                item.get("screen_type"),
-                item.get("observed_visual_target"),
-            ):
-                ad_detected = True
-                break
     if ad_detected:
         blocked = True
         missing.append("Live TV feed shows an ad, sponsored screen, or interstitial instead of the required YTS target.")
@@ -220,7 +214,15 @@ def validate_decision_gate(expectation: Dict[str, Any], evidence: Dict[str, Any]
     if confidence < min_confidence and not positive_observations:
         blocked = True
         missing.append(f"Latest visual confidence {confidence:.2f} is below the Pass threshold.")
-    if evidence.get("negative_observations"):
+    latest_positive = bool(
+        not ad_detected
+        and (
+            latest.get("requirement_seen")
+            or latest.get("recommended_result") == "pass"
+            or target_match is True
+        )
+    )
+    if evidence.get("negative_observations") and not latest_positive:
         blocked = True
         missing.append("Continuous visual history contains observations that contradict Pass.")
 

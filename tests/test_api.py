@@ -19,6 +19,7 @@ def reset_api_state(tmp_path, monkeypatch):
     api_mod._yts_live_commands.clear()
     api_mod._yts_live_tasks.clear()
     api_mod._yts_live_visual_tasks.clear()
+    api_mod._yts_live_prompt_tasks.clear()
     api_mod._yts_live_processes.clear()
     api_mod._yts_live_visual_cache.clear()
     api_mod._device_dab_catalog_cache.clear()
@@ -44,6 +45,7 @@ def reset_api_state(tmp_path, monkeypatch):
     api_mod._yts_live_commands.clear()
     api_mod._yts_live_tasks.clear()
     api_mod._yts_live_visual_tasks.clear()
+    api_mod._yts_live_prompt_tasks.clear()
     api_mod._yts_live_processes.clear()
     api_mod._yts_live_visual_cache.clear()
     api_mod._device_dab_catalog_cache.clear()
@@ -66,6 +68,94 @@ def reset_api_state(tmp_path, monkeypatch):
 async def client():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         yield ac
+
+
+async def _wait_for_yts_prompt_task(command_id):
+    task = api_mod._yts_live_prompt_tasks.get(command_id)
+    if task is not None:
+        await task
+
+
+def test_yts_cert_command_forces_submit_flag():
+    request = api_mod.YtsCommandRequest(command="cert", params=["42", "yt-cert-test-id"])
+
+    command = api_mod._build_yts_command(request)
+
+    assert "cert" in command
+    assert "--submit" in command
+    assert command[-1] == "--submit"
+    assert request.cert_submit is True
+
+
+def test_yts_subprocess_env_uses_host_auth_home(tmp_path, monkeypatch):
+    auth_home = tmp_path / "yts-auth-home"
+    monkeypatch.setenv("YTS_AUTH_HOME", str(auth_home))
+
+    env = api_mod._build_yts_subprocess_env(api_mod.YtsCommandRequest(command="login"))
+
+    assert env["HOME"] == str(auth_home.resolve())
+    assert env["YTS_WORKSPACE_DIR"]
+
+
+@pytest.mark.asyncio
+async def test_yts_login_live_command_does_not_require_device_context(client, monkeypatch):
+    async def fake_run(command_id, request):
+        state = api_mod._yts_live_commands[command_id]
+        state["status"] = "completed"
+        state["returncode"] = 0
+
+    monkeypatch.setattr(api_mod, "_run_yts_command_live", fake_run)
+    monkeypatch.setattr(api_mod, "_active_device_context", lambda: None)
+
+    resp = await client.post("/yts/command/live", json={"command": "login", "params": []})
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["context"] is None
+    assert data["yts_run_mode"] == "login"
+    assert api_mod._yts_live_commands[data["command_id"]]["command"].endswith(" login")
+
+
+@pytest.mark.asyncio
+async def test_device_context_bind_endpoint_persists_without_switching_inactive_context(client, monkeypatch, tmp_path):
+    calls = []
+
+    fake_context = api_mod.DeviceContext(
+        contextId="slot-1",
+        displayName="Bench Slot 1",
+        dabDeviceId="new-dab",
+        ytsDeviceId="42",
+        adbDeviceId="10.0.0.5:5555",
+        irDeviceId="ir-slot-1",
+        cameraPath="/dev/v4l/by-id/unique-camera",
+        videoSource="hdmi-capture",
+        audioDevice="hw:7,0",
+    )
+
+    async def fake_apply(*_args, **_kwargs):
+        calls.append("apply")
+
+    async def fake_contexts():
+        return {"contexts": [{"contextId": "slot-1"}], "activeContextId": "other"}
+
+    monkeypatch.setattr(api_mod, "upsert_device_context_binding", lambda context_id, updates: fake_context)
+    monkeypatch.setattr(api_mod, "find_device_context", lambda _value: fake_context)
+    monkeypatch.setattr(api_mod, "camera_devices_config_path", lambda: tmp_path / "camera_devices.json")
+    monkeypatch.setattr(api_mod, "_active_device_context", lambda: None)
+    monkeypatch.setattr(api_mod, "_apply_selected_device_context", fake_apply)
+    monkeypatch.setattr(api_mod, "device_contexts", fake_contexts)
+
+    resp = await client.post("/device/context/bind", json={
+        "contextId": "slot-1",
+        "dabDeviceId": "new-dab",
+        "ytsDeviceId": "42",
+        "cameraPath": "/dev/v4l/by-id/unique-camera",
+        "persistSelection": False,
+    })
+
+    assert resp.status_code == 200
+    assert resp.json()["success"] is True
+    assert calls == []
 
 
 @pytest.mark.asyncio
@@ -867,6 +957,143 @@ async def test_yts_recording_stderr_suppresses_noisy_jpeg_warnings(monkeypatch):
     assert any("Suppressed 2 non-fatal MJPEG decoder warnings" in message for message in messages)
 
 
+def test_yts_ad_wait_uses_latest_observation_after_ad_clears():
+    evidence = {
+        "latest_observation": {"ad_or_interstitial_visible": False},
+        "observations": [
+            {"ad_or_interstitial_visible": True},
+            {"ad_or_interstitial_visible": False},
+        ],
+        "negative_observations": [{"ad_or_interstitial_visible": True}],
+    }
+
+    assert api_mod._yts_evidence_has_ad_or_interstitial(evidence) is False
+
+
+@pytest.mark.asyncio
+async def test_manual_yts_input_cancels_pending_auto_answer():
+    command_id = "cmd-manual-cancel"
+
+    class FakeStdin:
+        def __init__(self):
+            self.messages = []
+
+        def write(self, payload):
+            self.messages.append(payload)
+
+        async def drain(self):
+            return None
+
+    class FakeProcess:
+        def __init__(self):
+            self.stdin = FakeStdin()
+            self.returncode = None
+
+    process = FakeProcess()
+    pending_task = asyncio.create_task(asyncio.sleep(60))
+    api_mod._yts_live_prompt_tasks[command_id] = pending_task
+    api_mod._yts_live_processes[command_id] = process
+    api_mod._yts_live_commands[command_id] = {
+        "command_id": command_id,
+        "status": "running",
+        "awaiting_input": True,
+        "pending_prompt": {"id": 1, "answered": False},
+        "prompts": [{"id": 1, "answered": False}],
+        "responses": [],
+        "logs": [],
+    }
+
+    result = await api_mod._send_yts_command_input(command_id, "3", source="manual")
+    await asyncio.sleep(0)
+
+    assert result["response"] == "3"
+    assert process.stdin.messages == [b"3\n"]
+    assert pending_task.cancelled() is True
+    assert command_id not in api_mod._yts_live_prompt_tasks
+
+
+def test_clear_detached_yts_job_marks_exited_process_failed_even_with_live_task(monkeypatch):
+    command_id = "cmd-exited-process"
+    state = api_mod._new_yts_live_state(command_id, interactive_ai=True)
+    state["awaiting_input"] = True
+    state["pending_prompt"] = {"id": 1, "answered": False}
+    api_mod._yts_live_commands[command_id] = state
+
+    class FakeProcess:
+        returncode = -15
+        stdin = None
+
+    class FakeTask:
+        def done(self):
+            return False
+
+    api_mod._yts_live_processes[command_id] = FakeProcess()
+    api_mod._yts_live_tasks[command_id] = FakeTask()
+    monkeypatch.setattr(api_mod, "_mark_stale_yts_live_commands", lambda: None)
+    monkeypatch.setattr(api_mod, "_persist_yts_live_state", lambda state: state)
+
+    api_mod._clear_detached_active_yts_jobs()
+
+    assert state["status"] == "failed"
+    assert state["returncode"] == -15
+    assert state["awaiting_input"] is False
+    assert state["pending_prompt"] is None
+
+
+@pytest.mark.asyncio
+async def test_send_yts_input_marks_broken_stdin_failed(monkeypatch):
+    command_id = "cmd-broken-stdin"
+    state = api_mod._new_yts_live_state(command_id, interactive_ai=True)
+    state["awaiting_input"] = True
+    state["pending_prompt"] = {"id": 1, "answered": False}
+    api_mod._yts_live_commands[command_id] = state
+
+    class FakeStdin:
+        def write(self, _payload):
+            raise BrokenPipeError("pipe closed")
+
+    class FakeProcess:
+        returncode = None
+        stdin = FakeStdin()
+
+    api_mod._yts_live_processes[command_id] = FakeProcess()
+    monkeypatch.setattr(api_mod, "_persist_yts_live_state", lambda state: state)
+
+    with pytest.raises(api_mod.HTTPException) as exc_info:
+        await api_mod._send_yts_command_input(command_id, "1", source="manual")
+
+    assert exc_info.value.status_code == 409
+    assert "stdin is no longer writable" in exc_info.value.detail
+    assert state["status"] == "failed"
+    assert state["awaiting_input"] is False
+    assert state["pending_prompt"] is None
+
+
+@pytest.mark.asyncio
+async def test_yts_dab_assist_skip_ad_logs_right_then_center(client, monkeypatch):
+    command_id = "cmd-dab-assist"
+    api_mod._yts_live_commands[command_id] = {
+        "command_id": command_id,
+        "status": "running",
+        "logs": [],
+    }
+    actions = []
+
+    async def fake_manual_action(request):
+        actions.append((request.action, request.control_mode))
+        return api_mod.ManualActionResponse(success=True, action=request.action, result={"ok": True})
+
+    monkeypatch.setattr(api_mod, "manual_action", fake_manual_action)
+    monkeypatch.setattr(api_mod, "_persist_yts_live_state", lambda state: state)
+
+    resp = await client.post(f"/yts/command/live/{command_id}/dab-assist", json={"action": "SKIP_AD"})
+
+    assert resp.status_code == 200
+    assert resp.json()["success"] is True
+    assert actions == [("PRESS_RIGHT", "DAB"), ("PRESS_OK", "DAB")]
+    assert "YTS DAB assist SKIP_AD: PRESS_RIGHT -> PRESS_OK (ok)" in api_mod._yts_live_commands[command_id]["logs"][-1]["message"]
+
+
 @pytest.mark.asyncio
 async def test_yts_live_command_manual_response(client, monkeypatch):
     command_id = "cmd-manual"
@@ -958,6 +1185,13 @@ async def test_yts_live_command_suggest_rejects_incomplete_numeric_prompt(client
 
 @pytest.mark.asyncio
 async def test_yts_live_command_auto_response_persists_multiline_prompt(monkeypatch):
+    monkeypatch.setattr(api_mod, "_YTS_PROMPT_OPTION_SETTLE_SECONDS", 0.0)
+    monkeypatch.setattr(api_mod, "_YTS_PLAYBACK_PROMPT_SETTLE_SECONDS", 0.0)
+
+    async def fake_prompt_visual(*_args, **_kwargs):
+        return {}
+
+    monkeypatch.setattr(api_mod, "_capture_fresh_prompt_visual_context", fake_prompt_visual)
     command_id = "cmd-auto-prompt"
     state = api_mod._new_yts_live_state(command_id, interactive_ai=True)
     api_mod._yts_live_commands[command_id] = state
@@ -1014,6 +1248,7 @@ async def test_yts_live_command_auto_response_persists_multiline_prompt(monkeypa
         ),
     )
 
+    await _wait_for_yts_prompt_task(command_id)
     final_state = api_mod._yts_live_commands[command_id]
     assert len(final_state["prompts"]) == 1
     prompt = final_state["prompts"][0]
@@ -1220,6 +1455,13 @@ async def test_yts_stream_output_does_not_answer_scaffolding_only_prompt(monkeyp
 
 @pytest.mark.asyncio
 async def test_yts_stream_output_backfills_instruction_context_before_scaffolding(monkeypatch):
+    monkeypatch.setattr(api_mod, "_YTS_PROMPT_OPTION_SETTLE_SECONDS", 0.0)
+    monkeypatch.setattr(api_mod, "_YTS_PLAYBACK_PROMPT_SETTLE_SECONDS", 0.0)
+
+    async def fake_prompt_visual(*_args, **_kwargs):
+        return {}
+
+    monkeypatch.setattr(api_mod, "_capture_fresh_prompt_visual_context", fake_prompt_visual)
     command_id = "cmd-context-backfill"
     api_mod._yts_live_commands[command_id] = api_mod._new_yts_live_state(command_id, interactive_ai=True)
 
@@ -1276,6 +1518,7 @@ async def test_yts_stream_output_backfills_instruction_context_before_scaffoldin
         ),
     )
 
+    await _wait_for_yts_prompt_task(command_id)
     state = api_mod._yts_live_commands[command_id]
     assert len(state["prompts"]) == 1
     prompt = state["prompts"][0]
@@ -1290,6 +1533,13 @@ async def test_yts_stream_output_backfills_instruction_context_before_scaffoldin
 
 @pytest.mark.asyncio
 async def test_yts_stream_output_records_closed_prompt_without_crashing(monkeypatch):
+    monkeypatch.setattr(api_mod, "_YTS_PROMPT_OPTION_SETTLE_SECONDS", 0.0)
+    monkeypatch.setattr(api_mod, "_YTS_PLAYBACK_PROMPT_SETTLE_SECONDS", 0.0)
+
+    async def fake_prompt_visual(*_args, **_kwargs):
+        return {}
+
+    monkeypatch.setattr(api_mod, "_capture_fresh_prompt_visual_context", fake_prompt_visual)
     command_id = "cmd-closed-prompt"
     state = api_mod._new_yts_live_state(command_id, interactive_ai=True)
     api_mod._yts_live_commands[command_id] = state
@@ -1321,6 +1571,7 @@ async def test_yts_stream_output_records_closed_prompt_without_crashing(monkeypa
         FakeStream([b"Continue? yes/no\n"]),
     )
 
+    await _wait_for_yts_prompt_task(command_id)
     prompt = api_mod._yts_live_commands[command_id]["prompts"][0]
     assert prompt["answered"] is False
     assert prompt["ai_error"] == "Prompt closed before AI response could be sent"
@@ -1882,7 +2133,15 @@ async def test_refresh_yts_live_visual_monitor_records_gemini_analysis(monkeypat
                 }
             )
 
-    monkeypatch.setattr(api_mod, "get_screen_capture", lambda: FakeCaptureService())
+    async def fake_capture_frame(_command_id):
+        return {
+            "source": "hdmi-capture",
+            "screenshot_b64": "live-image",
+            "observations": [{"attempt": 1, "source": "hdmi-capture", "has_screenshot": True}],
+            "capture_status": {"configured_source": "auto", "selected_video_device": "/dev/video0", "hdmi_available": True},
+        }
+
+    monkeypatch.setattr(api_mod, "_capture_yts_live_monitor_frame", fake_capture_frame)
     monkeypatch.setattr(api_mod, "get_vertex_live_visual_client", lambda: FakeVertexClient())
     monkeypatch.setattr(api_mod, "get_vertex_text_client", lambda: None)
 
@@ -1890,9 +2149,26 @@ async def test_refresh_yts_live_visual_monitor_records_gemini_analysis(monkeypat
 
     assert result is not None
     assert result["analysis"]["playback_visible"] is True
-    assert api_mod._yts_live_commands[command_id]["visual_monitor_active"] is True
-    assert api_mod._yts_live_commands[command_id]["latest_visual_analysis"]["analysis"]["settings_gear_visible"] is True
+    monitor_state = api_mod._yts_live_commands[command_id]
+    assert monitor_state["visual_monitor_active"] is True
+    assert monitor_state["visual_monitor_mode"] == "durable-live-session"
+    assert monitor_state["visual_monitor_status"] == "watching"
+    assert monitor_state["visual_monitor_capture_count"] == 1
+    assert monitor_state["visual_monitor_frame_count"] == 1
+    assert monitor_state["latest_visual_analysis"]["analysis"]["settings_gear_visible"] is True
     assert api_mod._yts_live_visual_cache[command_id]["screenshot_b64"] == "live-image"
+
+
+def test_yts_live_visual_monitor_quota_errors_use_bounded_backoff(monkeypatch):
+    monkeypatch.setattr(api_mod, "_YTS_LIVE_VISUAL_MONITOR_INTERVAL_SECONDS", 1.0)
+    monkeypatch.setattr(api_mod, "_YTS_LIVE_VISUAL_MONITOR_MAX_BACKOFF_SECONDS", 30.0)
+    error = RuntimeError("1011 None. Resource has been exhausted (e.g. check quota).")
+
+    assert api_mod._is_yts_gemini_quota_error(error) is True
+    assert api_mod._yts_live_visual_backoff_seconds(1, error) == 1.0
+    assert api_mod._yts_live_visual_backoff_seconds(3, error) == 4.0
+    assert api_mod._yts_live_visual_backoff_seconds(10, error) == 30.0
+    assert api_mod._yts_live_visual_backoff_seconds(2, RuntimeError("temporary disconnect")) == 1.0
 
 
 def test_parse_yts_live_visual_analysis_accepts_text_confidence():

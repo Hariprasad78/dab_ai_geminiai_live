@@ -78,9 +78,11 @@ from vertex_live_dab_agent.capture.capture import ScreenCapture
 from vertex_live_dab_agent.capture.scrcpy_stream import close_pooled_scrcpy_sessions, get_pooled_scrcpy_session
 from vertex_live_dab_agent.capture.camera_devices import (
     DeviceContext,
+    camera_devices_config_path,
     find_device_context,
     load_device_contexts,
     resolve_context_camera_path,
+    upsert_device_context_binding,
     validate_camera_devices,
 )
 from vertex_live_dab_agent.capture.hdmi_audio import (
@@ -131,6 +133,7 @@ _YTS_INTERACTIVE_CAPTURE_ATTEMPTS = 3
 _YTS_INTERACTIVE_CAPTURE_DELAY_SECONDS = 0.9
 _YTS_LIVE_VISUAL_MONITOR_INTERVAL_SECONDS = float(os.environ.get("YTS_LIVE_VISUAL_MONITOR_INTERVAL_SECONDS", "1.0"))
 _YTS_LIVE_VISUAL_MONITOR_STALE_SECONDS = float(os.environ.get("YTS_LIVE_VISUAL_MONITOR_STALE_SECONDS", "2.5"))
+_YTS_LIVE_VISUAL_MONITOR_MAX_BACKOFF_SECONDS = float(os.environ.get("YTS_LIVE_VISUAL_MONITOR_MAX_BACKOFF_SECONDS", "30.0"))
 _YTS_LIVE_VISUAL_HISTORY_LIMIT = 60
 _YTS_LIVE_VISUAL_EVENT_LIMIT = 180
 _YTS_LIVE_RUNTIME_LOG_LIMIT = int(os.environ.get("YTS_LIVE_RUNTIME_LOG_LIMIT", "1200"))
@@ -141,8 +144,9 @@ _YTS_PROMPT_VISUAL_WAIT_SECONDS = float(os.environ.get("YTS_PROMPT_VISUAL_WAIT_S
 _YTS_PROMPT_MIN_VISUAL_FRAMES = int(os.environ.get("YTS_PROMPT_MIN_VISUAL_FRAMES", "12"))
 _YTS_PLAYBACK_PROMPT_SETTLE_SECONDS = float(os.environ.get("YTS_PLAYBACK_PROMPT_SETTLE_SECONDS", "2.5"))
 _YTS_PLAYBACK_TIMECODE_MARGIN_SECONDS = float(os.environ.get("YTS_PLAYBACK_TIMECODE_MARGIN_SECONDS", "1.0"))
-_YTS_AD_CLEAR_WAIT_SECONDS = float(os.environ.get("YTS_AD_CLEAR_WAIT_SECONDS", "0"))
+_YTS_AD_CLEAR_WAIT_SECONDS = float(os.environ.get("YTS_AD_CLEAR_WAIT_SECONDS", "15.0"))
 _YTS_AD_CLEAR_POLL_SECONDS = float(os.environ.get("YTS_AD_CLEAR_POLL_SECONDS", "1.0"))
+_YTS_PROMPT_OPTION_SETTLE_SECONDS = float(os.environ.get("YTS_PROMPT_OPTION_SETTLE_SECONDS", "0.35"))
 _last_cpu_times_snapshot: Optional[tuple[float, float]] = None
 
 
@@ -215,6 +219,7 @@ _DAB_ONLY_ACTIONS = {
 _yts_live_commands: Dict[str, Dict[str, Any]] = {}
 _yts_live_tasks: Dict[str, asyncio.Task] = {}
 _yts_live_visual_tasks: Dict[str, asyncio.Task] = {}
+_yts_live_prompt_tasks: Dict[str, asyncio.Task] = {}
 _yts_live_processes: Dict[str, asyncio.subprocess.Process] = {}
 _yts_live_recording_processes: Dict[str, Dict[str, Any]] = {}
 _yts_live_visual_cache: Dict[str, Dict[str, Any]] = {}
@@ -1618,14 +1623,43 @@ def _get_ir_service() -> SamsungIrService:
 
 
 class IrTrainRequest(BaseModel):
-    device_id: str = "samsung_tv_default"
+    device_id: str = ""
     key_name: str
     timeout_ms: int = Field(default=8000, ge=1000, le=30000)
 
 
 class IrSendRequest(BaseModel):
-    device_id: str = "samsung_tv_default"
+    device_id: str = ""
     key_name: str
+
+
+def _default_ir_device_id(service: Optional[SamsungIrService] = None) -> str:
+    active_context = _active_device_context()
+    if active_context is not None and str(active_context.irDeviceId or "").strip():
+        return str(active_context.irDeviceId or "").strip()
+    env_default = str(os.getenv("IR_DEFAULT_DEVICE_ID", "") or "").strip()
+    if env_default:
+        return env_default
+    try:
+        resolved_service = service or _get_ir_service()
+        devices = resolved_service.list_devices()
+        for item in devices if isinstance(devices, list) else []:
+            device_id = str((item or {}).get("device_id") or "").strip()
+            if device_id:
+                return device_id
+    except Exception:
+        return ""
+    return ""
+
+
+def _require_ir_device_id(requested_device_id: str = "", service: Optional[SamsungIrService] = None) -> str:
+    requested = str(requested_device_id or "").strip()
+    if requested:
+        return requested
+    resolved = _default_ir_device_id(service)
+    if not resolved:
+        raise HTTPException(status_code=400, detail="No IR device is bound or discovered. Bind an IR profile in Hardware Bindings first.")
+    return resolved
 
 
 def _device_capabilities_cache_path() -> Path:
@@ -3128,8 +3162,15 @@ def _new_yts_live_state(command_id: str, interactive_ai: bool = False) -> Dict[s
         "visual_monitor_history": [],
         "visual_event_timeline": [],
         "visual_monitor_frame_count": 0,
-        "visual_monitor_mode": "continuous-frame-analysis",
+        "visual_monitor_capture_count": 0,
+        "visual_monitor_error_count": 0,
+        "visual_monitor_consecutive_errors": 0,
+        "visual_monitor_status": "idle",
+        "visual_monitor_last_error": None,
+        "visual_monitor_retry_in_seconds": None,
+        "visual_monitor_mode": "durable-live-session",
         "last_visual_analysis_at": None,
+        "last_visual_capture_at": None,
         "artifacts_dir": artifacts_dir,
         "record_video": False,
         "record_audio": False,
@@ -3206,10 +3247,11 @@ def _normalize_yts_live_state(state: Dict[str, Any]) -> Dict[str, Any]:
     normalized["latest_visual_analysis"] = dict(normalized.get("latest_visual_analysis") or {})
     normalized["visual_monitor_history"] = list(normalized.get("visual_monitor_history") or [])
     normalized["visual_event_timeline"] = list(normalized.get("visual_event_timeline") or [])
-    try:
-        normalized["visual_monitor_frame_count"] = int(normalized.get("visual_monitor_frame_count") or 0)
-    except Exception:
-        normalized["visual_monitor_frame_count"] = 0
+    for key in ("visual_monitor_frame_count", "visual_monitor_capture_count", "visual_monitor_error_count", "visual_monitor_consecutive_errors"):
+        try:
+            normalized[key] = int(normalized.get(key) or 0)
+        except Exception:
+            normalized[key] = 0
     normalized["record_video"] = bool(normalized.get("record_video"))
     normalized["record_audio"] = bool(normalized.get("record_audio"))
     artifacts_dir = Path(str(normalized.get("artifacts_dir") or _get_yts_live_artifacts_dir(command_id)))
@@ -5151,6 +5193,8 @@ def _mark_stale_yts_live_commands() -> None:
         if task is not None and task.done():
             _yts_live_tasks.pop(command_id, None)
         state = _get_yts_live_state(command_id) or _normalize_yts_live_state({"command_id": command_id})
+        if str(state.get("status") or "").lower() != "running":
+            continue
         message = "YTS command was marked running but no live process is attached. Marking it failed so a new job can start."
         if message not in str(state.get("stderr") or ""):
             separator = "\n" if state.get("stderr") else ""
@@ -5178,7 +5222,9 @@ def _clear_detached_active_yts_jobs() -> None:
         process = _yts_live_processes.get(command_id)
         task_alive = bool(task is not None and not task.done())
         process_alive = bool(process is not None and getattr(process, "returncode", None) is None)
-        if task_alive or process_alive:
+        if process is not None and getattr(process, "returncode", None) is not None:
+            state["returncode"] = process.returncode
+        elif task_alive or process_alive:
             continue
         state["status"] = "failed"
         state["awaiting_input"] = False
@@ -5270,7 +5316,58 @@ def _refresh_yts_test_catalog(
         return []
 
 
+def _yts_command_name(command: str) -> str:
+    return str(command or "").strip().lower()
+
+
+def _yts_device_param_commands() -> set[str]:
+    return {
+        "test",
+        "launch",
+        "stop",
+        "cert",
+        "check",
+        "reset",
+        "wakeup",
+        "evergreen-channel",
+        "evergreen-update",
+    }
+
+
+def _yts_command_requires_device(command: str) -> bool:
+    return _yts_command_name(command) in _yts_device_param_commands()
+
+
+def _ensure_yts_cert_submit_flag(request: "YtsCommandRequest") -> None:
+    if _yts_command_name(request.command) != "cert":
+        return
+    params = list(request.params or [])
+    has_submit = any(str(item or "").strip() == "--submit" for item in params)
+    if not has_submit:
+        params.append("--submit")
+    request.params = params
+    request.cert_submit = True
+
+
+def _build_yts_subprocess_env(request: "YtsCommandRequest") -> Dict[str, str]:
+    env = dict(os.environ)
+    auth_home = str(os.getenv("YTS_AUTH_HOME", "") or "").strip()
+    if auth_home:
+        env["HOME"] = str(Path(auth_home).expanduser().resolve())
+    config_home = str(os.getenv("YTS_XDG_CONFIG_HOME", "") or "").strip()
+    cache_home = str(os.getenv("YTS_XDG_CACHE_HOME", "") or "").strip()
+    data_home = str(os.getenv("YTS_XDG_DATA_HOME", "") or "").strip()
+    if config_home:
+        env["XDG_CONFIG_HOME"] = str(Path(config_home).expanduser().resolve())
+    if cache_home:
+        env["XDG_CACHE_HOME"] = str(Path(cache_home).expanduser().resolve())
+    if data_home:
+        env["XDG_DATA_HOME"] = str(Path(data_home).expanduser().resolve())
+    env.setdefault("YTS_WORKSPACE_DIR", str(_get_yts_workspace_dir()))
+    return env
+
 def _build_yts_command(request: "YtsCommandRequest") -> List[str]:
+    _ensure_yts_cert_submit_flag(request)
     cmd = _get_yts_command_prefix()
 
     for option, value in request.global_options.items():
@@ -6072,9 +6169,10 @@ def _merge_yts_prompt_entry(prompt_entry: Dict[str, Any], line: str, stream_name
 
     original_text = str(prompt_entry.get("text") or "")
     original_options = list(prompt_entry.get("options") or [])
-    existing_lines = [segment.strip() for segment in str(prompt_entry.get("text") or "").splitlines() if segment.strip()]
-    if cleaned_line not in existing_lines:
-        prompt_entry["text"] = f"{prompt_entry.get('text')}\n{cleaned_line}".strip() if prompt_entry.get("text") else cleaned_line
+
+    lines = [segment.strip() for segment in original_text.splitlines() if segment.strip()]
+    if not lines or lines[-1] != cleaned_line:
+        prompt_entry["text"] = f"{original_text}\n{cleaned_line}".strip() if original_text else cleaned_line
 
     options = list(prompt_entry.get("options") or [])
     for option in _extract_prompt_options(cleaned_line):
@@ -6403,7 +6501,15 @@ def _apply_yts_validation_response_guard(
         r"\bno\s+screenshot\b",
         r"\bcould\s+not\s+capture\b",
     )
-    blocked_text = " ".join(
+    def _without_negated_ads(value: str) -> str:
+        return re.sub(
+            r"\b(?:no|without|free\s+of)\s+(?:visible\s+)?(?:ads?|advertisements?|sponsored\s+(?:content|screens?)|promos?)\b(?:\s+(?:or|and)\s+(?:blocking\s+)?overlays?)?",
+            "",
+            value,
+            flags=re.IGNORECASE,
+        )
+
+    blocked_text = _without_negated_ads(" ".join(
         [
             summary,
             str(analysis.get("detected_text") or "").lower(),
@@ -6411,8 +6517,8 @@ def _apply_yts_validation_response_guard(
             str(analysis.get("detected_app_context") or "").lower(),
             str(analysis.get("blocking_overlay_reason") or "").lower(),
         ]
-    )
-    timeline_text = " ".join(
+    ))
+    timeline_text = _without_negated_ads(" ".join(
         " ".join(
             [
                 str(item.get("summary") or ""),
@@ -6423,9 +6529,13 @@ def _apply_yts_validation_response_guard(
             ]
         ).lower()
         for item in timeline[-5:]
-    )
+    ))
+    # Transient overlays must be judged from the newest frame once one exists.
+    # Older ad frames remain useful history, but should not keep a cleared ad
+    # sticky after the actual test video is visible.
+    transient_text = blocked_text if analysis_has_signal else timeline_text
     blocked = bool(analysis.get("ad_or_interstitial_visible")) or any(
-        re.search(pattern, blocked_text) or re.search(pattern, timeline_text)
+        re.search(pattern, transient_text)
         for pattern in blocked_patterns
     )
 
@@ -6576,6 +6686,9 @@ async def _send_yts_command_input(command_id: str, response_text: str, source: s
     if not state:
         raise HTTPException(status_code=404, detail=f"YTS command {command_id!r} not found")
 
+    if source == "manual":
+        _cancel_yts_prompt_task(command_id)
+
     if source != "manual":
         pending_prompt = state.get("pending_prompt") if isinstance(state.get("pending_prompt"), dict) else None
         if not state.get("awaiting_input") or pending_prompt is None or pending_prompt.get("answered"):
@@ -6599,8 +6712,17 @@ async def _send_yts_command_input(command_id: str, response_text: str, source: s
     if not payload:
         raise HTTPException(status_code=400, detail="Response text is required")
 
-    process.stdin.write((payload + "\n").encode())
-    await process.stdin.drain()
+    try:
+        process.stdin.write((payload + "\n").encode())
+        await process.stdin.drain()
+    except (BrokenPipeError, ConnectionResetError) as exc:
+        state["status"] = "failed"
+        state["awaiting_input"] = False
+        state["pending_prompt"] = None
+        detail = f"YTS command stdin is no longer writable: {exc}"
+        state["logs"].append({"stream": "stderr", "message": detail})
+        _persist_yts_live_state(state)
+        raise HTTPException(status_code=409, detail=detail) from exc
     pending_prompt = state.get("pending_prompt") if isinstance(state.get("pending_prompt"), dict) else None
     pending_prompt_id = pending_prompt.get("id") if pending_prompt else None
     state["responses"].append({"source": source, "message": payload})
@@ -6685,7 +6807,7 @@ def _build_yts_runtime_decision_prompt(
             "If the terminal expects numbered choices, selected_option must be one numeric option token. Return only one numeric option token in selected_option such as 1, 2, 3, or 4. Do not return yes or no as selected_option when numbered options exist.",
             "Core policy: never choose Pass/Yes by default. Pass/Yes requires positive proof from a frame captured after the current prompt timestamp. If the expected visual target and observed visual target differ, or if evidence is missing/weak/stale/contradictory, do not choose Pass/Yes.",
             "Content match rule: The screen MUST display the exact specific content, test pattern, or video title required by the YTS test. If any other content is playing (like an advertisement, screensaver, or unrelated video), do not choose Pass/Yes.",
-            "Ad/interstitial rule: if the live frame or prompt-scoped visual evidence shows an ad, sponsored screen, promo, commercial break, Skip Ad button, countdown, or unrelated interstitial, do not choose Pass/Yes for render/playback/visual validation. Choose Fail/No when available. Do not pass tests based on content inside an advertisement. Ad content is never valid test evidence.",
+            "Ad/interstitial rule: if the live frame or prompt-scoped visual evidence clearly shows an ad, sponsored screen, promo, commercial break, Skip Ad button, countdown, or unrelated interstitial, do not choose Pass/Yes for render/playback/visual validation. Choose Fail/No when available. Do not pass tests based on content inside an advertisement. Ad content is never valid test evidence. Do not hallucinate ads if you only see normal video playback or aspect ratio black bars.",
             "YTS log binding rule: the active terminal context identifies the exact current prompt and expected asset/state. Validate only that current requirement; do not pass because a previous prompt, reference text, or unrelated on-screen content looked correct.",
             "Use Skip only for setup limitations, unavailable feed, unsupported device, or blocked execution. Otherwise choose Fail when the test is running but the required condition is not visible.",
             f"Runtime YTS prompt:\n{prompt_text}",
@@ -6923,7 +7045,7 @@ def _is_live_preview_vertex_model(model_name: Optional[str]) -> bool:
 
 
 def _select_vertex_visual_model() -> str:
-    return GEMINI_LIVE_MODEL
+    return _get_active_vertex_live_model()
 
 
 def get_vertex_live_visual_client() -> Optional[VertexPlannerClient]:
@@ -7013,29 +7135,65 @@ async def _capture_yts_live_monitor_frame(command_id: str) -> Dict[str, Any]:
     }
 
 
+def _is_yts_gemini_quota_error(exc: Exception) -> bool:
+    text = str(exc or "").lower()
+    return any(token in text for token in ("resource has been exhausted", "quota", "429", "1011"))
+
+
+def _yts_live_visual_backoff_seconds(consecutive_errors: int, exc: Exception) -> float:
+    if not _is_yts_gemini_quota_error(exc):
+        return max(0.1, _YTS_LIVE_VISUAL_MONITOR_INTERVAL_SECONDS)
+    exponent = max(0, min(6, int(consecutive_errors or 1) - 1))
+    return min(
+        max(0.1, _YTS_LIVE_VISUAL_MONITOR_MAX_BACKOFF_SECONDS),
+        max(1.0, _YTS_LIVE_VISUAL_MONITOR_INTERVAL_SECONDS) * (2 ** exponent),
+    )
+
+
+async def _generate_yts_live_monitor_content(client: Any, prompt: str, screenshot_b64: str, command_id: str) -> str:
+    session_id = f"yts-live-visual-{command_id}"
+    try:
+        return await client.generate_content(
+            prompt,
+            screenshot_b64=screenshot_b64,
+            session_id=session_id,
+            keep_live_session=True,
+        )
+    except TypeError as exc:
+        if "keep_live_session" not in str(exc):
+            raise
+        return await client.generate_content(prompt, screenshot_b64=screenshot_b64, session_id=session_id)
+
+
 async def _refresh_yts_live_visual_monitor(command_id: str) -> Optional[Dict[str, Any]]:
     state = _get_yts_live_state(command_id)
     if not state or state.get("status") != "running" or not state.get("interactive_ai"):
         return None
 
     snapshot = await _capture_yts_live_monitor_frame(command_id)
+    captured_at = _utc_now_iso()
+    state["visual_monitor_active"] = True
+    state["visual_monitor_mode"] = "durable-live-session"
+    state["visual_monitor_status"] = "evaluating"
+    state["visual_monitor_capture_count"] = int(state.get("visual_monitor_capture_count") or 0) + 1
+    state["last_visual_capture_at"] = captured_at
+    _persist_yts_live_state(state)
     screenshot_b64 = snapshot.get("screenshot_b64")
     if not screenshot_b64:
-        state["visual_monitor_active"] = True
-        state["visual_monitor_mode"] = "continuous-frame-analysis"
-        state["latest_visual_analysis"] = {
+        entry = {
             "summary": "Live visual monitor could not capture a TV frame.",
             "source": snapshot.get("source") or "unknown",
             "capture_status": snapshot.get("capture_status") or {},
-            "captured_at": _utc_now_iso(),
+            "captured_at": captured_at,
             "analysis": {},
         }
-        state["last_visual_analysis_at"] = _utc_now_iso()
-        state.setdefault("visual_monitor_history", []).append(dict(state["latest_visual_analysis"]))
+        state["visual_monitor_status"] = "capture-unavailable"
+        state["visual_monitor_last_error"] = entry["summary"]
+        state.setdefault("visual_monitor_history", []).append(entry)
         state["visual_monitor_history"] = state["visual_monitor_history"][-_YTS_LIVE_VISUAL_HISTORY_LIMIT:]
-        _append_yts_visual_event(state, state["latest_visual_analysis"])
+        _append_yts_visual_event(state, entry)
         _persist_yts_live_state(state)
-        return state["latest_visual_analysis"]
+        return entry
 
     client = get_vertex_live_visual_client() or get_vertex_text_client()
     log_text = _recent_yts_terminal_log_text(state, limit=30)
@@ -7057,7 +7215,7 @@ async def _refresh_yts_live_visual_monitor(command_id: str) -> Optional[Dict[str
                 _shared_ai_prompt_preamble(),
                 "Task: monitor Android TV guided validation state from the attached live TV frame.",
                 "Return strict JSON with keys: summary, detected_app_context, screen_type, video_playback_active, youtube_active, detected_text, playback_visible, player_controls_visible, settings_gear_visible, stats_for_nerds_visible, focus_target, confidence, requirement_seen, requirement_evidence, recommended_result, prompt_requirement_match.",
-                "Rules: use the attached live TV frame as source of truth; Do not rely on OCR or local text extraction; keep summary short and factual; classify whether the current frame is YouTube, launcher/home/system, another app, or unknown; if the YTS log describes a validation requirement and the frame satisfies it EXACTLY (meaning the correct specific video or asset is visible), set requirement_seen=true and recommended_result=pass; if it shows unrelated content (like an ad, screensaver, or wrong video), set recommended_result=fail; otherwise leave recommended_result empty. Ad content is never valid test evidence.",
+                "Rules: use the attached live TV frame as source of truth; Do not rely on OCR or local text extraction; keep summary short and factual; classify whether the current frame is YouTube, launcher/home/system, another app, or unknown; if the YTS log describes a validation requirement and the frame satisfies it EXACTLY (meaning the correct specific video or asset is visible), set requirement_seen=true and recommended_result=pass; if it shows unrelated content (like an ad, screensaver, or wrong video), set recommended_result=fail; otherwise leave recommended_result empty. Ad content is never valid test evidence. Do not mistakenly flag standard video player controls or aspect ratio black bars as ads.",
                 f"YTS command: {state.get('command') or 'unknown'}",
                 f"Guided test metadata:\n{guided_test_context or '(none)'}",
                 f"Recent terminal logs:\n{log_text or '(no recent logs)'}",
@@ -7065,11 +7223,7 @@ async def _refresh_yts_live_visual_monitor(command_id: str) -> Optional[Dict[str
             ]
         )
         try:
-            response = await client.generate_content(
-                prompt,
-                screenshot_b64=screenshot_b64,
-                session_id=f"yts-live-visual-{command_id}",
-            )
+            response = await _generate_yts_live_monitor_content(client, prompt, screenshot_b64, command_id)
         except Exception as exc:
             live_model = _get_active_vertex_live_model() or "unknown-model"
             logger.warning("YTS live visual monitor failed with Gemini Live model %s: %s", live_model, exc)
@@ -7095,7 +7249,11 @@ async def _refresh_yts_live_visual_monitor(command_id: str) -> Optional[Dict[str
         "analysis": analysis,
     }
     state["visual_monitor_active"] = True
-    state["visual_monitor_mode"] = "continuous-frame-analysis"
+    state["visual_monitor_mode"] = "durable-live-session"
+    state["visual_monitor_status"] = "watching"
+    state["visual_monitor_last_error"] = None
+    state["visual_monitor_retry_in_seconds"] = None
+    state["visual_monitor_consecutive_errors"] = 0
     state["visual_monitor_frame_count"] = int(state.get("visual_monitor_frame_count") or 0) + 1
     state["latest_visual_analysis"] = history_entry
     state["last_visual_analysis_at"] = captured_at
@@ -7117,11 +7275,13 @@ async def _refresh_yts_live_visual_monitor(command_id: str) -> Optional[Dict[str
 
 
 async def _run_yts_live_visual_monitor(command_id: str) -> None:
+    session_id = f"yts-live-visual-{command_id}"
     try:
         while True:
             state = _get_yts_live_state(command_id)
             if not state or state.get("status") != "running" or not state.get("interactive_ai"):
                 break
+            delay = max(0.1, _YTS_LIVE_VISUAL_MONITOR_INTERVAL_SECONDS)
             try:
                 await _refresh_yts_live_visual_monitor(command_id)
             except asyncio.CancelledError:
@@ -7130,21 +7290,27 @@ async def _run_yts_live_visual_monitor(command_id: str) -> None:
                 logger.warning("YTS live visual monitor failed for %s: %s", command_id, exc)
                 state = _get_yts_live_state(command_id)
                 if state:
+                    consecutive = int(state.get("visual_monitor_consecutive_errors") or 0) + 1
+                    delay = _yts_live_visual_backoff_seconds(consecutive, exc)
                     state["visual_monitor_active"] = True
-                    state["latest_visual_analysis"] = {
-                        "captured_at": _utc_now_iso(),
-                        "summary": f"Live visual monitor error: {exc}",
-                        "analysis": {},
-                        "source": "error",
-                    }
-                    state.setdefault("visual_monitor_history", []).append(dict(state["latest_visual_analysis"]))
-                    state["visual_monitor_history"] = state["visual_monitor_history"][-_YTS_LIVE_VISUAL_HISTORY_LIMIT:]
+                    state["visual_monitor_status"] = "quota-backoff" if _is_yts_gemini_quota_error(exc) else "degraded"
+                    state["visual_monitor_error_count"] = int(state.get("visual_monitor_error_count") or 0) + 1
+                    state["visual_monitor_consecutive_errors"] = consecutive
+                    state["visual_monitor_last_error"] = str(exc)
+                    state["visual_monitor_retry_in_seconds"] = delay
                     _persist_yts_live_state(state)
-            await asyncio.sleep(_YTS_LIVE_VISUAL_MONITOR_INTERVAL_SECONDS)
+            await asyncio.sleep(delay)
     finally:
+        client = _vertex_live_visual_client
+        close_live_session = getattr(client, "close_live_session", None) if client is not None else None
+        if callable(close_live_session):
+            with contextlib.suppress(Exception):
+                await close_live_session(session_id)
         state = _get_yts_live_state(command_id)
         if state:
             state["visual_monitor_active"] = False
+            state["visual_monitor_status"] = "stopped"
+            state["visual_monitor_retry_in_seconds"] = None
             _persist_yts_live_state(state)
         _yts_live_visual_tasks.pop(command_id, None)
         _yts_live_visual_cache.pop(command_id, None)
@@ -7247,7 +7413,7 @@ async def _analyze_yts_prompt_frame(
             "Task: analyze only the attached fresh TV frame for the current YTS prompt.",
             "Return strict JSON with keys: summary, detected_app_context, screen_type, video_playback_active, youtube_active, observed_visual_target, expected_visual_target, target_match, prompt_requirement_match, requirement_seen, requirement_evidence, recommended_result, confidence, detected_text, ad_or_interstitial_visible, blocking_overlay_reason.",
             "Source-of-truth rules: use only the attached frame for visual facts. Do not use previous visual history to identify the visible asset. You MUST identify the specific content or video currently playing. If the frame shows different content than the expected_visual_target (e.g. an advertisement, screensaver, or unrelated video), set target_match=false, prompt_requirement_match='mismatch', and recommended_result='fail'. If the frame is stale, unclear, blank, or not enough to identify the current expected target, do not recommend pass.",
-            "Ad/interstitial rule: inspect the whole frame, especially the bottom-left YouTube overlay and bottom-right countdown. If the frame shows Sponsored, Visit advertiser, an advertiser URL/domain, Skip Ad, an ad countdown, promo, commercial break, or unrelated brand footage, set ad_or_interstitial_visible=true, screen_type='ad_interstitial', requirement_seen=false, target_match=false, recommended_result='fail', and explain the exact ad signal in blocking_overlay_reason. Do not pass tests based on ad content.",
+            "Ad/interstitial rule: inspect the whole frame, especially bottom-left YouTube overlay text and bottom-right countdown. If the attached frame clearly shows Sponsored, Visit advertiser, an advertiser URL/domain, Skip Ad, an ad countdown, promo, commercial break, or unrelated brand footage, you MUST set analysis.ad_or_interstitial_visible=true and choose Fail/No. Do not mistakenly flag standard video player controls or black bars (like 21:9 aspect ratio) as ads. Ad content is never valid test evidence.",
             f"prompt_id: {prompt_id}",
             f"prompt_sequence_id: {prompt_sequence_id}",
             f"prompt_timestamp: {prompt_timestamp or '(unknown)'}",
@@ -7297,7 +7463,7 @@ def _build_yts_fast_visual_decision_prompt(
             "Freshness rule: use only the attached frame for visual facts. Do not use previous visual history to identify the visible target.",
             "Pass/Yes rule: choose Pass/Yes only when this fresh frame positively satisfies the extracted expectation. If expected_visual_target is present and observed_visual_target is different, unclear, or missing, do not choose Pass/Yes.",
             "Content match rule: The screen MUST display the exact specific content, test pattern, or video title required by the YTS test. If any other content is playing (like an advertisement, screensaver, or unrelated video), you MUST choose Fail/No and set target_match=false.",
-            "Ad/interstitial rule: inspect the whole frame, especially bottom-left YouTube overlay text and bottom-right countdown. If the attached frame shows Sponsored, Visit advertiser, an advertiser URL/domain, Skip Ad, an ad countdown, promo, commercial break, or unrelated brand footage, you MUST set analysis.ad_or_interstitial_visible=true and choose Fail/No. Ad content is never valid test evidence.",
+            "Ad/interstitial rule: inspect the whole frame, especially bottom-left YouTube overlay text and bottom-right countdown. If the attached frame clearly shows Sponsored, Visit advertiser, an advertiser URL/domain, Skip Ad, an ad countdown, promo, commercial break, or unrelated brand footage, you MUST set analysis.ad_or_interstitial_visible=true and choose Fail/No. Do not mistakenly flag standard video player controls or black bars (like 21:9 aspect ratio) as ads. Ad content is never valid test evidence.",
             "YTS log binding rule: use the active terminal context to identify the exact current expected asset/state. Answer only this prompt, not earlier prompts or visible reference text from another test step.",
             "Otherwise choose Fail/No when available; choose Skip only for unavailable feed, unsupported setup, or blocked execution.",
             f"Prompt/frame binding:\n{json.dumps({'prompt_id': visual_context.get('prompt_id'), 'prompt_sequence_id': visual_context.get('prompt_sequence_id'), 'prompt_timestamp': visual_context.get('prompt_timestamp'), 'frame_timestamp': visual_context.get('captured_at'), 'fresh_after_prompt': visual_context.get('fresh_after_prompt')}, ensure_ascii=False)}",
@@ -7385,15 +7551,13 @@ async def _generate_yts_fast_visual_decision(
 
 def _yts_evidence_has_ad_or_interstitial(evidence: Dict[str, Any]) -> bool:
     latest = dict(evidence.get("latest_observation") or {})
-    if bool(latest.get("ad_or_interstitial_visible")):
-        return True
-    for item in list(evidence.get("observations") or [])[-5:]:
-        if bool((item or {}).get("ad_or_interstitial_visible")):
-            return True
-    for item in list(evidence.get("negative_observations") or [])[-5:]:
-        if bool((item or {}).get("ad_or_interstitial_visible")):
-            return True
-    return False
+    if latest:
+        return bool(latest.get("ad_or_interstitial_visible"))
+    observations = list(evidence.get("observations") or [])
+    if observations:
+        return bool((observations[-1] or {}).get("ad_or_interstitial_visible"))
+    negative_observations = list(evidence.get("negative_observations") or [])
+    return bool(negative_observations and (negative_observations[-1] or {}).get("ad_or_interstitial_visible"))
 
 
 def _yts_prompt_still_waiting(command_id: str, prompt_id: Optional[int]) -> bool:
@@ -7611,7 +7775,7 @@ async def _suggest_yts_prompt_response(
             visual_context["prompt_timestamp"] = prompt_timestamp
         state = _get_yts_live_state(command_id) or state
         ai_evidence = _persist_yts_ai_evidence_image(command_id, prompt_id, str(visual_context.get("screenshot_b64") or ""))
-        client = get_vertex_text_client()
+        client = get_vertex_live_visual_client() or get_vertex_text_client()
         expectation_context = "\n".join(
             part
             for part in [guided_test_context, active_test_log_text]
@@ -8074,6 +8238,127 @@ async def _suggest_yts_prompt_response(
             _persist_yts_live_state(refreshed_state)
 
 
+def _cancel_yts_prompt_task(command_id: str) -> None:
+    task = _yts_live_prompt_tasks.pop(command_id, None)
+    if task is not None and not task.done():
+        task.cancel()
+
+
+def _schedule_yts_prompt_auto_answer(command_id: str, prompt_id: int) -> None:
+    _cancel_yts_prompt_task(command_id)
+    task = asyncio.create_task(_auto_answer_yts_prompt(command_id, prompt_id))
+    _yts_live_prompt_tasks[command_id] = task
+
+
+async def _auto_answer_yts_prompt(command_id: str, prompt_id: int) -> None:
+    try:
+        # Let the CLI finish printing all options before Gemini evaluates the prompt.
+        # This keeps stdout draining while visual analysis and ad checks run separately.
+        await asyncio.sleep(max(0.05, _YTS_PROMPT_OPTION_SETTLE_SECONDS))
+        state = _get_yts_live_state(command_id) or {}
+        prompt_entry = state.get("pending_prompt") if isinstance(state.get("pending_prompt"), dict) else None
+        if (
+            state.get("status") not in {"starting", "running"}
+            or not state.get("interactive_ai")
+            or not state.get("awaiting_input")
+            or prompt_entry is None
+            or prompt_entry.get("id") != prompt_id
+            or prompt_entry.get("answered")
+            or prompt_entry.get("ai_suggestion")
+            or not _prompt_ready_for_ai_response(prompt_entry)
+        ):
+            return
+
+        prompt_age = _yts_prompt_age_seconds(prompt_entry)
+        required_settle = _required_yts_playback_prompt_settle_seconds(str(prompt_entry.get("text") or ""))
+        if required_settle > 0 and prompt_age is not None and prompt_age < required_settle:
+            remaining = required_settle - prompt_age
+            state["ai_observing_tv"] = True
+            state["ai_status_message"] = f"Gemini is waiting {max(0.0, remaining):.1f}s for the YTS playback checkpoint before answering..."
+            _persist_yts_live_state(state)
+            await asyncio.sleep(max(0.2, remaining))
+
+        state = _get_yts_live_state(command_id) or {}
+        prompt_entry = state.get("pending_prompt") if isinstance(state.get("pending_prompt"), dict) else None
+        if (
+            state.get("status") not in {"starting", "running"}
+            or not state.get("awaiting_input")
+            or prompt_entry is None
+            or prompt_entry.get("id") != prompt_id
+            or prompt_entry.get("answered")
+            or prompt_entry.get("ai_suggestion")
+            or not _prompt_ready_for_ai_response(prompt_entry)
+        ):
+            return
+
+        prompt_visual = await _capture_fresh_prompt_visual_context(command_id, prompt_entry, prompt_entry.get("text", ""))
+        _update_yts_prompt_entry(
+            command_id,
+            prompt_id,
+            ai_prompt_sequence_id=prompt_entry.get("prompt_sequence_id"),
+            ai_prompt_timestamp=prompt_entry.get("detected_at"),
+            ai_frame_timestamp=prompt_visual.get("captured_at"),
+        )
+        try:
+            suggestion = await _suggest_yts_prompt_response(
+                command_id,
+                prompt_entry.get("text", ""),
+                prompt_entry.get("options") or [],
+                prompt_id=prompt_id,
+                prompt_sequence_id=prompt_entry.get("prompt_sequence_id"),
+                prompt_timestamp=prompt_entry.get("detected_at"),
+                prompt_visual_context=prompt_visual,
+            )
+        except TypeError:
+            suggestion = await _suggest_yts_prompt_response(
+                command_id,
+                prompt_entry.get("text", ""),
+                prompt_entry.get("options") or [],
+            )
+        _update_yts_prompt_entry(
+            command_id,
+            prompt_id,
+            ai_suggestion=suggestion.get("response"),
+            ai_source=suggestion.get("source"),
+            ai_visual_summary=suggestion.get("visual_summary"),
+            ai_visual_source=suggestion.get("visual_source"),
+            ai_evidence=suggestion.get("ai_evidence"),
+            setup_actions=suggestion.get("setup_actions") or [],
+            ai_error=suggestion.get("deferred_reason"),
+            ai_expectation=suggestion.get("expectation"),
+            ai_decision=suggestion.get("decision"),
+            ai_missing_evidence=suggestion.get("missing_evidence") or [],
+            ai_safety_blocked_pass=suggestion.get("safety_blocked_pass"),
+        )
+        if suggestion.get("response"):
+            current_state = _get_yts_live_state(command_id) or {}
+            current_pending = current_state.get("pending_prompt") if isinstance(current_state.get("pending_prompt"), dict) else None
+            if (
+                not current_state.get("awaiting_input")
+                or current_pending is None
+                or current_pending.get("id") != prompt_id
+                or current_pending.get("answered")
+            ):
+                _update_yts_prompt_entry(command_id, prompt_id, ai_error="Prompt closed before AI response could be sent")
+                return
+            await _send_yts_command_input(command_id, suggestion["response"], source=suggestion["source"])
+    except asyncio.CancelledError:
+        raise
+    except HTTPException as exc:
+        if exc.status_code == 409:
+            _update_yts_prompt_entry(command_id, prompt_id, ai_error=exc.detail)
+        else:
+            logger.exception("Unable to auto-answer YTS prompt for %s", command_id)
+            _update_yts_prompt_entry(command_id, prompt_id, ai_error=str(exc))
+    except Exception as exc:
+        logger.exception("Unable to auto-answer YTS prompt for %s", command_id)
+        _update_yts_prompt_entry(command_id, prompt_id, ai_error=str(exc))
+    finally:
+        current = _yts_live_prompt_tasks.get(command_id)
+        if current is asyncio.current_task():
+            _yts_live_prompt_tasks.pop(command_id, None)
+
+
 async def _append_yts_stream_output(command_id: str, stream_name: str, stream) -> None:
     if stream is None:
         return
@@ -8141,77 +8426,8 @@ async def _append_yts_stream_output(command_id: str, stream_name: str, stream) -
             last_persist_at = time.monotonic()
             pending_lines = 0
 
-            prompt_age = _yts_prompt_age_seconds(prompt_entry)
-            required_playback_settle_seconds = _required_yts_playback_prompt_settle_seconds(str(prompt_entry.get("text") or ""))
-            playback_prompt_settled = (
-                required_playback_settle_seconds <= 0
-                or prompt_age is None
-                or prompt_age >= required_playback_settle_seconds
-            )
-            prompt_ready = _prompt_ready_for_ai_response(prompt_entry)
-            if state.get("interactive_ai") and prompt_ready and not playback_prompt_settled and not prompt_entry.get("answered") and not prompt_entry.get("ai_suggestion"):
-                remaining = required_playback_settle_seconds - float(prompt_age or 0.0)
-                state["ai_observing_tv"] = True
-                state["ai_status_message"] = (
-                    f"Gemini is waiting {max(0.0, remaining):.1f}s for the YTS playback checkpoint before answering..."
-                )
-                _persist_yts_live_state(state)
-                last_persist_at = time.monotonic()
-                await asyncio.sleep(max(0.2, min(remaining, required_playback_settle_seconds)))
-                prompt_entry = (_get_yts_live_state(command_id) or state).get("pending_prompt") or prompt_entry
-                playback_prompt_settled = True
-            if state.get("interactive_ai") and prompt_ready and playback_prompt_settled and not prompt_entry.get("answered") and not prompt_entry.get("ai_suggestion"):
-                prompt_id = int(prompt_entry["id"])
-                try:
-                    prompt_visual = await _capture_fresh_prompt_visual_context(command_id, prompt_entry, prompt_entry.get("text", ""))
-                    _update_yts_prompt_entry(command_id, prompt_id, ai_prompt_sequence_id=prompt_entry.get("prompt_sequence_id"), ai_prompt_timestamp=prompt_entry.get("detected_at"), ai_frame_timestamp=prompt_visual.get("captured_at"))
-                    try:
-                        suggestion = await _suggest_yts_prompt_response(
-                            command_id,
-                            prompt_entry.get("text", ""),
-                            prompt_entry.get("options") or [],
-                            prompt_id=prompt_id,
-                            prompt_sequence_id=prompt_entry.get("prompt_sequence_id"),
-                            prompt_timestamp=prompt_entry.get("detected_at"),
-                            prompt_visual_context=prompt_visual,
-                        )
-                    except TypeError:
-                        suggestion = await _suggest_yts_prompt_response(
-                            command_id,
-                            prompt_entry.get("text", ""),
-                            prompt_entry.get("options") or [],
-                        )
-                    _update_yts_prompt_entry(
-                        command_id,
-                        prompt_id,
-                        ai_suggestion=suggestion.get("response"),
-                        ai_source=suggestion.get("source"),
-                        ai_visual_summary=suggestion.get("visual_summary"),
-                        ai_visual_source=suggestion.get("visual_source"),
-                        ai_evidence=suggestion.get("ai_evidence"),
-                        setup_actions=suggestion.get("setup_actions") or [],
-                        ai_error=suggestion.get("deferred_reason"),
-                        ai_expectation=suggestion.get("expectation"),
-                        ai_decision=suggestion.get("decision"),
-                        ai_missing_evidence=suggestion.get("missing_evidence") or [],
-                        ai_safety_blocked_pass=suggestion.get("safety_blocked_pass"),
-                    )
-                    if suggestion.get("response"):
-                        current_state = _get_yts_live_state(command_id) or {}
-                        current_pending = current_state.get("pending_prompt") if isinstance(current_state.get("pending_prompt"), dict) else None
-                        if not current_state.get("awaiting_input") or current_pending is None or current_pending.get("id") != prompt_id or current_pending.get("answered"):
-                            _update_yts_prompt_entry(command_id, prompt_id, ai_error="Prompt closed before AI response could be sent")
-                            continue
-                        await _send_yts_command_input(command_id, suggestion["response"], source=suggestion["source"])
-                except HTTPException as exc:
-                    if exc.status_code == 409:
-                        _update_yts_prompt_entry(command_id, prompt_id, ai_error=exc.detail)
-                    else:
-                        logger.exception("Unable to auto-answer YTS prompt for %s", command_id)
-                        _update_yts_prompt_entry(command_id, prompt_id, ai_error=str(exc))
-                except Exception as exc:
-                    logger.exception("Unable to auto-answer YTS prompt for %s", command_id)
-                    _update_yts_prompt_entry(command_id, prompt_id, ai_error=str(exc))
+            if state.get("interactive_ai") and not prompt_entry.get("answered"):
+                _schedule_yts_prompt_auto_answer(command_id, int(prompt_entry["id"]))
             continue
         if _should_persist_now():
             _persist_yts_live_state(state)
@@ -8249,6 +8465,7 @@ async def _run_yts_command_live(command_id: str, request: "YtsCommandRequest") -
         process = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=str(_get_yts_workspace_dir()),
+            env=_build_yts_subprocess_env(request),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -8356,6 +8573,7 @@ async def _run_yts_command_live(command_id: str, request: "YtsCommandRequest") -
         raise
     finally:
         _yts_live_processes.pop(command_id, None)
+        _cancel_yts_prompt_task(command_id)
         visual_task = _yts_live_visual_tasks.get(command_id)
         if visual_task and not visual_task.done():
             visual_task.cancel()
@@ -9121,15 +9339,23 @@ def _vertex_planner_requested() -> bool:
 
 
 def _get_active_vertex_planner_model() -> str:
-    return GEMINI_LIVE_MODEL
+    global _runtime_vertex_planner_model_override
+    if _runtime_vertex_planner_model_override:
+        return _runtime_vertex_planner_model_override
+    c = get_config()
+    return str(c.vertex_planner_model or GEMINI_LIVE_MODEL).strip() or GEMINI_LIVE_MODEL
 
 
 def _get_active_vertex_live_model() -> str:
-    return GEMINI_LIVE_MODEL
+    global _runtime_vertex_live_model_override
+    if _runtime_vertex_live_model_override:
+        return _runtime_vertex_live_model_override
+    c = get_config()
+    return str(c.vertex_live_model or _get_active_vertex_planner_model()).strip() or _get_active_vertex_planner_model()
 
 
 def _get_available_vertex_models() -> List[str]:
-    return [GEMINI_LIVE_MODEL]
+    return _COMMON_VERTEX_MODELS
 
 
 def _reset_runtime_model_clients() -> None:
@@ -9284,6 +9510,8 @@ async def _lifespan(_app: FastAPI):
             with contextlib.suppress(asyncio.CancelledError):
                 await _stream_warmer_task
             _stream_warmer_task = None
+        for command_id in list(_yts_live_prompt_tasks):
+            _cancel_yts_prompt_task(command_id)
         for command_id, task in list(_yts_live_visual_tasks.items()):
             if not task.done():
                 task.cancel()
@@ -9769,6 +9997,20 @@ class DeviceContextSelectRequest(BaseModel):
     persist: bool = True
 
 
+class DeviceContextBindingRequest(BaseModel):
+    contextId: str
+    displayName: Optional[str] = None
+    dabDeviceId: Optional[str] = None
+    ytsDeviceId: Optional[str] = None
+    adbDeviceId: Optional[str] = None
+    irDeviceId: Optional[str] = None
+    cameraId: Optional[str] = None
+    cameraPath: Optional[str] = None
+    videoSource: Optional[str] = None
+    audioDevice: Optional[str] = None
+    persistSelection: bool = True
+
+
 @app.get("/dab/devices", response_model=dict)
 async def dab_devices() -> dict:
     """Discover DAB and YTS devices and return normalized device list."""
@@ -9947,6 +10189,59 @@ async def device_contexts() -> dict:
 async def validate_device_context() -> dict:
     """Validate active unified device context alignment."""
     return await _validate_active_device_context(require_ready=False)
+
+
+@app.get("/device/hardware-options", response_model=dict)
+async def device_hardware_options() -> dict:
+    """Return discovered hardware choices for binding logical contexts."""
+    contexts_payload = await device_contexts()
+    dab_devices, dab_warning = await _discover_dab_devices()
+    yts_devices = await _get_yts_discovered_devices(max_age_seconds=0.0)
+    capture_devices_payload = await capture_devices()
+    ir_payload = await ir_devices()
+    adb_devices = await asyncio.to_thread(_connected_adb_devices, 0.0)
+    audio_devices = await asyncio.to_thread(list_alsa_capture_devices)
+    return {
+        "success": True,
+        "config_path": str(camera_devices_config_path()),
+        "contexts": contexts_payload.get("contexts") or [],
+        "activeContextId": contexts_payload.get("activeContextId") or "",
+        "dab_devices": dab_devices,
+        "dab_warning": dab_warning,
+        "yts_devices": yts_devices,
+        "adb_devices": adb_devices,
+        "ir_devices": ir_payload.get("devices") or [],
+        "active_ir_device_id": ir_payload.get("active_device_id") or "",
+        "capture_devices": capture_devices_payload.get("devices") or [],
+        "selected_video_device": capture_devices_payload.get("selected_video_device") or "",
+        "audio_devices": audio_devices,
+    }
+
+
+@app.post("/device/context/bind", response_model=dict)
+async def bind_device_context(request: DeviceContextBindingRequest) -> dict:
+    """Persist hardware bindings for one logical device context."""
+    if hasattr(request, "model_dump"):
+        updates = request.model_dump(exclude={"persistSelection"}, exclude_none=True)
+    else:
+        updates = request.dict(exclude={"persistSelection"}, exclude_none=True)
+    context_id = str(updates.pop("contextId", "") or "").strip()
+    try:
+        updated = await asyncio.to_thread(upsert_device_context_binding, context_id, updates)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    active = _active_device_context()
+    if request.persistSelection or (active is not None and active.contextId == updated.contextId):
+        await _apply_selected_device_context(updated.contextId, persist=bool(request.persistSelection))
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(_close_device_stream_captures)
+    return {
+        "success": True,
+        "config_path": str(camera_devices_config_path()),
+        "context": _context_payload(find_device_context(updated.contextId), active=True),
+        "contexts": (await device_contexts()).get("contexts") or [],
+    }
 
 
 @app.get("/dab/device-info", response_model=dict)
@@ -10551,6 +10846,8 @@ class YtsCommandRequest(BaseModel):
     record_audio: bool = True
     collect_dab_logs: bool = False
     device_id: Optional[str] = None
+    yts_run_mode: str = "test"
+    cert_submit: bool = False
 
 
 class YtsInteractiveResponseRequest(BaseModel):
@@ -10560,6 +10857,10 @@ class YtsInteractiveResponseRequest(BaseModel):
 
 class YtsInteractiveSuggestRequest(BaseModel):
     send_response: bool = False
+
+
+class YtsDabAssistRequest(BaseModel):
+    action: str
 
 
 class YtsResultsAnalysisRequest(BaseModel):
@@ -10732,59 +11033,54 @@ async def yts_live_command(request: YtsCommandRequest, http_request: Request) ->
                 f"(command_id={active_yts_job.get('command_id')}). Attached to that job instead of starting a new one."
             ),
         }
-    requested_context = find_device_context(request.device_id) if request.device_id else None
-    context_selector = requested_context.dabDeviceId if requested_context is not None else None
-    selected_device_id = await _ensure_selected_device_context(context_selector, persist=bool(context_selector))
-    active_context = _active_device_context()
-    if active_context is None:
-        raise HTTPException(status_code=400, detail="Active device context is not configured")
-    _log_active_context_for_job(active_context)
-    validation = await _validate_active_yts_context_for_start(active_context)
-    yts_execution_device_id = str(validation.get("ytsShortId") or "").strip()
-    if not yts_execution_device_id:
-        yts_execution_device_id = await _require_yts_short_id_for_context(active_context)
-    explicit_request_device_id = str(request.device_id or "").strip()
-    explicit_transport_device_id = _preserve_explicit_yts_transport_device_id(explicit_request_device_id)
-    if explicit_transport_device_id and await _yts_device_id_belongs_to_context(explicit_transport_device_id, active_context):
-        yts_execution_device_id = explicit_transport_device_id
-    request.device_id = yts_execution_device_id
-    for option in list(request.global_options.keys()):
-        normalized_option = str(option or "").strip().lower()
-        if normalized_option in {"--device", "--device-id", "--device_id", "-d"}:
-            raw_option_device = request.global_options.get(option)
-            if raw_option_device and not await _yts_device_id_belongs_to_context(raw_option_device, active_context):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"YTS device_id={raw_option_device} is not mapped to active device context {active_context.displayName}.",
-                )
-            request.global_options[option] = _preserve_explicit_yts_transport_device_id(raw_option_device) or yts_execution_device_id
+    command_name = _yts_command_name(request.command)
+    requires_device_context = _yts_command_requires_device(command_name)
+    active_context: Optional[DeviceContext] = None
+    validation: Dict[str, Any] = {}
+    yts_execution_device_id = ""
 
-    if str(request.command or "").strip().lower() == "test":
-        params = list(request.params or [])
-        if params:
-            raw_test_device = params[0]
-            if not await _yts_device_id_belongs_to_context(raw_test_device, active_context):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"YTS device_id={raw_test_device} is not mapped to active device context {active_context.displayName}.",
-                )
-            params[0] = _preserve_explicit_yts_transport_device_id(raw_test_device) or yts_execution_device_id
-        else:
-            params = [yts_execution_device_id]
-        request.params = params
-    else:
-        command_name = str(request.command or "").strip().lower()
-        device_param_commands = {
-            "launch",
-            "stop",
-            "cert",
-            "check",
-            "reset",
-            "wakeup",
-            "evergreen-channel",
-            "evergreen-update",
-        }
-        if command_name in device_param_commands:
+    if requires_device_context:
+        requested_context = find_device_context(request.device_id) if request.device_id else None
+        context_selector = requested_context.dabDeviceId if requested_context is not None else None
+        selected_device_id = await _ensure_selected_device_context(context_selector, persist=bool(context_selector))
+        active_context = _active_device_context()
+        if active_context is None:
+            raise HTTPException(status_code=400, detail="Active device context is not configured")
+        _log_active_context_for_job(active_context)
+        validation = await _validate_active_yts_context_for_start(active_context)
+        yts_execution_device_id = str(validation.get("ytsShortId") or "").strip()
+        if not yts_execution_device_id:
+            yts_execution_device_id = await _require_yts_short_id_for_context(active_context)
+        explicit_request_device_id = str(request.device_id or "").strip()
+        explicit_transport_device_id = _preserve_explicit_yts_transport_device_id(explicit_request_device_id)
+        if explicit_transport_device_id and await _yts_device_id_belongs_to_context(explicit_transport_device_id, active_context):
+            yts_execution_device_id = explicit_transport_device_id
+        request.device_id = yts_execution_device_id
+        for option in list(request.global_options.keys()):
+            normalized_option = str(option or "").strip().lower()
+            if normalized_option in {"--device", "--device-id", "--device_id", "-d"}:
+                raw_option_device = request.global_options.get(option)
+                if raw_option_device and not await _yts_device_id_belongs_to_context(raw_option_device, active_context):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"YTS device_id={raw_option_device} is not mapped to active device context {active_context.displayName}.",
+                    )
+                request.global_options[option] = _preserve_explicit_yts_transport_device_id(raw_option_device) or yts_execution_device_id
+
+        if command_name in {"test", "cert"}:
+            params = list(request.params or [])
+            if params:
+                raw_test_device = params[0]
+                if not await _yts_device_id_belongs_to_context(raw_test_device, active_context):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"YTS device_id={raw_test_device} is not mapped to active device context {active_context.displayName}.",
+                    )
+                params[0] = _preserve_explicit_yts_transport_device_id(raw_test_device) or yts_execution_device_id
+            else:
+                params = [yts_execution_device_id]
+            request.params = params
+        elif command_name in _yts_device_param_commands():
             params = list(request.params or [])
             if params:
                 raw_device = params[0]
@@ -10797,6 +11093,12 @@ async def yts_live_command(request: YtsCommandRequest, http_request: Request) ->
             else:
                 params = [yts_execution_device_id]
             request.params = params
+    else:
+        request.device_id = None
+        request.collect_dab_logs = False
+
+    if command_name == "cert":
+        _ensure_yts_cert_submit_flag(request)
 
     command_id = str(uuid.uuid4())
     state = _new_yts_live_state(command_id, bool(request.interactive_ai))
@@ -10804,20 +11106,31 @@ async def yts_live_command(request: YtsCommandRequest, http_request: Request) ->
     state["owner_email"] = str(operator.get("email") or "")
     state["owner_name"] = str(operator.get("name") or "")
     state["device_id"] = yts_execution_device_id
-    state["configured_yts_device_id"] = active_context.ytsDeviceId
-    state["dab_device_id"] = active_context.dabDeviceId
-    state["context_id"] = active_context.contextId
-    resolved_feed_source = str(validation.get("streamPreviewSource") or validation.get("geminiFeedSource") or active_context.cameraPath or "").strip()
-    state["camera_path"] = resolved_feed_source
-    state["audio_device"] = active_context.audioDevice
-    state["gemini_feed_source"] = str(validation.get("geminiFeedSource") or resolved_feed_source)
-    state["device_context_validation"] = validation
+    if active_context is not None:
+        state["configured_yts_device_id"] = active_context.ytsDeviceId
+        state["dab_device_id"] = active_context.dabDeviceId
+        state["context_id"] = active_context.contextId
+        resolved_feed_source = str(validation.get("streamPreviewSource") or validation.get("geminiFeedSource") or active_context.cameraPath or "").strip()
+        state["camera_path"] = resolved_feed_source
+        state["audio_device"] = active_context.audioDevice
+        state["gemini_feed_source"] = str(validation.get("geminiFeedSource") or resolved_feed_source)
+        state["device_context_validation"] = validation
+    else:
+        state["configured_yts_device_id"] = ""
+        state["dab_device_id"] = ""
+        state["context_id"] = ""
+        state["camera_path"] = ""
+        state["audio_device"] = ""
+        state["gemini_feed_source"] = ""
+        state["device_context_validation"] = {}
+    state["yts_run_mode"] = command_name
+    state["cert_submit"] = bool(command_name == "cert")
     state["record_video"] = bool(request.record_video)
     state["record_audio"] = bool(request.record_video and request.record_audio)
     state["collect_dab_logs"] = bool(request.collect_dab_logs)
     state["video_recording_status"] = "pending" if request.record_video else "disabled"
     state["audio_recording_status"] = "pending" if bool(request.record_video and request.record_audio) else "disabled"
-    if str(request.command or "").strip().lower() == "test":
+    if command_name in {"test", "cert"}:
         params = list(request.params or [])
         if len(params) >= 2:
             state["test_id"] = str(params[1]).strip()
@@ -10831,7 +11144,8 @@ async def yts_live_command(request: YtsCommandRequest, http_request: Request) ->
         command=state["command"],
     )
     state["yts_memory_path"] = str(memory_store._run_path(command_id))
-    state["logs"].append({"stream": "system", "message": f"Queued YTS command: {state['command']}"})
+    if requires_device_context:
+        state["logs"].append({"stream": "system", "message": f"Queued YTS command: {state['command']}"})
     _write_yts_terminal_log_artifact(state)
     _persist_yts_live_state(state)
     if request.interactive_ai:
@@ -10849,7 +11163,9 @@ async def yts_live_command(request: YtsCommandRequest, http_request: Request) ->
         "command_id": command_id,
         "status": state["status"],
         "device_id": yts_execution_device_id,
-        "context": _context_payload(active_context, active=True),
+        "context": _context_payload(active_context, active=True) if active_context is not None else None,
+        "yts_run_mode": command_name,
+        "cert_submit": bool(command_name == "cert"),
     }
 
 
@@ -11041,6 +11357,7 @@ async def stop_yts_live_command(command_id: str, http_request: Request) -> dict:
         except asyncio.CancelledError:
             pass
 
+    _cancel_yts_prompt_task(command_id)
     visual_task = _yts_live_visual_tasks.get(command_id)
     if visual_task and not visual_task.done():
         visual_task.cancel()
@@ -11057,6 +11374,57 @@ async def stop_yts_live_command(command_id: str, http_request: Request) -> dict:
     return {
         "command_id": command_id,
         "status": state["status"],
+    }
+
+
+_YTS_DAB_ASSIST_ACTIONS: Dict[str, List[str]] = {
+    "UP": ["PRESS_UP"],
+    "DOWN": ["PRESS_DOWN"],
+    "LEFT": ["PRESS_LEFT"],
+    "RIGHT": ["PRESS_RIGHT"],
+    "CENTER": ["PRESS_OK"],
+    "OK": ["PRESS_OK"],
+    "SKIP_AD": ["PRESS_RIGHT", "PRESS_OK"],
+}
+
+
+@app.post("/yts/command/live/{command_id}/dab-assist")
+async def run_yts_dab_assist(command_id: str, http_request: Request, request: YtsDabAssistRequest) -> dict:
+    state = _require_yts_state_for_operator(command_id, _operator_for_request(http_request))
+    assist_action = str(request.action or "").strip().upper()
+    actions = _YTS_DAB_ASSIST_ACTIONS.get(assist_action)
+    if not actions:
+        raise HTTPException(status_code=400, detail=f"Unsupported YTS DAB assist action: {assist_action or '(empty)'}")
+
+    operations: List[Dict[str, Any]] = []
+    for index, action in enumerate(actions):
+        result = await manual_action(ManualActionRequest(action=action, control_mode="DAB"))
+        operation = {
+            "action": action,
+            "success": bool(result.success),
+            "result": result.result,
+            "error": result.error,
+        }
+        operations.append(operation)
+        if not result.success:
+            break
+        if index + 1 < len(actions):
+            await asyncio.sleep(0.25)
+
+    success = len(operations) == len(actions) and all(item["success"] for item in operations)
+    rendered = " -> ".join(item["action"] for item in operations)
+    state.setdefault("logs", []).append(
+        {
+            "stream": "system",
+            "message": f"YTS DAB assist {assist_action}: {rendered} ({'ok' if success else 'failed'})",
+        }
+    )
+    _persist_yts_live_state(state)
+    return {
+        "command_id": command_id,
+        "assist_action": assist_action,
+        "success": success,
+        "operations": operations,
     }
 
 
@@ -11816,19 +12184,14 @@ async def manual_action(request: ManualActionRequest) -> ManualActionResponse:
                 or ""
             ).strip()
 
-            if active_context is not None:
-                ir_device_id = active_context.irDeviceId
-                if provided_ir_id and provided_ir_id not in {ir_device_id, "samsung_tv_default"}:
-                    return ManualActionResponse(
-                        success=False,
-                        action=action,
-                        error=(
-                            f"IR device {provided_ir_id} is not mapped to active device context "
-                            f"{active_context.displayName}."
-                        ),
-                    )
+            if provided_ir_id:
+                ir_device_id = provided_ir_id
+            elif active_context is not None:
+                ir_device_id = str(active_context.irDeviceId or "").strip()
+                if not ir_device_id:
+                    raise HTTPException(status_code=400, detail="Active device context has no IR profile bound. Use Hardware Bindings to assign one.")
             else:
-                ir_device_id = provided_ir_id or "samsung_tv_default"
+                ir_device_id = _require_ir_device_id("", ir_service)
 
             result = await asyncio.to_thread(ir_service.send_dab_style_action, ir_device_id, action)
             success = bool(result.get("success"))
@@ -12202,7 +12565,7 @@ async def ir_devices() -> dict:
     service = _get_ir_service()
     devices = await asyncio.to_thread(service.list_devices)
     active_context = _active_device_context()
-    active_ir_id = active_context.irDeviceId if active_context else "samsung_tv_default"
+    active_ir_id = str(active_context.irDeviceId or "").strip() if active_context else _default_ir_device_id(service)
     return {
         "brand": "Samsung",
         "active_device_id": active_ir_id,
@@ -12226,9 +12589,10 @@ async def ir_device_keys(device_id: str) -> dict:
 @app.post("/ir/train")
 async def ir_train(request: IrTrainRequest) -> dict:
     service = _get_ir_service()
+    device_id = _require_ir_device_id(request.device_id, service)
     result = await asyncio.to_thread(
         service.train_key,
-        str(request.device_id or "samsung_tv_default").strip() or "samsung_tv_default",
+        device_id,
         str(request.key_name or "").strip(),
         int(request.timeout_ms),
     )
@@ -12245,21 +12609,15 @@ async def ir_send(request: IrSendRequest) -> dict:
         await _apply_selected_device_context(requested_context.dabDeviceId, persist=True)
 
     active_context = _active_device_context()
-    if active_context is not None:
+    if active_context is not None and not requested_device_id:
         _log_active_context_for_job(active_context)
-        if requested_device_id and requested_device_id != active_context.irDeviceId:
-            raise HTTPException(
-                status_code=400,
-                detail=f"IR device {requested_device_id} is not mapped to active device context {active_context.displayName}.",
-            )
         request.device_id = active_context.irDeviceId
-    elif not requested_device_id:
-        request.device_id = "samsung_tv_default"
 
     service = _get_ir_service()
+    resolved_ir_device_id = _require_ir_device_id(request.device_id or requested_device_id, service)
     result = await asyncio.to_thread(
         service.send_key,
-        str(request.device_id or "samsung_tv_default").strip() or "samsung_tv_default",
+        resolved_ir_device_id,
         str(request.key_name or "").strip(),
     )
     if not bool(result.get("success")):
@@ -12323,7 +12681,7 @@ async def task_macro(request: TaskMacroRequest) -> TaskMacroResponse:
                         device_id=device_id or item.device_id,
                         control_mode=routed_control_mode,
                         ir_device_id=(
-                            ir_device_id or item.ir_device_id or "samsung_tv_default"
+                            ir_device_id or item.ir_device_id or _default_ir_device_id()
                             if routed_control_mode == "IR"
                             else None
                         ),
