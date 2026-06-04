@@ -162,7 +162,9 @@ def normalize_expectation(raw: Dict[str, Any], prompt_record: Dict[str, Any], gu
         expectation["visual_requirements"] = fallback["visual_requirements"]
     if not isinstance(expectation.get("negative_conditions"), list):
         expectation["negative_conditions"] = fallback["negative_conditions"]
-    expectation["allowed_answers"] = _answer_label_map(expectation.get("allowed_answers") or prompt_record.get("allowed_answers") or [])
+    # Terminal options are authoritative: the model may describe semantic labels
+    # (pass/fail/skip), but stdin must receive the numeric CLI option tokens.
+    expectation["allowed_answers"] = _answer_label_map(prompt_record.get("allowed_answers") or expectation.get("allowed_answers") or [])
     normalized_requirements: List[Dict[str, Any]] = []
     for item in expectation.get("visual_requirements") or []:
         if isinstance(item, dict):

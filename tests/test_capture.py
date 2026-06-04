@@ -130,3 +130,51 @@ def test_set_capture_preference_rejects_non_capture_endpoint(monkeypatch):
 
     with pytest.raises(ValueError, match="not capture-capable"):
         capture.set_capture_preference(device="/dev/video5", persist=False)
+
+
+def test_device_contexts_support_duplicate_models_with_explicit_paths(tmp_path, monkeypatch):
+    import json
+    import vertex_live_dab_agent.capture.camera_devices as camera_devices
+
+    config_path = tmp_path / "camera_devices.json"
+    config_path.write_text(json.dumps({"devices": [
+        {"contextId": "lab-tv-a", "displayName": "Same Model", "dabDeviceId": "dab-a", "ytsDeviceId": "11", "cameraPath": "/dev/v4l/by-id/cam-a", "videoSource": "camera-capture"},
+        {"contextId": "lab-tv-b", "displayName": "Same Model", "dabDeviceId": "dab-b", "ytsDeviceId": "12", "cameraPath": "/dev/v4l/by-id/cam-b", "videoSource": "camera-capture"},
+    ]}), encoding="utf-8")
+    monkeypatch.setenv("CAMERA_DEVICES_CONFIG", str(config_path))
+    camera_devices.clear_device_context_cache()
+
+    contexts = camera_devices.load_device_contexts()
+
+    assert [ctx.contextId for ctx in contexts] == ["lab-tv-a", "lab-tv-b"]
+    assert camera_devices.find_device_context("dab-b").cameraPath == "/dev/v4l/by-id/cam-b"
+    assert camera_devices.find_device_context("Same Model") is not None
+    assert camera_devices.get_camera_path("lab-tv-a") == "/dev/v4l/by-id/cam-a"
+
+
+def test_upsert_device_context_binding_persists_discovered_hardware_ids(tmp_path, monkeypatch):
+    import json
+    import vertex_live_dab_agent.capture.camera_devices as camera_devices
+
+    config_path = tmp_path / "camera_devices.json"
+    config_path.write_text(json.dumps({"devices": [
+        {"contextId": "slot-1", "displayName": "Bench Slot 1", "dabDeviceId": "old-dab", "ytsDeviceId": "old-yts"}
+    ]}), encoding="utf-8")
+    monkeypatch.setenv("CAMERA_DEVICES_CONFIG", str(config_path))
+    camera_devices.clear_device_context_cache()
+
+    updated = camera_devices.upsert_device_context_binding("slot-1", {
+        "dabDeviceId": "new-dab-id",
+        "ytsDeviceId": "42",
+        "adbDeviceId": "10.0.0.5:5555",
+        "irDeviceId": "ir-slot-1",
+        "cameraPath": "/dev/v4l/by-id/unique-camera",
+        "videoSource": "hdmi-capture",
+        "audioDevice": "hw:7,0",
+    })
+
+    saved = json.loads(config_path.read_text(encoding="utf-8"))["devices"][0]
+    assert updated.dabDeviceId == "new-dab-id"
+    assert saved["cameraPath"] == "/dev/v4l/by-id/unique-camera"
+    assert saved["irDeviceId"] == "ir-slot-1"
+    assert camera_devices.find_device_context("new-dab-id").contextId == "slot-1"

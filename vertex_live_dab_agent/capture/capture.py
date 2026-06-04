@@ -16,6 +16,7 @@ from vertex_live_dab_agent.capture.camera_devices import (
     camera_label,
     find_device_context,
     get_camera_path,
+    load_device_contexts,
     validate_camera_devices,
 )
 from vertex_live_dab_agent.capture.hdmi_capture import HdmiCaptureSession
@@ -236,10 +237,9 @@ class ScreenCapture:
     def _list_video_device_details(self) -> list[dict]:
         details: list[dict] = []
         known = set(sorted(glob.glob("/dev/video*")))
-        for key in ("adt4", "sonytv", "samsung", "kirkwood"):
-            path = get_camera_path(key)
-            if path:
-                known.add(path)
+        for context in load_device_contexts():
+            if context.cameraPath:
+                known.add(context.cameraPath)
 
         for dev in sorted(known):
             if not os.path.exists(dev):
@@ -648,14 +648,9 @@ class ScreenCapture:
                 rotation_degrees=self._rotation_degrees,
             )
 
-            if device == get_camera_path("adt4"):
-                logger.info("[INFO] Opening %s camera from %s", camera_label("adt4"), device)
-            elif device == get_camera_path("sonytv"):
-                logger.info("[INFO] Opening %s camera from %s", camera_label("sonytv"), device)
-            elif device == get_camera_path("samsung"):
-                logger.info("[INFO] Opening %s camera from %s", camera_label("samsung"), device)
-            elif device == get_camera_path("kirkwood"):
-                logger.info("[INFO] Opening %s camera from %s", camera_label("kirkwood"), device)
+            bound_context = find_device_context(device)
+            if bound_context is not None:
+                logger.info("[INFO] Opening %s camera from %s", bound_context.displayName or bound_context.contextId, device)
 
             if not session.open():
                 if session.last_error:

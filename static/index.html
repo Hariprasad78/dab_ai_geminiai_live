@@ -872,9 +872,24 @@
     .yts-search-item:last-child { border-bottom:none; }
     .yts-search-item:hover { background:var(--dropdown-hover); }
     .yts-select-multiple { min-height:220px; }
-    .yts-prompt-box { margin-top:0.75rem; padding:0.75rem; border:1px solid #3f3f46; border-radius:0.5rem; background:#18181b; }
+    .yts-prompt-box { margin-top:0.75rem; padding:0.85rem; border:1px solid var(--border); border-radius:0.8rem; background:var(--surface-1); }
     .yts-prompt-actions { display:flex; gap:0.5rem; flex-wrap:wrap; margin-top:0.75rem; }
-    .yts-prompt-chip { background:#27272a; color:#e4e4e7; border:1px solid #3f3f46; border-radius:999px; padding:0.25rem 0.6rem; font-size:0.78rem; }
+    .yts-prompt-chip { background:var(--surface-3); color:var(--text); border:1px solid var(--border); border-radius:999px; padding:0.25rem 0.6rem; font-size:0.78rem; }
+    .yts-prompt-head { display:flex; align-items:flex-start; justify-content:space-between; gap:0.7rem; flex-wrap:wrap; }
+    .yts-prompt-title { color:var(--text-strong); font-size:0.9rem; font-weight:800; }
+    .yts-prompt-state { display:inline-flex; align-items:center; gap:0.35rem; border:1px solid var(--border); border-radius:999px; padding:0.25rem 0.55rem; color:var(--text-muted); background:var(--surface-2); font-size:0.72rem; }
+    .yts-prompt-copy { margin-top:0.65rem; padding:0.65rem; border:1px solid var(--border); border-radius:0.65rem; background:var(--surface-0); color:var(--text); font-family:monospace; font-size:0.78rem; line-height:1.48; white-space:pre-wrap; }
+    .yts-monitor-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:0.5rem; margin-top:0.65rem; }
+    .yts-monitor-cell { border:1px solid var(--border); border-radius:0.65rem; padding:0.55rem; background:var(--surface-2); min-width:0; }
+    .yts-monitor-label { color:var(--text-muted); font-size:0.68rem; margin-bottom:0.2rem; text-transform:uppercase; letter-spacing:0.06em; }
+    .yts-monitor-value { color:var(--text); font-size:0.78rem; line-height:1.42; word-break:break-word; }
+    .yts-dab-assist { margin-top:0.8rem; padding-top:0.75rem; border-top:1px solid var(--border); }
+    .yts-dab-assist-grid { display:grid; grid-template-columns:minmax(180px, 230px) minmax(0, 1fr); gap:0.8rem; align-items:start; margin-top:0.6rem; }
+    .yts-dpad { display:grid; grid-template-columns:repeat(3, 56px); gap:0.38rem; }
+    .yts-dpad button { min-width:0; padding:0.48rem 0.25rem; border-radius:0.55rem; font-size:0.75rem; }
+    .yts-dab-actions { display:flex; flex-wrap:wrap; gap:0.5rem; align-items:flex-start; }
+    .yts-dab-assist-status { width:100%; min-height:1rem; color:var(--text-muted); font-size:0.76rem; line-height:1.4; }
+    @media (max-width: 620px) { .yts-dab-assist-grid { grid-template-columns:1fr; } }
     .yts-runner-layout { display:grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 0.8fr); gap:1rem; }
     .yts-runner-panel { min-width:0; background:linear-gradient(180deg, rgba(24, 24, 27, 0.92), rgba(14, 14, 16, 0.95)); border:1px solid rgba(255, 255, 255, 0.1); border-radius:1rem; padding:0.95rem; }
     .yts-runner-panel h3 { font-size:0.95rem; color:#e2e8f0; margin-bottom:0.6rem; }
@@ -1151,6 +1166,22 @@
     <div id="dab-device-summary" class="device-summary-body empty-state">Load a discovered device to view its details.</div>
   </div>
 
+
+
+  <div class="card full-width" id="hardware-binding-card">
+    <div class="device-card-head">
+      <div>
+        <h2>⚙ Hardware Bindings</h2>
+        <div class="subtitle">Assign discovered DAB, YTS, IR, camera, and audio hardware to each logical device context.</div>
+      </div>
+      <button class="secondary mini-btn" onclick="loadHardwareBindings(true)">Refresh Hardware</button>
+    </div>
+    <div class="yts-subtle" id="hardware-binding-status">Loading hardware bindings...</div>
+    <div id="hardware-binding-list" class="settings-table-wrap" style="margin-top:0.75rem; padding:0.75rem;">
+      <div class="empty-state">Loading connected hardware...</div>
+    </div>
+  </div>
+
   <div class="card full-width" id="dab-system-state-card">
     <div style="display:flex; justify-content:space-between; gap:0.75rem; align-items:flex-start; flex-wrap:wrap; margin-bottom:0.9rem;">
       <div>
@@ -1231,6 +1262,21 @@
           <input id="yts-opt-logging-level" placeholder="INFO">
           <label style="margin-top:0.75rem;">Verbose Output File</label>
           <input id="yts-opt-verbose-output" placeholder="/path/to/verbose.log">
+          <div class="yts-section-shell">
+            <div class="yts-section-head">
+              <div>
+                <div class="yts-section-kicker">YTS account</div>
+                <div class="yts-section-title">Host-side YTS login</div>
+                <div class="yts-section-note">Runs yts login/user/logout on the API host. Credentials are read from that system environment or YTS auth cache and inherited by test/cert jobs.</div>
+              </div>
+            </div>
+            <div class="btn-row" style="margin-top:0;">
+              <button class="secondary" onclick="runYtsAuthCommand('login')">Login</button>
+              <button class="secondary" onclick="runYtsAuthCommand('user')">Check User</button>
+              <button class="secondary" onclick="runYtsAuthCommand('logout')">Logout</button>
+            </div>
+            <div class="yts-subtle" id="yts-auth-status" style="margin-top:0.65rem;">YTS auth commands use the same live job console below.</div>
+          </div>
         </div>
 
         <!-- Command Panels will be dynamically generated here -->
@@ -1317,14 +1363,14 @@
           <div style="display:none;">
             <label for="ir-device-select" style="margin-bottom:0.25rem;">IR Device (Samsung)</label>
             <select id="ir-device-select" onchange="onIrDeviceChanged()" disabled>
-              <option value="samsung_tv_default">Samsung TV (Default)</option>
+              <option value="">Loading IR profiles...</option>
             </select>
           </div>
         </div>
 
         <div class="remote-meta">
           <div class="remote-meta-chip" id="remote-mode-status">Mode: DAB</div>
-          <div class="remote-meta-chip" id="ir-selected-device-status">IR device: samsung_tv_default</div>
+          <div class="remote-meta-chip" id="ir-selected-device-status">IR device: --</div>
           <div class="remote-meta-chip" id="ir-last-trained-status">Last trained key: --</div>
           <div class="remote-meta-chip" id="ir-last-send-status">Last send result: --</div>
         </div>
@@ -1440,11 +1486,12 @@
           <div class="btn-row" style="margin-top:0; margin-bottom:0.75rem;">
             <button class="danger" id="yts-command-stop-btn" onclick="stopLiveYtsCommand()" style="display:none;">Stop Command</button>
           </div>
-          <div class="yts-inline-input" style="margin-bottom:0.75rem;">
-            <input id="yts-terminal-manual-input" placeholder="Send manual terminal input to the active YTS job" />
-            <button class="secondary" onclick="sendManualTerminalInputToYtsJob()">Send Input</button>
+          <div class="yts-inline-input" style="margin-bottom:0.45rem;">
+            <input id="yts-terminal-manual-input" placeholder="Send manual terminal input to the active YTS job" onkeydown="if (event.key === 'Enter') sendManualTerminalInputToYtsJob()" />
+            <button class="secondary" id="yts-terminal-manual-send-btn" onclick="sendManualTerminalInputToYtsJob()">Send Input</button>
           </div>
           <div class="yts-subtle">Use this field to send manual terminal input even if the CLI is waiting mid-execution.</div>
+          <div class="yts-subtle" id="yts-terminal-input-status" style="margin-top:0.35rem;"></div>
           <div id="yts-interactive-prompt" style="display:none;"></div>
           <label style="margin-top:1rem;">Terminal Log</label>
           <div class="yts-result-box" id="yts-command-output">Select or start a YTS job to view logs.</div>
@@ -1606,7 +1653,7 @@
     </select>
     <div id="run-ir-device-wrap" style="display:none;">
       <label style="margin-top:0.75rem;">IR Device ID</label>
-      <input id="run-ir-device-input" placeholder="samsung_tv_default" />
+      <input id="run-ir-device-input" placeholder="Use bound IR profile" />
     </div>
     <label style="margin-top:0.75rem;"><input type="checkbox" id="run-ui-nav-toggle" style="width:auto; margin-right:0.45rem;" /> Allow UI navigation fallback</label>
     <div class="btn-row">
@@ -1695,7 +1742,7 @@
   let ytsCommandHistory = readYtsHistoryCache();
   let ytsAnalysisArtifacts = [];
   let selectedRemoteMode = (localStorage.getItem(REMOTE_MODE_STORAGE_KEY) || 'DAB').toUpperCase();
-  let selectedIrDeviceId = localStorage.getItem(IR_DEVICE_STORAGE_KEY) || 'samsung_tv_default';
+  let selectedIrDeviceId = localStorage.getItem(IR_DEVICE_STORAGE_KEY) || '';
   let irDeviceList = [];
   let irStatusSnapshot = null;
   let lastTrainedIrKey = '--';
@@ -3043,10 +3090,10 @@
       select.innerHTML = '';
       if (!irDeviceList.length) {
         const fallback = document.createElement('option');
-        fallback.value = 'samsung_tv_default';
-        fallback.textContent = 'Samsung TV (Default)';
+        fallback.value = '';
+        fallback.textContent = 'No IR profiles found';
         select.appendChild(fallback);
-        selectedIrDeviceId = 'samsung_tv_default';
+        selectedIrDeviceId = '';
       } else {
         for (const item of irDeviceList) {
           const id = String(item.device_id || '').trim();
@@ -3067,16 +3114,12 @@
           select.appendChild(option);
           selectedIrDeviceId = preferred;
         } else {
-          const samsungCandidate = irDeviceList.find(item => {
-            const deviceId = String(item.device_id || '').trim().toLowerCase();
-            const brand = String(item.brand || '').trim().toLowerCase();
-            return deviceId.includes('samsung') || brand.includes('samsung');
-          });
-          selectedIrDeviceId = String((samsungCandidate && samsungCandidate.device_id) || irDeviceList[0].device_id || 'samsung_tv_default');
+          selectedIrDeviceId = String(irDeviceList[0].device_id || '');
         }
       }
       select.value = selectedIrDeviceId;
-      localStorage.setItem(IR_DEVICE_STORAGE_KEY, selectedIrDeviceId);
+      if (selectedIrDeviceId) localStorage.setItem(IR_DEVICE_STORAGE_KEY, selectedIrDeviceId);
+      else localStorage.removeItem(IR_DEVICE_STORAGE_KEY);
       await loadIrDeviceKeys(selectedIrDeviceId);
       updateRemoteModeStatusBanner();
     } catch (e) {
@@ -3100,8 +3143,9 @@
 
   async function onIrDeviceChanged() {
     const select = document.getElementById('ir-device-select');
-    selectedIrDeviceId = String(select?.value || 'samsung_tv_default').trim() || 'samsung_tv_default';
-    localStorage.setItem(IR_DEVICE_STORAGE_KEY, selectedIrDeviceId);
+    selectedIrDeviceId = String(select?.value || '').trim();
+    if (selectedIrDeviceId) localStorage.setItem(IR_DEVICE_STORAGE_KEY, selectedIrDeviceId);
+    else localStorage.removeItem(IR_DEVICE_STORAGE_KEY);
     await loadIrDeviceKeys(selectedIrDeviceId);
     updateRemoteModeStatusBanner();
   }
@@ -3575,6 +3619,128 @@
       renderDabDeviceSummary({ error: e.message, deviceId: resolved }, getDiscoveredDabDevice(resolved));
       await loadDabDeviceSystemState(resolved, true, !!forceCatalogRefresh);
     }
+  }
+
+
+  let hardwareBindingOptions = null;
+
+  function hardwareOptionLabel(item, fallbackKey = 'device_id') {
+    if (!item || typeof item !== 'object') return '';
+    const id = item.device_id || item.short_id || item.serial || item.device || item.path || item.device_id || item[fallbackKey] || '';
+    const label = item.label || item.name || item.model || item.product || item.device_name || '';
+    const extra = item.serial && item.serial !== id ? ` (${item.serial})` : '';
+    return `${label || id}${extra}`.trim();
+  }
+
+  function renderHardwareSelect(id, options, value, placeholder, valueFn, labelFn) {
+    const current = String(value || '').trim();
+    const seen = new Set(['']);
+    const rows = [`<option value="">${escHtml(placeholder)}</option>`];
+    const push = (rawValue, rawLabel) => {
+      const v = String(rawValue || '').trim();
+      if (!v || seen.has(v)) return;
+      seen.add(v);
+      rows.push(`<option value="${escHtml(v)}" ${v === current ? 'selected' : ''}>${escHtml(rawLabel || v)}</option>`);
+    };
+    (Array.isArray(options) ? options : []).forEach(item => push(valueFn(item), labelFn(item)));
+    if (current && !seen.has(current)) push(current, `${current} [saved]`);
+    return `<select id="${escHtml(id)}">${rows.join('')}</select>`;
+  }
+
+  function renderHardwareBindings(payload) {
+    const container = document.getElementById('hardware-binding-list');
+    const status = document.getElementById('hardware-binding-status');
+    if (!container) return;
+    const contexts = Array.isArray(payload?.contexts) ? payload.contexts : [];
+    if (status) status.textContent = `Config: ${payload?.config_path || '--'} · ${contexts.length} context${contexts.length === 1 ? '' : 's'}`;
+    if (!contexts.length) {
+      container.innerHTML = '<div class="empty-state">No logical device contexts configured. Add one in camera_devices.json or save a new binding from the API.</div>';
+      return;
+    }
+    const dabOptions = Array.isArray(payload.dab_devices) ? payload.dab_devices : [];
+    const ytsOptions = Array.isArray(payload.yts_devices) ? payload.yts_devices : [];
+    const adbOptions = Array.isArray(payload.adb_devices) ? payload.adb_devices : [];
+    const irOptions = Array.isArray(payload.ir_devices) ? payload.ir_devices : [];
+    const cameraOptions = Array.isArray(payload.capture_devices) ? payload.capture_devices : [];
+    const audioOptions = Array.isArray(payload.audio_devices) ? payload.audio_devices : [];
+    container.innerHTML = contexts.map(ctx => {
+      const contextId = String(ctx.contextId || '').trim();
+      const readiness = ctx.readiness || {};
+      const rowId = contextId.replace(/[^a-zA-Z0-9_-]/g, '_');
+      return `
+        <div class="sysstate-panel" style="margin-bottom:0.75rem;">\n          <h3>${escHtml(ctx.displayName || contextId)} <span class="yts-subtle">${escHtml(contextId)}</span></h3>
+          <div class="sysstate-op-fields" style="grid-template-columns:repeat(auto-fit, minmax(190px, 1fr));">
+            <input id="hw-${rowId}-display" value="${escHtml(ctx.displayName || '')}" placeholder="Display name" />
+            ${renderHardwareSelect(`hw-${rowId}-dab`, dabOptions, ctx.dabDeviceId, 'DAB device ID', item => item.device_id, item => hardwareOptionLabel(item))}
+            ${renderHardwareSelect(`hw-${rowId}-yts`, ytsOptions, ctx.ytsDeviceId, 'YTS short/device ID', item => item.short_id || item.device_id, item => hardwareOptionLabel(item, 'short_id'))}
+            ${renderHardwareSelect(`hw-${rowId}-adb`, adbOptions, ctx.adbDeviceId, 'ADB device', item => item.device_id || item.serial, item => hardwareOptionLabel(item))}
+            ${renderHardwareSelect(`hw-${rowId}-ir`, irOptions, ctx.irDeviceId, 'IR profile', item => item.device_id, item => `${item.model || item.device_id || ''}${item.key_count != null ? ` (${item.key_count} keys)` : ''}`)}
+            ${renderHardwareSelect(`hw-${rowId}-camera`, cameraOptions, readiness.cameraPath || ctx.cameraPath, 'Camera / HDMI path', item => item.device || item.path, item => `${item.device || item.path || ''} ${item.kind ? `[${item.kind}]` : ''} ${item.name || ''}`.trim())}
+            <select id="hw-${rowId}-source">
+              ${['hdmi-capture', 'camera-capture', 'scrcpy'].map(v => `<option value="${v}" ${String(ctx.videoSource || readiness.videoSource || '') === v ? 'selected' : ''}>${v}</option>`).join('')}
+            </select>
+            ${renderHardwareSelect(`hw-${rowId}-audio`, audioOptions, ctx.audioDevice, 'Audio input', item => item.device || item.id, item => `${item.device || item.id || ''} ${item.name || ''}`.trim())}
+          </div>
+          <div class="yts-subtle" style="margin-top:0.55rem;">Readiness: DAB ${readiness.dabReady ? 'ok' : 'missing'} · YTS ${readiness.ytsReady ? 'ok' : 'missing'} · IR ${readiness.irReady ? 'ok' : 'missing'} · Camera ${readiness.cameraReady ? 'ok' : 'missing'}</div>
+          <div class="btn-row">
+            <button class="secondary mini-btn" onclick="saveHardwareBinding(${JSON.stringify(contextId)}, ${JSON.stringify(rowId)})">Save Binding</button>
+            <button class="mini-btn" onclick="selectHardwareContext(${JSON.stringify(contextId)})">Use This Context</button>
+            <span class="yts-subtle" id="hw-${rowId}-status"></span>
+          </div>
+        </div>`;
+    }).join('');
+  }
+
+  async function loadHardwareBindings(force = false) {
+    const status = document.getElementById('hardware-binding-status');
+    if (status) status.textContent = force ? 'Refreshing connected hardware...' : 'Loading connected hardware...';
+    try {
+      hardwareBindingOptions = await api('/device/hardware-options');
+      renderHardwareBindings(hardwareBindingOptions);
+    } catch (e) {
+      if (status) {
+        status.textContent = `Hardware binding load failed: ${e.message}`;
+        setUiColor(status, '--error');
+      }
+    }
+  }
+
+  async function saveHardwareBinding(contextId, rowId) {
+    const status = document.getElementById(`hw-${rowId}-status`);
+    const getValue = suffix => String(document.getElementById(`hw-${rowId}-${suffix}`)?.value || '').trim();
+    if (status) {
+      status.textContent = 'Saving binding...';
+      setUiColor(status, '--info');
+    }
+    try {
+      await api('/device/context/bind', 'POST', {
+        contextId,
+        displayName: getValue('display'),
+        dabDeviceId: getValue('dab'),
+        ytsDeviceId: getValue('yts'),
+        adbDeviceId: getValue('adb'),
+        irDeviceId: getValue('ir'),
+        cameraPath: getValue('camera'),
+        videoSource: getValue('source'),
+        audioDevice: getValue('audio'),
+        persistSelection: false,
+      });
+      if (status) {
+        status.textContent = 'Saved';
+        setUiColor(status, '--success');
+      }
+      await Promise.allSettled([loadHardwareBindings(true), loadDabDevices(getSelectedDabDeviceId() || null), loadIrDevices(selectedIrDeviceId), refreshCaptureDevices()]);
+    } catch (e) {
+      if (status) {
+        status.textContent = `Save failed: ${e.message}`;
+        setUiColor(status, '--error');
+      }
+    }
+  }
+
+  async function selectHardwareContext(contextId) {
+    await api('/device/context/select', 'POST', { contextId, persist: true });
+    await Promise.allSettled([loadDabDevices(contextId), loadHardwareBindings(true), loadCaptureSource(), refreshCaptureDevices(), refreshStreamDiagnostics()]);
   }
 
   async function loadDabDevices(preferredDeviceId = null) {
@@ -5314,7 +5480,10 @@
     const executeOnce = async (singleAction) => {
       let body = { action: singleAction, control_mode: mode };
       if (mode === 'IR') {
-        body.ir_device_id = selectedIrDeviceId || 'samsung_tv_default';
+        if (!selectedIrDeviceId) {
+          throw new Error('No IR profile selected. Bind/select one in Hardware Bindings first.');
+        }
+        body.ir_device_id = selectedIrDeviceId;
       } else {
         const deviceId = requireSelectedDabDevice('manual-result', 'Select a DAB device before sending remote actions.');
         if (!deviceId) return;
@@ -5691,15 +5860,36 @@
     return data;
   }
 
+  function setYtsTerminalInputStatus(message, color = '--text-muted') {
+    const status = document.getElementById('yts-terminal-input-status');
+    if (!status) return;
+    status.textContent = String(message || '');
+    setUiColor(status, color);
+  }
+
   async function sendManualTerminalInputToYtsJob() {
-    if (!currentYtsCommandId) return;
+    if (!currentYtsCommandId) {
+      setYtsTerminalInputStatus('Select an active YTS job first.', '--warning');
+      return;
+    }
     const input = document.getElementById('yts-terminal-manual-input');
+    const button = document.getElementById('yts-terminal-manual-send-btn');
     const value = input?.value?.trim();
     if (!value) return;
-    await api(`/yts/command/live/${currentYtsCommandId}/respond`, 'POST', { response: value });
-    input.value = '';
-    await pollLiveYtsCommand(currentYtsCommandId);
-    await loadYtsCommandHistory(true);
+    if (button) button.disabled = true;
+    setYtsTerminalInputStatus(`Sending terminal input: ${value}`, '--info');
+    try {
+      const result = await api(`/yts/command/live/${currentYtsCommandId}/respond`, 'POST', { response: value });
+      input.value = '';
+      setYtsTerminalInputStatus(result.warning || `Sent terminal input: ${value}`, result.warning ? '--warning' : '--success');
+      await pollLiveYtsCommand(currentYtsCommandId);
+      await loadYtsCommandHistory(true);
+    } catch (e) {
+      setYtsTerminalInputStatus(`Terminal input failed: ${e.message}`, '--error');
+      await pollLiveYtsCommand(currentYtsCommandId).catch(() => null);
+    } finally {
+      if (button) button.disabled = false;
+    }
   }
 
   function renderYtsLiveCommandState(data) {
@@ -5755,35 +5945,76 @@
     renderYtsInteractionLog(data);
 
     const pendingPrompt = data.pending_prompt;
-    if (pendingPrompt && data.awaiting_input) {
-      const options = Array.isArray(pendingPrompt.options) ? pendingPrompt.options : [];
-      const buttonOptions = options.length ? options : ['yes', 'no', '1', '2', '3', '4'];
-      const aiWatchingTv = !!data.ai_observing_tv;
-      const aiStatusMessage = data.ai_status_message || 'Gemini is watching the TV stream and reading the terminal guide...';
-      promptBox.style.display = 'block';
-      promptBox.innerHTML = `
-        <div class="yts-prompt-box">
-          <div><strong>Interactive Prompt</strong></div>
-          <div style="margin-top:0.5rem; color:#e2e8f0;">${escHtml(pendingPrompt.text || '')}</div>
-          ${aiWatchingTv ? `<div class="yts-hint" style="margin-top:0.55rem; color:${uiColor('--info')};">${escHtml(aiStatusMessage)}</div>` : ''}
+    const hasPendingPrompt = !!(pendingPrompt && data.awaiting_input);
+    const latestVisual = data.latest_visual_analysis?.analysis || {};
+    const latestVisualSummary = data.latest_visual_analysis?.summary || latestVisual.summary || '';
+    const monitorActive = !!data.visual_monitor_active;
+    const monitorStatus = String(data.visual_monitor_status || (monitorActive ? 'watching' : 'idle'));
+    const monitorCaptures = Number(data.visual_monitor_capture_count || 0);
+    const monitorEvaluations = Number(data.visual_monitor_frame_count || 0);
+    const monitorErrors = Number(data.visual_monitor_error_count || 0);
+    const monitorRetry = data.visual_monitor_retry_in_seconds;
+    const monitorLastError = String(data.visual_monitor_last_error || '');
+    const aiWatchingTv = !!data.ai_observing_tv;
+    const aiStatusMessage = data.ai_status_message || (monitorActive ? 'Gemini Live visual monitor is watching the TV feed.' : 'Gemini Live visual monitor is idle.');
+    const promptText = hasPendingPrompt ? String(pendingPrompt.text || '') : '';
+    const options = hasPendingPrompt && Array.isArray(pendingPrompt.options) ? pendingPrompt.options : [];
+    const buttonOptions = options.length ? options : (hasPendingPrompt ? ['yes', 'no', '1', '2', '3', '4'] : []);
+    const optionLabels = Object.fromEntries(promptText.split('\n').map(line => {
+      const match = line.trim().match(/^([^:]+):\s*(.+)$/);
+      return match ? [match[1].trim(), match[2].trim()] : ['', ''];
+    }).filter(([option]) => option));
+    const latestAd = latestVisual.ad_or_interstitial_visible === true ? 'visible' : (latestVisual.ad_or_interstitial_visible === false ? 'not visible' : 'unknown');
+    const requirement = latestVisual.requirement_evidence || latestVisualSummary || 'Waiting for a fresh TV frame.';
+
+    promptBox.style.display = 'block';
+    promptBox.innerHTML = `
+      <div class="yts-prompt-box">
+        <div class="yts-prompt-head">
+          <div>
+            <div class="yts-prompt-title">Gemini Live Prompt Console</div>
+            <div class="yts-hint">Current terminal checkpoint, live TV evidence, and logged DAB assistance.</div>
+          </div>
+          <span class="yts-prompt-state">${monitorActive ? `Live monitor · ${escHtml(monitorStatus)}` : 'Live monitor idle'}${aiWatchingTv ? ' · evaluating prompt' : ''}</span>
+        </div>
+        <div class="yts-monitor-grid">
+          <div class="yts-monitor-cell"><div class="yts-monitor-label">Prompt State</div><div class="yts-monitor-value">${hasPendingPrompt ? 'Awaiting terminal response' : 'No terminal prompt awaiting input'}</div></div>
+          <div class="yts-monitor-cell"><div class="yts-monitor-label">Gemini Live</div><div class="yts-monitor-value">${escHtml(aiStatusMessage)}</div></div>
+          <div class="yts-monitor-cell"><div class="yts-monitor-label">Monitor Frames</div><div class="yts-monitor-value">${monitorCaptures} captured · ${monitorEvaluations} evaluated · ${monitorErrors} errors</div></div>
+          <div class="yts-monitor-cell"><div class="yts-monitor-label">Monitor Health</div><div class="yts-monitor-value">${escHtml(monitorStatus)}${monitorRetry ? ` · retry in ${escHtml(String(monitorRetry))}s` : ''}${monitorLastError ? `<br>${escHtml(monitorLastError)}` : ''}</div></div>
+          <div class="yts-monitor-cell"><div class="yts-monitor-label">Ad / Interstitial</div><div class="yts-monitor-value">${escHtml(latestAd)}</div></div>
+          <div class="yts-monitor-cell"><div class="yts-monitor-label">Latest TV Evidence</div><div class="yts-monitor-value">${escHtml(requirement)}</div></div>
+        </div>
+        ${hasPendingPrompt ? `
+          <div class="yts-prompt-copy">${escHtml(promptText)}</div>
           <div class="yts-prompt-actions">
-            ${buttonOptions.map(option => `<button class="secondary" onclick="respondToYtsPrompt(${JSON.stringify(option)})">${escHtml(option)}</button>`).join('')}
+            ${buttonOptions.map(option => `<button class="secondary" onclick="respondToYtsPrompt(${JSON.stringify(option)})">${escHtml(optionLabels[option] ? `${option} · ${optionLabels[option]}` : option)}</button>`).join('')}
           </div>
           <div class="yts-prompt-actions">
-            <input id="yts-prompt-custom-response" placeholder="Custom response" />
-            <button class="secondary" onclick="sendCustomYtsPromptResponse()">Send</button>
-          </div>
-          <div class="yts-prompt-actions">
-            <button class="secondary" onclick="suggestYtsPromptResponse(false)">Suggest with Gemini</button>
+            <input id="yts-prompt-custom-response" placeholder="Send exact terminal response" />
+            <button class="secondary" onclick="sendCustomYtsPromptResponse()">Send Input</button>
+            <button class="secondary" onclick="suggestYtsPromptResponse(false)">Refresh Gemini Suggestion</button>
             <button onclick="suggestYtsPromptResponse(true)">Send Gemini Suggestion</button>
           </div>
           ${pendingPrompt.ai_suggestion ? `<div class="yts-hint">Gemini suggestion: <span class="yts-prompt-chip">${escHtml(pendingPrompt.ai_suggestion)}</span> (${escHtml(pendingPrompt.ai_source || 'gemini')})</div>` : ''}
           ${pendingPrompt.ai_visual_summary ? `<div class="yts-hint" style="margin-top:0.55rem;"><strong>TV visual context</strong> ${pendingPrompt.ai_visual_source ? `(${escHtml(pendingPrompt.ai_visual_source)})` : ''}: ${escHtml(pendingPrompt.ai_visual_summary)}</div>` : ''}
-        </div>`;
-    } else {
-      promptBox.style.display = 'none';
-      promptBox.innerHTML = '';
-    }
+        ` : ''}
+        <div class="yts-dab-assist">
+          <div class="yts-prompt-title">DAB Playback Assist</div>
+          <div class="yts-hint">Navigate the TV overlay with DAB operations. Skip Ad sends Right, then D-pad Center.</div>
+          <div class="yts-dab-assist-grid">
+            <div class="yts-dpad">
+              <span></span><button class="secondary" onclick="runYtsDabAssist('UP')">Up</button><span></span>
+              <button class="secondary" onclick="runYtsDabAssist('LEFT')">Left</button><button onclick="runYtsDabAssist('CENTER')">Center</button><button class="secondary" onclick="runYtsDabAssist('RIGHT')">Right</button>
+              <span></span><button class="secondary" onclick="runYtsDabAssist('DOWN')">Down</button><span></span>
+            </div>
+            <div class="yts-dab-actions">
+              <button onclick="runYtsDabAssist('SKIP_AD')">Skip Ad · Right + Center</button>
+              <div id="yts-dab-assist-status" class="yts-dab-assist-status">${escHtml(lastYtsDabAssistStatus || 'No DAB assist operation sent yet.')}</div>
+            </div>
+          </div>
+        </div>
+      </div>`;
 
     const downloadButtons = [];
     const apiOrigin = getApiOrigin();
@@ -6061,11 +6292,40 @@
     }
   }
 
+  let lastYtsDabAssistStatus = '';
+  let ytsDabAssistBusy = false;
+
+  async function runYtsDabAssist(action) {
+    if (!currentYtsCommandId || ytsDabAssistBusy) return;
+    const statusEl = document.getElementById('yts-dab-assist-status');
+    ytsDabAssistBusy = true;
+    lastYtsDabAssistStatus = `Sending ${action} through DAB...`;
+    if (statusEl) statusEl.textContent = lastYtsDabAssistStatus;
+    try {
+      const data = await api(`/yts/command/live/${currentYtsCommandId}/dab-assist`, 'POST', { action });
+      const operations = Array.isArray(data.operations) ? data.operations.map(item => item.action).join(' -> ') : action;
+      lastYtsDabAssistStatus = data.success ? `Sent: ${operations}` : `DAB assist failed: ${operations}`;
+      await pollLiveYtsCommand(currentYtsCommandId);
+    } catch (e) {
+      lastYtsDabAssistStatus = `DAB assist failed: ${e.message}`;
+    } finally {
+      ytsDabAssistBusy = false;
+      const refreshedStatusEl = document.getElementById('yts-dab-assist-status');
+      if (refreshedStatusEl) refreshedStatusEl.textContent = lastYtsDabAssistStatus;
+    }
+  }
+
   async function respondToYtsPrompt(responseText) {
     if (!currentYtsCommandId) return;
-    await api(`/yts/command/live/${currentYtsCommandId}/respond`, 'POST', { response: responseText });
-    await pollLiveYtsCommand(currentYtsCommandId);
-    await loadYtsCommandHistory(true);
+    try {
+      const result = await api(`/yts/command/live/${currentYtsCommandId}/respond`, 'POST', { response: responseText });
+      setYtsTerminalInputStatus(result.warning || `Sent prompt response: ${responseText}`, result.warning ? '--warning' : '--success');
+      await pollLiveYtsCommand(currentYtsCommandId);
+      await loadYtsCommandHistory(true);
+    } catch (e) {
+      setYtsTerminalInputStatus(`Prompt response failed: ${e.message}`, '--error');
+      await pollLiveYtsCommand(currentYtsCommandId).catch(() => null);
+    }
   }
 
   async function sendCustomYtsPromptResponse() {
@@ -6078,9 +6338,17 @@
 
   async function suggestYtsPromptResponse(sendResponse) {
     if (!currentYtsCommandId) return;
-    await api(`/yts/command/live/${currentYtsCommandId}/suggest`, 'POST', { send_response: !!sendResponse });
-    await pollLiveYtsCommand(currentYtsCommandId);
-    await loadYtsCommandHistory(true);
+    setYtsTerminalInputStatus(sendResponse ? 'Generating and sending Gemini response...' : 'Refreshing Gemini suggestion...', '--info');
+    try {
+      const result = await api(`/yts/command/live/${currentYtsCommandId}/suggest`, 'POST', { send_response: !!sendResponse });
+      const message = sendResponse ? `Gemini input sent: ${result.suggestion || '(empty)'}` : `Gemini suggestion: ${result.suggestion || '(deferred)'}`;
+      setYtsTerminalInputStatus(result.deferred_reason || message, result.deferred_reason ? '--warning' : '--success');
+      await pollLiveYtsCommand(currentYtsCommandId);
+      await loadYtsCommandHistory(true);
+    } catch (e) {
+      setYtsTerminalInputStatus(`Gemini input failed: ${e.message}`, '--error');
+      await pollLiveYtsCommand(currentYtsCommandId).catch(() => null);
+    }
   }
 
   // --- New YTS Control Center Logic ---
@@ -6219,8 +6487,20 @@
       <h3>${escHtml(details.title)}</h3>
       <p class="description">${escHtml(details.description)}</p>
       
-      <label>Device ID*</label>
-      <input id="yts-arg-test-device" placeholder="Uses selected device context" required>
+      <div class="yts-runner-grid">
+        <div>
+          <label for="yts-arg-test-run-mode">Run Mode</label>
+          <select id="yts-arg-test-run-mode" onchange="updateYtsRunModeUi()">
+            <option value="test">Test</option>
+            <option value="cert">Cert (--submit)</option>
+          </select>
+        </div>
+        <div>
+          <label>Device ID*</label>
+          <input id="yts-arg-test-device" placeholder="Uses selected device context" required>
+        </div>
+      </div>
+      <div class="yts-hint" id="yts-run-mode-hint">Test mode runs yts test. Cert mode runs yts cert and the backend always adds --submit.</div>
 
       <div class="yts-inline-actions">
         <button class="secondary" onclick="refreshYtsTestCatalog()">↻ Refresh Test Catalog</button>
@@ -6438,6 +6718,42 @@
     }
   }
 
+  function ytsCommandNeedsDevice(command) {
+    const name = String(command || '').trim().toLowerCase();
+    return ['test', 'cert', 'launch', 'stop', 'check', 'reset', 'wakeup', 'evergreen-channel', 'evergreen-update'].includes(name);
+  }
+
+  function getYtsSelectedRunMode() {
+    const mode = String(document.getElementById('yts-arg-test-run-mode')?.value || 'test').trim().toLowerCase();
+    return mode === 'cert' ? 'cert' : 'test';
+  }
+
+  function updateYtsRunModeUi() {
+    const mode = getYtsSelectedRunMode();
+    const hint = document.getElementById('yts-run-mode-hint');
+    const runButton = document.querySelector('#yts-panel-test button[data-yts-run-button="true"]');
+    if (hint) {
+      hint.textContent = mode === 'cert'
+        ? 'Cert mode runs yts cert and automatically includes --submit for certification submission.'
+        : 'Test mode runs yts test without certification submission.';
+      hint.style.color = mode === 'cert' ? uiColor('--warning') : uiColor('--text-muted');
+    }
+    if (runButton) runButton.textContent = mode === 'cert' ? 'Run Cert + Submit' : 'Run Test';
+  }
+
+  async function runYtsAuthCommand(command) {
+    const status = document.getElementById('yts-auth-status');
+    if (status) {
+      status.textContent = `Starting yts ${command} on API host...`;
+      setUiColor(status, '--info');
+    }
+    await runYtsCommand(command);
+    if (status) {
+      status.textContent = `yts ${command} job started. Follow the live console below.`;
+      setUiColor(status, '--success');
+    }
+  }
+
   async function runYtsCommand(command) {
     const resultContainer = document.getElementById('yts-command-result-container');
 
@@ -6455,31 +6771,36 @@
       await loadYtsCommandHistory(true);
     }
 
-    const selectedDeviceId = requireSelectedDabDevice('yts-command-output', 'Select a DAB device before running YTS commands.');
-    if (!selectedDeviceId) {
+    const selectedDeviceId = ytsCommandNeedsDevice(command === 'test' ? getYtsSelectedRunMode() : command)
+      ? requireSelectedDabDevice('yts-command-output', 'Select a DAB device before running this YTS command.')
+      : (getSelectedDabDeviceId() || '');
+    if (ytsCommandNeedsDevice(command === 'test' ? getYtsSelectedRunMode() : command) && !selectedDeviceId) {
       document.getElementById('yts-command-status').innerHTML = statusHtml('--error', '✗ No DAB device selected.');
       return;
     }
 
     resultContainer.style.display = 'block';
-    document.getElementById('yts-command-status').innerHTML = statusHtml('--info', `▌ Starting ${command}...`);
+    document.getElementById('yts-command-status').innerHTML = statusHtml('--info', `▌ Starting ${command === 'test' ? getYtsSelectedRunMode() : command}...`);
     document.getElementById('yts-command-output').textContent = '';
     document.getElementById('yts-download-container').innerHTML = '';
     document.getElementById('yts-command-stop-btn').style.display = '';
 
-    const details = ytsCommands[command];
+    const effectiveCommand = command === 'test' ? getYtsSelectedRunMode() : command;
+    const details = ytsCommands[command] || ytsCommands[effectiveCommand] || { args: [] };
     const body = {
-      command: command,
+      command: effectiveCommand,
       params: [],
       global_options: {},
       output_file: null,
       interactive_ai: false,
       collect_dab_logs: false,
       ui_navigation_allowed: false,
-      device_id: selectedDeviceId,
+      device_id: selectedDeviceId || null,
+      yts_run_mode: effectiveCommand,
+      cert_submit: effectiveCommand === 'cert',
     };
 
-    // Special handling for the 'test' command's detailed UI
+    // Special handling for the shared test/cert detailed UI
     if (command === 'test') {
       const deviceInput = document.getElementById('yts-arg-test-device');
       if (deviceInput && !deviceInput.value.trim() && selectedDeviceId) {
@@ -6527,6 +6848,10 @@
         body.params.push('--guided');
       }
 
+      if (effectiveCommand === 'cert' && !extraArgs.includes('--submit')) {
+        body.params.push('--submit');
+      }
+
       body.params.push(...extraArgs);
 
       if (jsonOutput) {
@@ -6537,7 +6862,7 @@
       const runTargetText = resolvedIds.length
         ? `${resolvedIds.length} test${resolvedIds.length === 1 ? '' : 's'}`
         : 'selected filters';
-      document.getElementById('yts-command-status').innerHTML = statusHtml('--info', `▌ Running ${escHtml(runTargetText)}...`);
+      document.getElementById('yts-command-status').innerHTML = statusHtml('--info', `▌ Running ${effectiveCommand === 'cert' ? 'certification ' : ''}${escHtml(runTargetText)}...`);
 
     } else {
       // Generic param handling for all other commands
@@ -6574,7 +6899,7 @@
     try {
       const startData = await api('/yts/command/live', 'POST', body);
       setCurrentYtsCommand(startData.command_id);
-      if (command === 'test') void enableFloatingLiveStreamWindow();
+      if (['test', 'cert'].includes(effectiveCommand)) void enableFloatingLiveStreamWindow();
       scrollToSection('yts-runner-card');
       startYtsCommandPolling(currentYtsCommandId);
       await pollLiveYtsCommand(currentYtsCommandId);
@@ -7166,7 +7491,7 @@
     const engine = String(document.getElementById('run-engine-select')?.value || 'orchestrator');
     const controlMode = String(document.getElementById('run-control-mode-select')?.value || 'DAB').toUpperCase();
     const irDeviceInput = document.getElementById('run-ir-device-input');
-    const irDeviceId = String(irDeviceInput?.value || selectedIrDeviceId || 'samsung_tv_default').trim() || 'samsung_tv_default';
+    const irDeviceId = String(irDeviceInput?.value || selectedIrDeviceId || '').trim();
     const errEl = document.getElementById('start-error');
     if (!goal) { errEl.textContent = 'Goal is required.'; return; }
     errEl.textContent = '';
@@ -7180,6 +7505,10 @@
           max_steps: 12,
         };
         if (controlMode === 'IR') {
+          if (!irDeviceId) {
+            errEl.textContent = 'Bind/select an IR profile in Hardware Bindings before running IR mode.';
+            return;
+          }
           taskBody.ir_device_id = irDeviceId;
           if (irDeviceInput) irDeviceInput.value = irDeviceId;
         } else {
@@ -7213,6 +7542,10 @@
       body.device_id = deviceId;
       body.control_mode = controlMode;
       if (controlMode === 'IR') {
+        if (!irDeviceId) {
+          errEl.textContent = 'Bind/select an IR profile in Hardware Bindings before starting IR mode.';
+          return;
+        }
         body.ir_device_id = irDeviceId;
         if (irDeviceInput) irDeviceInput.value = irDeviceId;
       }
@@ -7286,7 +7619,10 @@
     const executeOnce = async (singleAction) => {
       const body = { action: singleAction, control_mode: mode };
       if (mode === 'IR') {
-        body.ir_device_id = selectedIrDeviceId || 'samsung_tv_default';
+        if (!selectedIrDeviceId) {
+          throw new Error('No IR profile selected. Bind/select one in Hardware Bindings first.');
+        }
+        body.ir_device_id = selectedIrDeviceId;
       } else {
         const deviceId = requireSelectedDabDevice('manual-result', 'Select a DAB device before sending remote actions.');
         if (!deviceId) return;
@@ -7374,6 +7710,7 @@
       checkHealth(),
       loadAiModels(),
       loadDabDevices(),
+      loadHardwareBindings(),
       loadIrStatus(),
       loadIrDevices(selectedIrDeviceId),
       loadRuns(),

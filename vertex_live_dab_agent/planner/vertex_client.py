@@ -47,6 +47,9 @@ class VertexPlannerClient:
             self._model = None
 
         self._chat_sessions: dict[str, Any] = {}
+        self._genai_client: Any = None
+        self._live_sessions: dict[str, dict[str, Any]] = {}
+        self._live_session_creation_lock = asyncio.Lock()
 
     @staticmethod
     def _is_model_not_found_error(exc: Exception) -> bool:
@@ -62,6 +65,7 @@ class VertexPlannerClient:
         prompt: str,
         screenshot_b64: Optional[str],
         session_id: Optional[str],
+        keep_live_session: bool,
     ) -> str:
         try:
             from google import genai
@@ -76,10 +80,12 @@ class VertexPlannerClient:
         if not model_name.startswith("models/"):
             model_name = f"models/{model_name}"
 
-        client = genai.Client(
-            http_options={"api_version": "v1beta"},
-            api_key=self._api_key,
-        )
+        if self._genai_client is None:
+            self._genai_client = genai.Client(
+                http_options={"api_version": "v1beta"},
+                api_key=self._api_key,
+            )
+        client = self._genai_client
 
         if "live" not in self._model_name.lower():
             contents: Any = prompt or "."
@@ -111,38 +117,53 @@ class VertexPlannerClient:
             generation_config=types.GenerationConfig(temperature=0.1),
         )
 
-        async def _run_live_turn() -> str:
+        async def _run_live_turn(session: Any) -> str:
+            if screenshot_b64:
+                image_bytes = base64.b64decode(screenshot_b64)
+                try:
+                    from PIL import Image
+
+                    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+                    jpeg_buffer = io.BytesIO()
+                    image.save(jpeg_buffer, format="JPEG", quality=92)
+                    image_bytes = jpeg_buffer.getvalue()
+                except Exception:
+                    pass
+                await session.send_realtime_input(
+                    video=types.Blob(data=image_bytes, mime_type="image/jpeg")
+                )
+            await session.send_realtime_input(text=prompt or ".")
+            await session.send_realtime_input(activity_end={})
+
+            text_parts: list[str] = []
+            latest_transcription_text = ""
+            async for response in session.receive():
+                if text := getattr(response, "text", None):
+                    text_parts.append(str(text))
+                server_content = getattr(response, "server_content", None)
+                if server_content:
+                    output_transcription = getattr(server_content, "output_transcription", None)
+                    if output_transcription and getattr(output_transcription, "text", None):
+                        latest_transcription_text = str(output_transcription.text)
+            return "".join(text_parts).strip() or latest_transcription_text.strip()
+
+        if keep_live_session and session_id:
+            async with self._live_session_creation_lock:
+                entry = self._live_sessions.get(session_id)
+                if entry is None:
+                    context = client.aio.live.connect(model=model_name, config=live_config)
+                    session = await context.__aenter__()
+                    entry = {"context": context, "session": session, "lock": asyncio.Lock()}
+                    self._live_sessions[session_id] = entry
+            try:
+                async with entry["lock"]:
+                    response_text = await asyncio.wait_for(_run_live_turn(entry["session"]), timeout=90.0)
+            except Exception:
+                await self.close_live_session(session_id)
+                raise
+        else:
             async with client.aio.live.connect(model=model_name, config=live_config) as session:
-                if screenshot_b64:
-                    image_bytes = base64.b64decode(screenshot_b64)
-                    try:
-                        from PIL import Image
-
-                        image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-                        jpeg_buffer = io.BytesIO()
-                        image.save(jpeg_buffer, format="JPEG", quality=92)
-                        image_bytes = jpeg_buffer.getvalue()
-                    except Exception:
-                        pass
-                    await session.send_realtime_input(
-                        video=types.Blob(data=image_bytes, mime_type="image/jpeg")
-                    )
-                await session.send_realtime_input(text=prompt or ".")
-                await session.send_realtime_input(activity_end={})
-
-                text_parts: list[str] = []
-                latest_transcription_text = ""
-                async for response in session.receive():
-                    if text := getattr(response, "text", None):
-                        text_parts.append(str(text))
-                    server_content = getattr(response, "server_content", None)
-                    if server_content:
-                        output_transcription = getattr(server_content, "output_transcription", None)
-                        if output_transcription and getattr(output_transcription, "text", None):
-                            latest_transcription_text = str(output_transcription.text)
-                return "".join(text_parts).strip() or latest_transcription_text.strip()
-
-        response_text = await asyncio.wait_for(_run_live_turn(), timeout=90.0)
+                response_text = await asyncio.wait_for(_run_live_turn(session), timeout=90.0)
         if session_id:
             self._chat_sessions[session_id] = [{"role": "model", "parts": [{"text": response_text}]}]
         return response_text
@@ -152,6 +173,7 @@ class VertexPlannerClient:
         prompt: str,
         screenshot_b64: Optional[str] = None,
         session_id: Optional[str] = None,
+        keep_live_session: bool = False,
     ) -> str:
         """Generate text response with optional screenshot context."""
 
@@ -160,6 +182,7 @@ class VertexPlannerClient:
                 prompt=prompt,
                 screenshot_b64=screenshot_b64,
                 session_id=session_id,
+                keep_live_session=keep_live_session,
             )
 
         def _call() -> Any:
@@ -189,3 +212,14 @@ class VertexPlannerClient:
         if isinstance(text, str) and text.strip():
             return text
         return str(response)
+
+    async def close_live_session(self, session_id: str) -> None:
+        """Close one retained Gemini Live session."""
+
+        entry = self._live_sessions.pop(str(session_id or ""), None)
+        if entry is None:
+            return
+        try:
+            await entry["context"].__aexit__(None, None, None)
+        except Exception:
+            pass

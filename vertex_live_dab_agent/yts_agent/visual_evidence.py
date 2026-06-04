@@ -14,10 +14,15 @@ _AD_SIGNAL_RE = re.compile(
     r"\bwww\.[a-z0-9.-]+\.[a-z]{2,}\b",
     re.IGNORECASE,
 )
+_NEGATED_AD_SIGNAL_RE = re.compile(
+    r"\b(?:no|without|free\s+of)\s+(?:visible\s+)?(?:ads?|advertisements?|sponsored\s+(?:content|screens?)|promos?)\b"
+    r"(?:\s+(?:or|and)\s+(?:blocking\s+)?overlays?)?",
+    re.IGNORECASE,
+)
 
 
 def _contains_ad_signal(*values: Any) -> bool:
-    return any(_AD_SIGNAL_RE.search(str(value or "")) for value in values)
+    return any(_AD_SIGNAL_RE.search(_NEGATED_AD_SIGNAL_RE.sub("", str(value or ""))) for value in values)
 
 
 def _truthy_unknown(value: Any) -> bool | None:

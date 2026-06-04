@@ -36,7 +36,10 @@ def normalize_missing_evidence(value: Any) -> List[str]:
         return []
     if isinstance(value, str):
         text = value.strip()
-        return [text] if text else []
+        normalized = text.lower().rstrip(".")
+        if normalized in {"", "none", "n/a", "na", "no", "nothing", "not applicable", "no missing evidence"}:
+            return []
+        return [text]
     if isinstance(value, dict):
         out: List[str] = []
         for key, item in value.items():
